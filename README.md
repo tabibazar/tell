@@ -70,7 +70,7 @@ echo "hello" | tell           # from stdin, so anything can pipe into it
 date | tell
 tell ""                       # clear, returning to the clock
 tell --sync                   # sync the clock without changing the display
-tell --device peppa "hello"   # pick a board by name when several are in range
+tell --device big "hello"     # pick a board by name when several are in range
 ```
 
 With more than one board powered up, `tell` connects to whichever answers

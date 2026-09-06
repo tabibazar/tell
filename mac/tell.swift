@@ -113,13 +113,14 @@ final class Client: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate {
 
     func centralManager(_ c: CBCentralManager, didDiscover p: CBPeripheral,
                         advertisementData: [String: Any], rssi RSSI: NSNumber) {
-        // With several boards in range, match the advertised name. The name
-        // arrives in the scan response, so prefer that over p.name, which
-        // CoreBluetooth caches across sessions.
+        // With several boards in range, match the advertised name. It must come
+        // from the scan response: p.name is cached by CoreBluetooth across
+        // sessions, so a renamed board keeps answering to its old name. A
+        // callback without the scan response is skipped, not guessed at --
+        // scanning continues and a later one carries the name.
         if let wanted = wantedDevice {
-            let advertised = advertisementData[CBAdvertisementDataLocalNameKey] as? String
-            let name = advertised ?? p.name ?? ""
-            guard name.caseInsensitiveCompare(wanted) == .orderedSame else { return }
+            guard let advertised = advertisementData[CBAdvertisementDataLocalNameKey] as? String,
+                  advertised.caseInsensitiveCompare(wanted) == .orderedSame else { return }
         }
         c.stopScan()
         peripheral = p

@@ -17,7 +17,7 @@ Support for the [Elecrow CrowPanel 7.0" HMI](https://www.elecrow.com/esp32-displ
 | Framebuffer | 63 KB, fits SRAM | **750 KB, requires PSRAM** |
 | Text layout | 20 × 5 | **64 × 20** |
 | Clock font | 12×24 magnified | **dedicated 96×160 table** |
-| Advertised name | `ESP32-Screen` | `peppa` |
+| Advertised name | `small` | `big` |
 | USB | Native USB-Serial-JTAG | **CH340 bridge on UART0** |
 | Console | `CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG` | `CONFIG_ESP_CONSOLE_UART_DEFAULT` |
 | Auto-reset | **Does not work** (no bridge) | **Works** (CH340 drives EN/IO0) |

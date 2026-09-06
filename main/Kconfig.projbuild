@@ -16,8 +16,8 @@ endchoice
 
 config SCREEN_DEVICE_NAME
     string "Advertised BLE name"
-    default "peppa" if SCREEN_BOARD_CROWPANEL_7
-    default "ESP32-Screen"
+    default "big" if SCREEN_BOARD_CROWPANEL_7
+    default "small"
     help
         The name this board advertises. Give each board on your desk a
         distinct name so `tell --device NAME` can pick between them.
