@@ -15,7 +15,12 @@
 
 #define DEVICE_NAME    "ESP32-Screen"
 #define MSG_MAX        512
-#define FLUSH_IDLE_US  50000  /* a message is complete after 50 ms of quiet */
+/* A message is complete after this much quiet. It must exceed the BLE
+   connection interval, or a long message split across several writes gets
+   flushed mid-way and lands on screen as fragments. macOS negotiates a fast
+   interval, but Android commonly starts at 30-50 ms, so 50 ms was too tight
+   for any non-Apple client. */
+#define FLUSH_IDLE_US  250000
 
 static const char *TAG = "ble_uart";
 

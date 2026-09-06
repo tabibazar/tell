@@ -1,0 +1,2 @@
+source /Users/reza/PycharmProjects/esp32-small/build-crowpanel/bootloader/gdbinit/symbols
+source /Users/reza/PycharmProjects/esp32-small/build-crowpanel/bootloader/gdbinit/connect

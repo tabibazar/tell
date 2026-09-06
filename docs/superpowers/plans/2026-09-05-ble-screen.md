@@ -20,7 +20,7 @@
 - Font 8×16 → **30 columns × 8 rows**. ASCII 32..126 only; other bytes render `?`.
 - Truncation marker is `...` (three ASCII dots), never `…`.
 - NUS UUIDs: service `6E400001-B5A3-F393-E0A9-E50E24DCCA9E`, RX `6E400002-...`. Advertised name `ESP32-Screen`.
-- Message cap 512 bytes. Chunk reassembly flushes after **50 ms** idle.
+- Message cap 512 bytes. Chunk reassembly flushes after **250 ms** idle.
 
 ---
 
@@ -81,7 +81,7 @@
 - Produces: `esp_err_t ble_uart_start(void (*on_message)(const char *text, size_t len))`.
 
 - [ ] **Step 1:** Add `CONFIG_BT_ENABLED=y`, `CONFIG_BT_NIMBLE_ENABLED=y`, `CONFIG_BT_NIMBLE_MAX_CONNECTIONS=1` to `sdkconfig.defaults`.
-- [ ] **Step 2:** Implement the GATT server with the NUS UUIDs, advertising as `ESP32-Screen`; accumulate writes into a 512-byte buffer, flushing via a 50 ms `esp_timer` one-shot.
+- [ ] **Step 2:** Implement the GATT server with the NUS UUIDs, advertising as `ESP32-Screen`; accumulate writes into a 512-byte buffer, flushing via a 250 ms `esp_timer` one-shot.
 - [ ] **Step 3:** Temporarily log each message with `ESP_LOGI` instead of displaying it.
 - [ ] **Step 4:** Build, flash app only, and verify from a generic BLE app (LightBlue) that writes appear in the serial log — isolating firmware from Mac-side bugs.
 - [ ] **Step 5:** Commit.

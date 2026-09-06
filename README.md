@@ -129,7 +129,7 @@ step without buying meaningful security.
 **Message framing.** BLE's default MTU is 23 bytes — 20 bytes of payload per
 write. macOS negotiates upward on connect, but a long message still arrives as
 several writes. The firmware appends them to a buffer and completes the message
-after **50 ms** with no further write. This is the part most likely to break, so
+after **250 ms** with no further write. This is the part most likely to break, so
 it has an explicit test: a 512-byte message crosses three writes at MTU 256 and
 reassembles correctly.
 

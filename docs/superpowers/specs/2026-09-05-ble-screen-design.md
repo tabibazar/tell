@@ -147,7 +147,7 @@ fits in one write.
 
 If a message exceeds the negotiated MTU, the client splits it and the firmware
 reassembles: appends chunks to a buffer, and treats the message as complete when
-either the buffer is full or **50 ms** pass with no further write. This is the
+either the buffer is full or **250 ms** pass with no further write. This is the
 single most likely source of "long messages arrive truncated", so it gets an
 explicit test.
 
