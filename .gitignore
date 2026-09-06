@@ -4,5 +4,7 @@ sdkconfig.old
 mac/tell
 host_tests/test_textwrap
 host_tests/test_font
+host_tests/test_timecalc
+*.dSYM/
 dist/
 firmware-backup/
