@@ -5,7 +5,7 @@ all: test_textwrap test_font
 test_textwrap: test_textwrap.c ../main/textwrap.c
 	cc $(CFLAGS) -o $@ $^
 
-test_font: test_font.c ../main/font8x16.h
+test_font: test_font.c ../main/font.h
 	cc $(CFLAGS) -o $@ test_font.c
 
 clean:

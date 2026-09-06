@@ -3,9 +3,9 @@
 
 #include "esp_err.h"
 
-/* Panel geometry in character cells, given the 8x16 font on a 240x135 panel. */
-#define DISPLAY_COLS 30
-#define DISPLAY_ROWS 8
+/* Panel geometry in character cells, given the 12x24 font on a 240x135 panel. */
+#define DISPLAY_COLS 20
+#define DISPLAY_ROWS 5
 
 /* Powers the panel, brings up SPI and the ST7789, and clears the screen. */
 esp_err_t display_init(void);

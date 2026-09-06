@@ -62,7 +62,7 @@ Python on this machine, which is why the Mac client is Swift rather than Python.
   serial profile. macOS talks to it via CoreBluetooth over GATT.
 - **The existing firmware is replaced.** It reads a QMI8658 IMU and joins WiFi, and
   no source for it exists on this machine. A byte-exact backup is kept at
-  `ota0.orig.bin` (see Recovery).
+  `firmware-backup/` (see Recovery).
 
 ## Architecture
 
@@ -152,10 +152,11 @@ explicit test.
 
 ## Display behaviour
 
-- 8×16 monospace bitmap font compiled into the binary. This divides the panel
-  exactly: **30 columns × 8 rows**, no partial cells.
-- Text wraps at 30 columns.
-- If wrapping yields more than 8 lines, the first 8 are shown and the final cell
+- 12×24 monospace bitmap font compiled into the binary. This divides the panel
+  exactly: **20 columns × 5 rows**, no partial cells. (Revised from 8×16 / 30×8
+  on 2026-09-05 after testing on hardware: 8×16 was too small to read.)
+- Text wraps at 20 columns.
+- If wrapping yields more than 5 lines, the first 5 are shown and the final cell
   is replaced with `...` (three ASCII dots; the font is ASCII-only). Truncation is always visible — silently dropping text
   would make the display untrustworthy.
 - White on black. Not configurable; add it when it is actually wanted.
@@ -196,7 +197,7 @@ Built in dependency order, so each step rests on something already trusted.
 
 1. **`textwrap`** — host unit tests compiled with `cc` and run on the Mac, no
    board involved. Cases: exact-width lines, over-long words, empty input,
-   multi-line overflow with the `…` marker, UTF-8 input. TDD applies here.
+   multi-line overflow with the `...` marker, UTF-8 input. TDD applies here.
 2. **`display`** — flash with a hardcoded string. Confirms pins, the (40, 53)
    gap, orientation, and colours before any BLE code exists.
 3. **`ble_uart`** — drive from LightBlue or any generic BLE app, so a failure is
@@ -227,7 +228,9 @@ Do not pass `--baud 921600`: USB-Serial-JTAG ignores it and the port drops with
 
 Both routes were exercised during this session:
 
-- `write_flash 0x10000 ota0.orig.bin` restores the original firmware exactly.
+- `write_flash 0x10000 firmware-backup/stock-tabriz.bin` restores the firmware
+  that was running before the replacement; `stock-<network-a>.bin` is the untouched
+  original. See `firmware-backup/README.md`.
 - Double-tap RESET mounts the TinyUF2 drive, for the case where a build does not
   boot at all.
 

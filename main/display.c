@@ -1,7 +1,7 @@
 #include "display.h"
 
 #include "textwrap.h"
-#include "font8x16.h"
+#include "font.h"
 
 #include "driver/gpio.h"
 #include "driver/spi_master.h"
@@ -15,6 +15,7 @@
 
 #include <string.h>
 
+
 /* Adafruit Feather ESP32-S3 TFT, from the board's Arduino variant. */
 #define PIN_TFT_POWER 21
 #define PIN_TFT_CS     7
@@ -27,6 +28,8 @@
 #define LCD_W 240
 #define LCD_H 135
 #define LCD_HOST SPI2_HOST
+_Static_assert(LCD_W / FONT_W >= DISPLAY_COLS, "font too wide for DISPLAY_COLS");
+_Static_assert(LCD_H / FONT_H >= DISPLAY_ROWS, "font too tall for DISPLAY_ROWS");
 
 /* 0xFFFF and 0x0000 are byte-order agnostic, so white-on-black needs no swap. */
 #define COLOR_FG 0xFFFF
@@ -84,7 +87,7 @@ esp_err_t display_init(void)
     /* Landscape: swapping X/Y also swaps the panel's offset within the
        controller's 240x320 address space, hence (53, 40) not (40, 53). */
     ESP_ERROR_CHECK(esp_lcd_panel_swap_xy(s_panel, true));
-    ESP_ERROR_CHECK(esp_lcd_panel_mirror(s_panel, false, true));
+    ESP_ERROR_CHECK(esp_lcd_panel_mirror(s_panel, true, false));
     ESP_ERROR_CHECK(esp_lcd_panel_set_gap(s_panel, 53, 40));
     ESP_ERROR_CHECK(esp_lcd_panel_disp_on_off(s_panel, true));
 
@@ -103,15 +106,20 @@ esp_err_t display_init(void)
 static void draw_glyph(char ch, size_t col, size_t row)
 {
     if (ch < FONT_FIRST || ch > FONT_LAST) ch = '?';
-    const uint8_t *glyph = font8x16[(unsigned char)ch - FONT_FIRST];
+    const uint8_t *glyph = font_glyphs[(unsigned char)ch - FONT_FIRST];
 
     for (int y = 0; y < FONT_H; y++) {
         int py = (int)row * FONT_H + y;
         if (py >= LCD_H) return;
-        uint8_t bits = glyph[y];
-        if (!bits) continue;
+
+        /* Each row is FONT_STRIDE bytes, big-endian, pixel 0 the highest bit. */
+        uint32_t bits = 0;
+        for (int b = 0; b < FONT_STRIDE; b++)
+            bits = (bits << 8) | glyph[y * FONT_STRIDE + b];
+        if (bits == 0) continue;
+
         for (int x = 0; x < FONT_W; x++) {
-            if (!((bits >> (7 - x)) & 1)) continue;
+            if (!((bits >> (FONT_W - 1 - x)) & 1)) continue;
             int px = (int)col * FONT_W + x;
             if (px < LCD_W) s_fb[py * LCD_W + px] = COLOR_FG;
         }
