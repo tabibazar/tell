@@ -67,6 +67,36 @@ void canvas_text(canvas_t *c, const char *utf8)
                   my + (int)r * cell_h, c->scale);
 }
 
+#ifdef HAVE_CLOCK_FONT
+/* Draws from the dedicated large table, which is rendered at its final size
+   rather than magnified. */
+static void clock_glyph(canvas_t *c, char ch, int ox, int oy)
+{
+    if (ch < CLOCK_FIRST || ch > CLOCK_LAST) return;
+    const uint8_t *g = clock_glyphs[(unsigned char)ch - CLOCK_FIRST];
+
+    for (int y = 0; y < CLOCK_H; y++) {
+        int py = oy + y;
+        if (py < 0 || py >= c->h) continue;
+        for (int x = 0; x < CLOCK_W; x++) {
+            int byte = x >> 3;
+            if (!((g[y * CLOCK_STRIDE + byte] >> (7 - (x & 7))) & 1)) continue;
+            int px = ox + x;
+            if (px >= 0 && px < c->w) c->fb[py * c->w + px] = CANVAS_FG;
+        }
+    }
+}
+
+/* True when every character is in the clock table and the line fits. */
+static int clock_font_suits(canvas_t *c, const char *text, int len)
+{
+    if (len * CLOCK_W > c->w || CLOCK_H > c->h) return 0;
+    for (int i = 0; i < len; i++)
+        if (text[i] < CLOCK_FIRST || text[i] > CLOCK_LAST) return 0;
+    return 1;
+}
+#endif
+
 void canvas_big(canvas_t *c, const char *text)
 {
     canvas_clear(c);
@@ -75,6 +105,16 @@ void canvas_big(canvas_t *c, const char *text)
     int len = 0;
     while (text[len] != '\0') len++;
     if (len == 0) return;
+
+#ifdef HAVE_CLOCK_FONT
+    if (clock_font_suits(c, text, len)) {
+        int ox = (c->w - len * CLOCK_W) / 2;
+        int oy = (c->h - CLOCK_H) / 2;
+        for (int i = 0; i < len; i++)
+            clock_glyph(c, text[i], ox + i * CLOCK_W, oy);
+        return;
+    }
+#endif
 
     int scale = 1;
     while ((scale + 1) * FONT_W * len <= c->w && (scale + 1) * FONT_H <= c->h)

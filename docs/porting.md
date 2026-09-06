@@ -3,10 +3,10 @@
 Support for the [Elecrow CrowPanel 7.0" HMI](https://www.elecrow.com/esp32-display-7-inch-hmi-display-rgb-tft-lcd-touch-screen-support-lvgl.html)
 (800×480, ESP32-S3-WROOM-1-N4R8).
 
-> **This code has never run on the hardware.** It was written before the board
-> arrived, from Elecrow's published pin map and timings. It compiles and the
-> board-independent half is unit tested, but the panel bring-up is unverified.
-> Treat the first flash as a debugging session, not a deployment.
+> **Verified on hardware 2026-09-06.** Written before the board arrived, from
+> Elecrow's published pin map and timings, and it worked on the first flash:
+> correct geometry, no orientation or offset problems. An RGB panel has no
+> MADCTL, so none of the mirror/gap trouble from the Feather applies.
 
 ## Board comparison
 
@@ -15,11 +15,13 @@ Support for the [Elecrow CrowPanel 7.0" HMI](https://www.elecrow.com/esp32-displ
 | Chip | ESP32-S3, 4 MB flash, 2 MB PSRAM | ESP32-S3-WROOM-1-N4R8, 4 MB flash, **8 MB PSRAM** |
 | Panel | ST7789 240×135 over **SPI** | 800×480 over **16-bit RGB parallel** |
 | Framebuffer | 63 KB, fits SRAM | **750 KB, requires PSRAM** |
-| Text layout | 20 × 5 (font ×1) | 33 × 10 (font ×2) |
+| Text layout | 20 × 5 | **64 × 20** |
+| Clock font | 12×24 magnified | **dedicated 96×160 table** |
+| Advertised name | `ESP32-Screen` | `peppa` |
 | USB | Native USB-Serial-JTAG | **CH340 bridge on UART0** |
 | Console | `CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG` | `CONFIG_ESP_CONSOLE_UART_DEFAULT` |
 | Auto-reset | **Does not work** (no bridge) | **Works** (CH340 drives EN/IO0) |
-| `--baud 921600` | Breaks the port | Fine |
+| `--baud 921600` | Breaks the port | **Also breaks** — see below |
 | Port | `/dev/cu.usbmodem*` | `/dev/cu.wchusbserial*` |
 | Recovery | TinyUF2, double-tap RESET | None — flash the bootloader too |
 
@@ -83,8 +85,25 @@ esptool.py --chip esp32s3 --port /dev/cu.wchusbserial* write_flash \
   0x10000 build-crowpanel/screen.bin
 ```
 
-macOS 11+ ships a CH34x driver, so the port should appear without installing
-anything.
+macOS 11+ ships a CH34x driver, so the port appears without installing anything.
+
+**Use the default baud rate.** Measured on this board:
+
+| Baud | Result |
+|---|---|
+| 921600 | `Changed.` then `No serial data received` |
+| 460800 | `Invalid head of packet (0x05)` |
+| 115200 | Works, but drops bytes on long continuous reads |
+
+An earlier version of this document claimed high rates were fine here because
+CH340 is a real UART bridge, unlike the Feather's USB-Serial-JTAG. That was
+wrong. Both boards want the default rate, for different reasons.
+
+**The serial console is unreliable on this board.** Bootloader output starts
+clean and then garbles a few lines in, reproducibly. It is a link problem, not
+a firmware one — the same CH340 corrupted a 4 MB flash read at 93%. Dump flash
+in chunks with retries rather than in one pass, and do not read too much into a
+garbled boot log: the firmware ran correctly the whole time it looked broken.
 
 ## First-flash checklist
 
@@ -97,23 +116,22 @@ anything.
 3. Watch the console at 115200 for `RGB panel up: 800x480, 33 cols x 10 rows`.
    Reaching that line means the panel accepted its configuration.
 
-## Where this will most likely go wrong
+## What went wrong, and what did not
 
-Ranked by how much I expect each to bite:
+None of the display risks materialised. No tearing, no offset, no rotation
+problem. The bounce buffer at `LCD_W * 10` and the 15 MHz pixel clock both work
+as configured.
 
-- **Tearing or shimmer.** The panel streams continuously from the framebuffer
-  while we write into the same buffer. If it flickers, the fix is a second
-  buffer (`num_fbs = 2`) and drawing to the back one.
-- **Bounce buffer size.** `LCD_W * 10` is a guess. Too small starves the DMA
-  and shows as horizontal tearing or a rolling image.
-- **Colour channel order.** If red and blue are swapped, the data pin order is
-  reversed relative to what the panel expects. The comment in `display_rgb.c`
-  records the assumption.
-- **Pixel clock.** 15 MHz is Elecrow's value. Artifacts under load may mean it
-  needs lowering, or PSRAM bandwidth is the real constraint.
+The one firmware bug was invisible: `font.h` selected its table with
+`#if defined(CONFIG_SCREEN_BOARD_CROWPANEL_7)` without including `sdkconfig.h`,
+which ESP-IDF does not force-include. The test was silently false, so the wrong
+font compiled in and everything still ran perfectly. It was caught only because
+the binary did not change size when a 9 KB larger table should have been added.
+**Check that the image size moves when you expect it to.**
 
-Orientation should not be an issue: an RGB panel has no MADCTL, so there is no
-equivalent of the mirror/gap problem that took two rounds on the Feather.
+Still worth watching if the display is ever driven harder than static text:
+a single framebuffer is written while the panel streams from it, so animation
+may need `num_fbs = 2` and drawing to the back buffer.
 
 ## Not implemented
 

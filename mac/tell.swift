@@ -2,6 +2,7 @@
 //
 //   tell "some text"
 //   echo "some text" | tell
+//   tell --device peppa "some text"
 //
 // Build: swiftc -O mac/tell.swift -o mac/tell
 
@@ -31,11 +32,37 @@ func secondsSinceLocalMidnight() -> UInt32 {
     return UInt32(now.timeIntervalSince(midnight))
 }
 
-let syncOnly = CommandLine.arguments.dropFirst().first == "--sync"
+/// Parses the leading flags, leaving the message words.
+func parseArgs() -> (syncOnly: Bool, device: String?, words: [String]) {
+    var args = Array(CommandLine.arguments.dropFirst())
+    var syncOnly = false
+    var device: String? = nil
+
+    while let first = args.first {
+        if first == "--sync" {
+            syncOnly = true
+            args.removeFirst()
+        } else if first == "--device" {
+            args.removeFirst()
+            guard let name = args.first else { fail("--device needs a name") }
+            device = name
+            args.removeFirst()
+        } else if first.hasPrefix("--device=") {
+            device = String(first.dropFirst("--device=".count))
+            args.removeFirst()
+        } else {
+            break
+        }
+    }
+    return (syncOnly, device, args)
+}
+
+let opts = parseArgs()
+let syncOnly = opts.syncOnly
+let wantedDevice = opts.device
 
 func readMessage() -> Data {
-    var args = Array(CommandLine.arguments.dropFirst())
-    if args.first == "--sync" { args.removeFirst() }
+    let args = opts.words
     var text: String
     if syncOnly { return Data() }
     if args.isEmpty {
@@ -86,6 +113,14 @@ final class Client: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate {
 
     func centralManager(_ c: CBCentralManager, didDiscover p: CBPeripheral,
                         advertisementData: [String: Any], rssi RSSI: NSNumber) {
+        // With several boards in range, match the advertised name. The name
+        // arrives in the scan response, so prefer that over p.name, which
+        // CoreBluetooth caches across sessions.
+        if let wanted = wantedDevice {
+            let advertised = advertisementData[CBAdvertisementDataLocalNameKey] as? String
+            let name = advertised ?? p.name ?? ""
+            guard name.caseInsensitiveCompare(wanted) == .orderedSame else { return }
+        }
         c.stopScan()
         peripheral = p
         p.delegate = self
@@ -165,6 +200,9 @@ final class Client: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate {
 let client = Client(payload: readMessage())
 
 DispatchQueue.main.asyncAfter(deadline: .now() + timeout) {
-    fail("no ESP32-Screen found within \(Int(timeout))s")
+    if let wanted = wantedDevice {
+        fail("no device named \(wanted) found within \(Int(timeout))s")
+    }
+    fail("no screen found within \(Int(timeout))s")
 }
 dispatchMain()

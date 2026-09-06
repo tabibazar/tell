@@ -7,7 +7,7 @@
 #define TW_MAX_COLS 64
 
 /* Maximum lines any caller may request. Sizes the caller's line buffer. */
-#define TW_MAX_LINES 16
+#define TW_MAX_LINES 20
 
 /*
  * Greedy word-wrap of `s` into at most `max_lines` lines of at most `cols`

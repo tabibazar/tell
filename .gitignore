@@ -12,3 +12,4 @@ build-crowpanel/
 sdkconfig.crowpanel
 sdkconfig.crowpanel.old
 host_tests/test_canvas
+host_tests/test_font_clock

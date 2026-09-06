@@ -1185,6 +1185,7 @@
     "RTC_TIME_FUNC_IN_IRAM": true,
     "SCREEN_BOARD_CROWPANEL_7": true,
     "SCREEN_BOARD_FEATHER_S3_TFT": false,
+    "SCREEN_DEVICE_NAME": "peppa",
     "SDM_CTRL_FUNC_IN_IRAM": false,
     "SDM_ENABLE_DEBUG_LOG": false,
     "SDM_SKIP_LEGACY_CONFLICT_CHECK": false,

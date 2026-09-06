@@ -33,7 +33,7 @@ ESP32-S3 radio does not implement it.)
 | Board | Display | Layout | Status |
 |---|---|---|---|
 | Adafruit Feather ESP32-S3 TFT | ST7789 240×135, SPI | 20 × 5 | Verified |
-| Elecrow CrowPanel 7.0" HMI | 800×480, 16-bit RGB | 33 × 10 | Compiles, **untested on hardware** |
+| Elecrow CrowPanel 7.0" HMI | 800×480, 16-bit RGB | 64 × 20 | Verified |
 
 No wiring or soldering — the display is part of the board. Select the target
 with `idf.py menuconfig` under *Screen board*; see [docs/porting.md](docs/porting.md)
@@ -70,9 +70,15 @@ echo "hello" | tell           # from stdin, so anything can pipe into it
 date | tell
 tell ""                       # clear, returning to the clock
 tell --sync                   # sync the clock without changing the display
+tell --device peppa "hello"   # pick a board by name when several are in range
 ```
 
-The screen is **20 characters by 5 lines**. Text wraps at word boundaries; a
+With more than one board powered up, `tell` connects to whichever answers
+first. Give each board its own name (`CONFIG_SCREEN_DEVICE_NAME` in
+menuconfig) and address it with `--device`.
+
+The screen is **20 characters by 5 lines** on the Feather, **64 by 20** on the
+CrowPanel. Text wraps at word boundaries; a
 word longer than a line is broken mid-word. Content past five lines is truncated
 with a visible `...`, so text is never silently dropped. `\n` forces a break.
 Bytes outside printable ASCII render as `?`.
@@ -142,10 +148,14 @@ name is sent in the scan response instead.
 
 Generated from Menlo by `tools/gen_font.py` into a C header, so there is no font
 library on the device and no runtime rasterisation. A 12×24 cell divides the
-240×135 panel exactly into 20×5 with no partial cells.
+240×135 panel exactly into 20×5, and gives 64×20 on the 800×480 panel.
 
-The clock reuses the same table, scaled up by pixel replication to the largest
-integer factor that fits.
+The clock is magnified the most, and on a large panel pixel replication made it
+visibly blocky. So the CrowPanel carries a second table rendered at its final
+96×160 size. That is affordable because a clock needs only `0`–`9` and `:`,
+which are contiguous in ASCII — 11 glyphs at 21 KB, where a full alphabet at
+that size would be 182 KB. Smaller panels fall back to magnifying the body
+font, which is fine at their scale.
 
 ## Building the firmware
 

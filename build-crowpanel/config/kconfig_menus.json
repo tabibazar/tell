@@ -6872,6 +6872,16 @@
                 "name": "SCREEN_BOARD",
                 "title": "Target board",
                 "type": "choice"
+            },
+            {
+                "children": [],
+                "depends_on": null,
+                "help": "The name this board advertises. Give each board on your desk a\ndistinct name so `tell --device NAME` can pick between them.",
+                "id": "SCREEN_DEVICE_NAME",
+                "name": "SCREEN_DEVICE_NAME",
+                "range": null,
+                "title": "Advertised BLE name",
+                "type": "string"
             }
         ],
         "depends_on": null,

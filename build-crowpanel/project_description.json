@@ -1,7 +1,7 @@
 {
     "version":            "1.2",
     "project_name":       "screen",
-    "project_version":    "f59dfe3-dirty",
+    "project_version":    "9504463-dirty",
     "project_path":       "/Users/reza/PycharmProjects/esp32-small",
     "idf_path":           "/Users/reza/esp/esp-idf",
     "build_dir":          "/Users/reza/PycharmProjects/esp32-small/build-crowpanel",

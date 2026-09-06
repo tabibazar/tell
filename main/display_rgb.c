@@ -23,8 +23,9 @@
 #define LCD_W 800
 #define LCD_H 480
 
-/* The 12x24 font doubled: 33 columns x 10 rows on this panel. */
-#define TEXT_SCALE 2
+/* font.h selects a native 16x32 cell for this board, so no magnification:
+   50 columns x 15 rows of sharp glyphs rather than replicated pixels. */
+#define TEXT_SCALE 1
 
 #define PIN_BACKLIGHT 2
 #define PIN_PCLK      0
