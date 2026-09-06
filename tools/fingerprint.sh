@@ -82,5 +82,6 @@ if [ -f /tmp/_fp_app.bin ]; then
 fi
 echo '```'
 
-# Leave the board running its application again.
-"$PY" "$ESPTOOL" --port "$PORT" --before no_reset --after hard_reset chip_id >/dev/null 2>&1 || true
+# Leave the board running its application again. Without --before no_reset the
+# stub is re-uploaded, which is what makes the reset actually stick.
+"$PY" "$ESPTOOL" --port "$PORT" --after hard_reset flash_id >/dev/null 2>&1 || true
