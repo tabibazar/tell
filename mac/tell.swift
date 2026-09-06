@@ -3,6 +3,7 @@
 //   tell "some text"
 //   echo "some text" | tell
 //   tell --device big "some text"
+//   tell --list
 //
 // Build: swiftc -O mac/tell.swift -o mac/tell
 
@@ -33,13 +34,17 @@ func secondsSinceLocalMidnight() -> UInt32 {
 }
 
 /// Parses the leading flags, leaving the message words.
-func parseArgs() -> (syncOnly: Bool, device: String?, words: [String]) {
+func parseArgs() -> (syncOnly: Bool, listOnly: Bool, device: String?, words: [String]) {
     var args = Array(CommandLine.arguments.dropFirst())
     var syncOnly = false
+    var listOnly = false
     var device: String? = nil
 
     while let first = args.first {
-        if first == "--sync" {
+        if first == "--list" {
+            listOnly = true
+            args.removeFirst()
+        } else if first == "--sync" {
             syncOnly = true
             args.removeFirst()
         } else if first == "--device" {
@@ -54,17 +59,19 @@ func parseArgs() -> (syncOnly: Bool, device: String?, words: [String]) {
             break
         }
     }
-    return (syncOnly, device, args)
+    return (syncOnly, listOnly, device, args)
 }
 
 let opts = parseArgs()
 let syncOnly = opts.syncOnly
+let listOnly = opts.listOnly
 let wantedDevice = opts.device
+let listSeconds = 4.0
 
 func readMessage() -> Data {
     let args = opts.words
     var text: String
-    if syncOnly { return Data() }
+    if syncOnly || listOnly { return Data() }
     if args.isEmpty {
         let raw = FileHandle.standardInput.readDataToEndOfFile()
         text = String(data: raw, encoding: .utf8) ?? ""
@@ -86,6 +93,8 @@ final class Client: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate {
     private var peripheral: CBPeripheral?
     private let payload: Data
     private var outstanding = 0
+    /// Names seen while listing, mapped to their strongest signal.
+    private var seen: [String: Int] = [:]
 
     init(payload: Data) {
         self.payload = payload
@@ -99,6 +108,12 @@ final class Client: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate {
             // Scan by service UUID: CoreBluetooth caches peripheral names, so
             // matching on name can miss a renamed device.
             c.scanForPeripherals(withServices: [serviceUUID])
+            if listOnly {
+                DispatchQueue.main.asyncAfter(deadline: .now() + listSeconds) {
+                    self.report()
+                    exit(0)
+                }
+            }
         case .poweredOff:
             fail("Bluetooth is off")
         case .unauthorized:
@@ -111,8 +126,27 @@ final class Client: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate {
         }
     }
 
+    /// Prints what the scan found, newest signal strength first.
+    func report() {
+        if seen.isEmpty {
+            note("no screens found within \(Int(listSeconds))s")
+            exit(1)
+        }
+        for (name, rssi) in seen.sorted(by: { $0.value > $1.value }) {
+            print("\(name)  (signal \(rssi) dBm)")
+        }
+    }
+
     func centralManager(_ c: CBCentralManager, didDiscover p: CBPeripheral,
                         advertisementData: [String: Any], rssi RSSI: NSNumber) {
+        if listOnly {
+            // Only the scan response carries a trustworthy name.
+            if let name = advertisementData[CBAdvertisementDataLocalNameKey] as? String {
+                let rssi = RSSI.intValue
+                if rssi > (seen[name] ?? Int.min) { seen[name] = rssi }
+            }
+            return
+        }
         // With several boards in range, match the advertised name. It must come
         // from the scan response: p.name is cached by CoreBluetooth across
         // sessions, so a renamed board keeps answering to its old name. A
