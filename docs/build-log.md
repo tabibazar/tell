@@ -1,4 +1,6 @@
-# Overnight report — 2026-09-05
+# Build log — 2026-09-05/06
+
+A record of how this was built and what was verified on hardware.
 
 *Display geometry confirmed on hardware 2026-09-06.*
 
@@ -56,18 +58,18 @@ The 512-byte case was the risk I flagged in the spec, and it passes.
 legibility; the previous 8×16 gave 30×8 but you couldn't read it. Text wraps at
 20 columns; anything past 5 rows is truncated with a visible `...`.
 
-## Restoring the old firmware
+## Restoring the stock firmware
+
+The original flash dumps are **not in this repository** — they contain the WiFi
+credentials that were baked into the stock firmware. They are kept outside the
+repo (`~/esp32-firmware-backup/` on the machine that made them).
 
 ```sh
-~/.espressif/python_env/idf5.5_py3.13_env/bin/python \
-  ~/esp/esp-idf/components/esptool_py/esptool/esptool.py \
-  --port /dev/cu.usbmodem21201 write_flash 0x10000 firmware-backup/stock-tabriz.bin
+esptool.py --port /dev/cu.usbmodem* write_flash 0x10000 <backup>.bin
 ```
 
-`stock-tabriz.bin` is what was running before I replaced it (WiFi `<network-b>`).
-`stock-<network-a>.bin` is the untouched original. Details in
-`firmware-backup/README.md`. Double-tap RESET still mounts the TinyUF2 drive if
-the board ever won't boot.
+Double-tap RESET mounts the TinyUF2 drive if the board ever will not boot; the
+bootloader and partition table were never modified.
 
 ## Seeing logs
 

@@ -5,3 +5,4 @@ mac/tell
 host_tests/test_textwrap
 host_tests/test_font
 dist/
+firmware-backup/
