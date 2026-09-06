@@ -22,7 +22,8 @@ void canvas_clear(canvas_t *c)
 
 /* Draws one glyph at an absolute pixel position, magnified by `scale`.
    Pixel replication keeps the font table the single source of truth. */
-static void glyph(canvas_t *c, char ch, int ox, int oy, int scale)
+static void glyph(canvas_t *c, char ch, int ox, int oy, int scale,
+                  uint16_t colour)
 {
     if (ch < FONT_FIRST || ch > FONT_LAST) ch = '?';
     const uint8_t *g = font_glyphs[(unsigned char)ch - FONT_FIRST];
@@ -41,7 +42,7 @@ static void glyph(canvas_t *c, char ch, int ox, int oy, int scale)
                 if (py < 0 || py >= c->h) continue;
                 for (int sx = 0; sx < scale; sx++) {
                     int px = ox + x * scale + sx;
-                    if (px >= 0 && px < c->w) c->fb[py * c->w + px] = CANVAS_FG;
+                    if (px >= 0 && px < c->w) c->fb[py * c->w + px] = colour;
                 }
             }
         }
@@ -64,13 +65,13 @@ void canvas_text(canvas_t *c, const char *utf8)
     for (size_t r = 0; r < n; r++)
         for (int col = 0; lines[r][col] != '\0'; col++)
             glyph(c, lines[r][col], mx + col * cell_w,
-                  my + (int)r * cell_h, c->scale);
+                  my + (int)r * cell_h, c->scale, CANVAS_FG);
 }
 
 #ifdef HAVE_CLOCK_FONT
 /* Draws from the dedicated large table, which is rendered at its final size
    rather than magnified. */
-static void clock_glyph(canvas_t *c, char ch, int ox, int oy)
+static void clock_glyph(canvas_t *c, char ch, int ox, int oy, uint16_t colour)
 {
     if (ch < CLOCK_FIRST || ch > CLOCK_LAST) return;
     const uint8_t *g = clock_glyphs[(unsigned char)ch - CLOCK_FIRST];
@@ -82,7 +83,7 @@ static void clock_glyph(canvas_t *c, char ch, int ox, int oy)
             int byte = x >> 3;
             if (!((g[y * CLOCK_STRIDE + byte] >> (7 - (x & 7))) & 1)) continue;
             int px = ox + x;
-            if (px >= 0 && px < c->w) c->fb[py * c->w + px] = CANVAS_FG;
+            if (px >= 0 && px < c->w) c->fb[py * c->w + px] = colour;
         }
     }
 }
@@ -111,7 +112,7 @@ void canvas_big(canvas_t *c, const char *text)
         int ox = (c->w - len * CLOCK_W) / 2;
         int oy = (c->h - CLOCK_H) / 2;
         for (int i = 0; i < len; i++)
-            clock_glyph(c, text[i], ox + i * CLOCK_W, oy);
+            clock_glyph(c, text[i], ox + i * CLOCK_W, oy, CANVAS_FG);
         return;
     }
 #endif
@@ -123,5 +124,31 @@ void canvas_big(canvas_t *c, const char *text)
     int ox = (c->w - len * FONT_W * scale) / 2;
     int oy = (c->h - FONT_H * scale) / 2;
     for (int i = 0; i < len; i++)
-        glyph(c, text[i], ox + i * FONT_W * scale, oy, scale);
+        glyph(c, text[i], ox + i * FONT_W * scale, oy, scale, CANVAS_FG);
+}
+
+void canvas_fill_rect(canvas_t *c, int x, int y, int w, int h, uint16_t colour)
+{
+    if (w <= 0 || h <= 0) return;
+
+    int x0 = x < 0 ? 0 : x;
+    int y0 = y < 0 ? 0 : y;
+    int x1 = x + w > c->w ? c->w : x + w;
+    int y1 = y + h > c->h ? c->h : y + h;
+
+    for (int py = y0; py < y1; py++)
+        for (int px = x0; px < x1; px++)
+            c->fb[py * c->w + px] = colour;
+}
+
+void canvas_puts(canvas_t *c, int col, int row, const char *s, uint16_t colour)
+{
+    if (s == NULL) return;
+    int cell_w = FONT_W * c->scale;
+    int cell_h = FONT_H * c->scale;
+    for (int i = 0; s[i] != '\0'; i++) {
+        int x = (col + i) * cell_w;
+        if (x >= c->w) return;
+        glyph(c, s[i], x, row * cell_h, c->scale, colour);
+    }
 }

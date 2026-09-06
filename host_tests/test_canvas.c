@@ -14,6 +14,13 @@ static void expect(const char *what, int cond)
     failures++;
 }
 
+static int lit_colour(canvas_t *c, uint16_t colour)
+{
+    int n = 0;
+    for (int i = 0; i < c->w * c->h; i++) if (c->fb[i] == colour) n++;
+    return n;
+}
+
 static int lit_pixels(canvas_t *c)
 {
     int n = 0;
@@ -66,6 +73,29 @@ int main(void)
        confirm a full-width render never disturbs the last row's end. */
     canvas_text(&small, "WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW");
     expect("long text stays in bounds", lit_pixels(&small) > 0);
+
+    /* Rectangles must clamp, not write outside the framebuffer. */
+    canvas_init(&small, small_fb, 240, 135, 1);
+    canvas_clear(&small);
+    canvas_fill_rect(&small, 0, 0, 10, 10, 0xF800);
+    expect("fill_rect paints its area", lit_colour(&small, 0xF800) == 100);
+
+    canvas_clear(&small);
+    canvas_fill_rect(&small, -5, -5, 10, 10, 0xF800);
+    expect("negative origin is clipped", lit_colour(&small, 0xF800) == 25);
+
+    canvas_clear(&small);
+    canvas_fill_rect(&small, 235, 130, 100, 100, 0xF800);
+    expect("oversize is clipped to the panel", lit_colour(&small, 0xF800) == 25);
+
+    canvas_clear(&small);
+    canvas_fill_rect(&small, 0, 0, 0, 0, 0xF800);
+    expect("zero size paints nothing", lit_colour(&small, 0xF800) == 0);
+
+    canvas_clear(&small);
+    canvas_puts(&small, 0, 0, "A", 0x07E0);
+    expect("puts uses the colour given", lit_colour(&small, 0x07E0) > 0);
+    expect("puts does not paint white", lit_colour(&small, 0xFFFF) == 0);
 
     if (failures == 0) { printf("all tests passed\n"); return 0; }
     printf("%d test(s) failed\n", failures);

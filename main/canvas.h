@@ -31,4 +31,11 @@ void canvas_text(canvas_t *c, const char *utf8);
 /* A single short line, centred, at the largest whole scale that fits. */
 void canvas_big(canvas_t *c, const char *text);
 
+/* Filled rectangle in framebuffer pixels. Clipped to the panel. */
+void canvas_fill_rect(canvas_t *c, int x, int y, int w, int h, uint16_t colour);
+
+/* One line of text at a character cell, in the given colour. Not wrapped;
+   clipped at the right edge. */
+void canvas_puts(canvas_t *c, int col, int row, const char *s, uint16_t colour);
+
 #endif /* CANVAS_H */
