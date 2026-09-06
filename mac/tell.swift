@@ -1,9 +1,9 @@
-// esp32-say -- write a line of text to the ESP32-Screen over BLE.
+// tell -- write a line of text to the ESP32-Screen over BLE.
 //
-//   esp32-say "some text"
-//   echo "some text" | esp32-say
+//   tell "some text"
+//   echo "some text" | tell
 //
-// Build: swiftc -O mac/esp32-say.swift -o mac/esp32-say
+// Build: swiftc -O mac/tell.swift -o mac/tell
 
 import Foundation
 import CoreBluetooth
@@ -15,7 +15,7 @@ let maxMessage  = 512
 let timeout     = 10.0
 
 func note(_ msg: String) {
-    FileHandle.standardError.write(Data("esp32-say: \(msg)\n".utf8))
+    FileHandle.standardError.write(Data("tell: \(msg)\n".utf8))
 }
 
 func fail(_ msg: String) -> Never {

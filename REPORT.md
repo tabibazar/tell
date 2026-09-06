@@ -11,12 +11,12 @@ see `firmware-backup/`.
 ## Using it
 
 ```sh
-mac/esp32-say "hello"              # argument
-echo "hello" | mac/esp32-say       # stdin
-mac/esp32-say ""                   # clears the screen
+mac/tell "hello"              # argument
+echo "hello" | mac/tell       # stdin
+mac/tell ""                   # clears the screen
 ```
 
-If `mac/esp32-say` is missing, rebuild it with `./mac/build.sh`.
+If `mac/tell` is missing, rebuild it with `./mac/build.sh`.
 
 ## Display: verified on hardware 2026-09-06
 

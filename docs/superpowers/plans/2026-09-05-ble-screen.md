@@ -96,14 +96,14 @@
 - [ ] **Step 3:** Build, flash, verify end-to-end from a BLE app.
 - [ ] **Step 4:** Commit.
 
-### Task 6: Swift `esp32-say` client
+### Task 6: Swift `tell` client
 
 **Files:**
-- Create: `mac/esp32-say.swift`, `mac/build.sh`
+- Create: `mac/tell.swift`, `mac/build.sh`
 
 - [ ] **Step 1:** Implement scan-by-service-UUID → connect → discover → write → exit; 10 s timeout, non-zero exit with stderr message on failure. Read text from `argv[1]` or stdin. Truncate over 512 bytes with a warning.
-- [ ] **Step 2:** `swiftc -O mac/esp32-say.swift -o mac/esp32-say`.
-- [ ] **Step 3:** Run `mac/esp32-say "hello"` and confirm it appears on the panel.
+- [ ] **Step 2:** `swiftc -O mac/tell.swift -o mac/tell`.
+- [ ] **Step 3:** Run `mac/tell "hello"` and confirm it appears on the panel.
 - [ ] **Step 4:** Commit.
 
 ### Task 7: End-to-end verification

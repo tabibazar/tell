@@ -1,6 +1,7 @@
 build/
 sdkconfig
 sdkconfig.old
-mac/esp32-say
+mac/tell
 host_tests/test_textwrap
 host_tests/test_font
+dist/

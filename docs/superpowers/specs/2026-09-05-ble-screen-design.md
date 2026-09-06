@@ -165,11 +165,11 @@ explicit test.
 ## Mac client
 
 A single Swift file compiled with the installed `/usr/bin/swiftc` into a
-standalone `esp32-say` binary. No runtime dependencies.
+standalone `tell` binary. No runtime dependencies.
 
 ```
-esp32-say "some text"     # argument
-echo "some text" | esp32-say   # stdin
+tell "some text"     # argument
+echo "some text" | tell   # stdin
 ```
 
 Uses CoreBluetooth: scan for the service UUID, connect, discover the RX
@@ -203,7 +203,7 @@ Built in dependency order, so each step rests on something already trusted.
    gap, orientation, and colours before any BLE code exists.
 3. **`ble_uart`** — drive from LightBlue or any generic BLE app, so a failure is
    unambiguously firmware-side rather than Swift-side.
-4. **End-to-end** — `esp32-say`, with the serial watcher running for the
+4. **End-to-end** — `tell`, with the serial watcher running for the
    firmware's own view. Includes a message long enough to force MTU chunking.
 
 ## Build and flash
