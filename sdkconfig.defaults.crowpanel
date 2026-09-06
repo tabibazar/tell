@@ -1,0 +1,13 @@
+CONFIG_SCREEN_BOARD_CROWPANEL_7=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions-crowpanel.csv"
+
+# This board has a CH340 bridge on UART0, not native USB, so the console and
+# the reset behaviour are the opposite of the Feather's.
+CONFIG_ESP_CONSOLE_UART_DEFAULT=y
+CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=n
+
+# ESP32-S3-WROOM-1-N4R8: 8 MB octal PSRAM. The 750 KB framebuffer needs it.
+CONFIG_SPIRAM=y
+CONFIG_SPIRAM_MODE_OCT=y
+CONFIG_SPIRAM_SPEED_80M=y
+CONFIG_SPIRAM_USE_MALLOC=y

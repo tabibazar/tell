@@ -1,0 +1,17 @@
+menu "Screen board"
+
+choice SCREEN_BOARD
+    prompt "Target board"
+    default SCREEN_BOARD_FEATHER_S3_TFT
+    help
+        Selects the display driver. Everything else is board independent.
+
+config SCREEN_BOARD_FEATHER_S3_TFT
+    bool "Adafruit Feather ESP32-S3 TFT (ST7789 240x135, SPI)"
+
+config SCREEN_BOARD_CROWPANEL_7
+    bool "Elecrow CrowPanel 7.0 HMI (800x480, 16-bit RGB)"
+
+endchoice
+
+endmenu

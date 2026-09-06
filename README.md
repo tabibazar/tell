@@ -30,13 +30,14 @@ ESP32-S3 radio does not implement it.)
 
 ## Hardware
 
-| | |
-|---|---|
-| Board | Adafruit Feather ESP32-S3 TFT |
-| Display | ST7789, 240×135, 1.14" IPS |
-| Connection | Native USB (no USB-serial bridge chip) |
+| Board | Display | Layout | Status |
+|---|---|---|---|
+| Adafruit Feather ESP32-S3 TFT | ST7789 240×135, SPI | 20 × 5 | Verified |
+| Elecrow CrowPanel 7.0" HMI | 800×480, 16-bit RGB | 33 × 10 | Compiles, **untested on hardware** |
 
-No wiring or soldering — the display is part of the board.
+No wiring or soldering — the display is part of the board. Select the target
+with `idf.py menuconfig` under *Screen board*; see [docs/porting.md](docs/porting.md)
+for the CrowPanel build and its many inverted gotchas.
 
 ## Install the client
 
@@ -102,7 +103,8 @@ alone:
 |---|---|
 | `ble_uart` | NimBLE peripheral, GATT server, message reassembly |
 | `textwrap` | Word wrap. Pure C, no hardware — this is where the unit tests live |
-| `display`  | SPI, ST7789, framebuffer, glyph rendering |
+| `canvas`   | Framebuffer and glyph rendering. Panel independent, host tested |
+| `display_*`| Panel bring-up and blitting. One file per board |
 | `timecalc` | Seconds-since-midnight arithmetic. Also pure, also tested |
 
 `main` wires them together. Nothing above `display` knows about SPI or pin

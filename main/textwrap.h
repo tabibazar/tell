@@ -6,6 +6,9 @@
 /* Maximum columns any caller may request. Sizes the caller's line buffer. */
 #define TW_MAX_COLS 64
 
+/* Maximum lines any caller may request. Sizes the caller's line buffer. */
+#define TW_MAX_LINES 16
+
 /*
  * Greedy word-wrap of `s` into at most `max_lines` lines of at most `cols`
  * columns. Lines are written NUL-terminated into `out`.

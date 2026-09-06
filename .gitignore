@@ -8,3 +8,7 @@ host_tests/test_timecalc
 *.dSYM/
 dist/
 firmware-backup/
+build-crowpanel/
+sdkconfig.crowpanel
+sdkconfig.crowpanel.old
+host_tests/test_canvas
