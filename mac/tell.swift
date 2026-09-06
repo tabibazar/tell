@@ -2,7 +2,7 @@
 //
 //   tell "some text"
 //   echo "some text" | tell
-//   tell --device peppa "some text"
+//   tell --device big "some text"
 //
 // Build: swiftc -O mac/tell.swift -o mac/tell
 
