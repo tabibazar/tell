@@ -16,7 +16,10 @@
 #include <string.h>
 
 #define DEVICE_NAME    CONFIG_SCREEN_DEVICE_NAME
-#define MSG_MAX        512
+/* A screenful of dense text exceeds the 512-byte ATT attribute limit, but
+   that limit applies per write, not per message: longer messages simply
+   arrive as more writes and are reassembled here. */
+#define MSG_MAX        2048
 /* A message is complete after this much quiet. It must exceed the BLE
    connection interval, or a long message split across several writes gets
    flushed mid-way and lands on screen as fragments. macOS negotiates a fast

@@ -36,7 +36,7 @@ visible `...`, so nothing is silently dropped. Newlines force line breaks.
 Non-ASCII characters show as `?`.
 
 When no message is showing, the board displays a clock. A message holds the
-screen for 30 seconds, then the clock returns.
+screen for 5 minutes, then the clock returns.
 
 ## The clock
 

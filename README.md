@@ -83,7 +83,7 @@ word longer than a line is broken mid-word. Content past five lines is truncated
 with a visible `...`, so text is never silently dropped. `\n` forces a break.
 Bytes outside printable ASCII render as `?`.
 
-A message holds the screen for 30 seconds, then the clock returns.
+A message holds the screen for 5 minutes, then the clock returns.
 
 ## The clock
 
@@ -128,7 +128,7 @@ firmware bugs apart from client bugs.
 | | UUID | |
 |---|---|---|
 | Service | `6E400001-B5A3-F393-E0A9-E50E24DCCA9E` | |
-| Text | `6E400002-B5A3-F393-E0A9-E50E24DCCA9E` | write, UTF-8, max 512 bytes |
+| Text | `6E400002-B5A3-F393-E0A9-E50E24DCCA9E` | write, UTF-8, max 2048 bytes |
 | Clock | `6E400004-B5A3-F393-E0A9-E50E24DCCA9E` | write, 4 bytes LE, seconds since local midnight |
 
 No pairing or bonding: it displays text on a desk, and pairing would add a setup

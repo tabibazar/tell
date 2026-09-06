@@ -11,8 +11,9 @@
 
 static const char *TAG = "main";
 
-/* A message owns the screen for this long, then the clock takes it back. */
-#define MESSAGE_HOLD_US (30 * 1000000LL)
+/* A message owns the screen for this long, then the clock takes it back.
+   Long enough to read a screenful of stats, not just a one-line note. */
+#define MESSAGE_HOLD_US (5 * 60 * 1000000LL)
 #define TICK_MS 200
 
 static uint32_t s_base_secs;      /* seconds since local midnight at sync */
