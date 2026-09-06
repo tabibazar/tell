@@ -11,9 +11,11 @@
 #include "services/gap/ble_svc_gap.h"
 #include "services/gatt/ble_svc_gatt.h"
 
+#include "sdkconfig.h"
+
 #include <string.h>
 
-#define DEVICE_NAME    "ESP32-Screen"
+#define DEVICE_NAME    CONFIG_SCREEN_DEVICE_NAME
 #define MSG_MAX        512
 /* A message is complete after this much quiet. It must exceed the BLE
    connection interval, or a long message split across several writes gets
@@ -169,7 +171,7 @@ static void advertise(void)
     rc = ble_gap_adv_start(s_addr_type, NULL, BLE_HS_FOREVER, &adv,
                            gap_event, NULL);
     if (rc != 0) ESP_LOGE(TAG, "adv_start rc=%d", rc);
-    else ESP_LOGI(TAG, "advertising as " DEVICE_NAME);
+    else ESP_LOGI(TAG, "advertising as %s", DEVICE_NAME);
 }
 
 static void on_sync(void)

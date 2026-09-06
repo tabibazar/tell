@@ -2,9 +2,8 @@
 
 Writes text to the ESP32 desk display over Bluetooth LE.
 
-The board is already flashed and needs no pairing or setup — this single binary
-is everything required. It talks to whichever board is in range advertising the
-service, so nothing is tied to a particular Mac.
+The boards are already flashed and need no pairing or setup — this single binary
+is everything required, on any Mac. Nothing is tied to a particular machine.
 
 ## Install
 
@@ -32,8 +31,8 @@ tell ""                      # clear, returning to the clock
 tell --sync                  # sync the clock, leave the display alone
 ```
 
-The display is **20 characters wide by 5 lines**. Longer text wraps; past five
-lines it is truncated with a visible `...`. Newlines force line breaks.
+Longer text wraps at word boundaries; past the last line it is truncated with a
+visible `...`, so nothing is silently dropped. Newlines force line breaks.
 Non-ASCII characters show as `?`.
 
 When no message is showing, the board displays a clock. A message holds the
@@ -56,6 +55,7 @@ only against system frameworks and the Swift runtime that ships with macOS.
 
 ## Troubleshooting
 
-`no ESP32-Screen found within 10s` — the board is unpowered, out of range, or
-already connected to another machine. Only one Mac can be connected at a time,
-though the connection only lasts a second or so per message.
+`no device named X found within 10s` — check the spelling with `tell --list`.
+Otherwise the board is unpowered, out of range, or already connected to another
+machine. Only one Mac can hold a connection at a time, though each message
+holds it for barely a second, so several Macs can share the boards in practice.
