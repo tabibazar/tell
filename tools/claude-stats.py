@@ -172,6 +172,22 @@ def render(stats, cols=64, rows=20):
     return [head] + middle + [summary[:cols], "+" + "-" * (cols - 2) + "+"]
 
 
+def render_data(stats, section):
+    """Marker-prefixed lines for the firmware to parse."""
+    lines = []
+    if section == "stats":
+        lines.append("!stats")
+        ranked = sorted(stats["models"].items(),
+                        key=lambda kv: -(kv[1]["cread"] + kv[1]["out"]))
+        for name, m in ranked[:8]:
+            lines.append("m %s %d %d" % (name[:15], m["out"], m["cread"]))
+    else:
+        lines.append("!daily")
+        for day, total in sorted(stats["daily"].items())[-14:]:
+            lines.append("d %s %d" % (day[5:], total))
+    return lines
+
+
 def self_test():
     """The invariant that matters on a fixed screen: nothing overflows."""
     failures = 0
@@ -216,12 +232,18 @@ def main():
     ap.add_argument("--cols", type=int, default=64)
     ap.add_argument("--rows", type=int, default=20)
     ap.add_argument("--self-test", action="store_true")
+    ap.add_argument("--format", choices=("ascii", "data"), default="ascii")
+    ap.add_argument("--section", choices=("stats", "daily"), default="stats")
     a = ap.parse_args()
 
     if a.self_test:
         sys.exit(self_test())
 
-    print("\n".join(render(collect(), a.cols, a.rows)))
+    stats = collect()
+    if a.format == "data":
+        print("\n".join(render_data(stats, a.section)))
+    else:
+        print("\n".join(render(stats, a.cols, a.rows)))
 
 
 if __name__ == "__main__":

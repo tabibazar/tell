@@ -10,8 +10,10 @@ void canvas_init(canvas_t *c, uint16_t *fb, int w, int h, int scale)
     c->w = w;
     c->h = h;
     c->scale = scale;
-    c->cols = w / (FONT_W * scale);
-    c->rows = h / (FONT_H * scale);
+    c->cell_w = FONT_W * scale;
+    c->cell_h = FONT_H * scale;
+    c->cols = w / c->cell_w;
+    c->rows = h / c->cell_h;
     if (c->cols > TW_MAX_COLS) c->cols = TW_MAX_COLS;
 }
 

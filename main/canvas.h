@@ -12,8 +12,9 @@
 typedef struct {
     uint16_t *fb;
     int w, h;
-    int scale;      /* integer font magnification */
-    int cols, rows; /* character cells available at that scale */
+    int scale;         /* integer font magnification */
+    int cols, rows;    /* character cells available at that scale */
+    int cell_w, cell_h; /* pixel size of one cell, so callers need no font.h */
 } canvas_t;
 
 #define CANVAS_FG 0xFFFF

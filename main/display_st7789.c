@@ -98,7 +98,9 @@ esp_err_t display_init(void)
     return ESP_OK;
 }
 
-static void blit(void)
+canvas_t *display_canvas(void) { return &s_canvas; }
+
+void display_blit(void)
 {
     esp_lcd_panel_draw_bitmap(s_panel, 0, 0, LCD_W, LCD_H, s_fb);
 }
@@ -107,12 +109,12 @@ void display_show_text(const char *utf8)
 {
     if (s_fb == NULL) return;
     canvas_text(&s_canvas, utf8);
-    blit();
+    display_blit();
 }
 
 void display_show_big(const char *text)
 {
     if (s_fb == NULL) return;
     canvas_big(&s_canvas, text);
-    blit();
+    display_blit();
 }
