@@ -92,10 +92,11 @@ operation. The buffer is 240 × 135 × 2 = **64,800 bytes** (~63 KB), which fits
 partial updates visible; one blit per message removes flicker and keeps the draw
 path simple.
 
-The panel needs a gap of **(40, 53)** — a 240×135 ST7789 sits inside the
-controller's 240×320 address space. The gap swaps when rotation swaps X and Y.
-If this is wrong the image appears shifted or wrapped by a few dozen pixels;
-confirm on hardware rather than trusting the constant.
+The panel needs `set_gap(40, 53)` — a 240×135 ST7789 sits inside the
+controller's 240×320 address space. With `swap_xy(true)` the 240px axis maps to
+the controller's 320-long axis (offset 40) and the 135px axis to the 240-long
+axis (offset 53). **Verified on hardware 2026-09-06**; the reversed `(53, 40)`
+clips roughly 13px off the top row.
 
 ### `textwrap`
 

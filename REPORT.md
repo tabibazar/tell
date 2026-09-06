@@ -16,32 +16,15 @@ mac/esp32-say ""                   # clears the screen
 
 If `mac/esp32-say` is missing, rebuild it with `./mac/build.sh`.
 
-## What I could not verify — please check this first
+## Display: verified on hardware 2026-09-06
 
-**I never saw the screen.** Serial proves `display_init()` returned `ESP_OK`, which
-means SPI and the ST7789 *accepted* their configuration — not that the image is
-oriented or positioned correctly. You reported the first version was upside down;
-I flipped it, but I am trusting the fix rather than observing it.
+Orientation and geometry are now confirmed correct by eye:
+`mirror(true, false)` with `swap_xy(true)`, and `set_gap(40, 53)`. The reversed
+gap `(53, 40)` clipped ~13px off the top row -- with `swap_xy` the 240px axis
+takes the 320-long axis offset (40) and the 135px axis takes the 240-long one
+(53). The text block is also centred in the leftover 15px of height.
 
-The message on screen right now is an orientation test:
-
-```
-^ TOP font 12x24
-BLE + display OK
-all tests passed
-see REPORT.md
-v BOTTOM  -Claude
-```
-
-- **`^ TOP` on top** → orientation is correct, nothing to do.
-- **`v BOTTOM` on top** → still 180° out. In `main/display.c`, change
-  `esp_lcd_panel_mirror(s_panel, true, false)` back to `(false, true)`.
-- **Mirrored / readable in a mirror** → flip only one axis: `(true, true)` or
-  `(false, false)`.
-- **Shifted or wrapped by a few dozen pixels** → the offset, not the rotation:
-  `esp_lcd_panel_set_gap(s_panel, 53, 40)`, try `(40, 53)` or `(52, 40)`.
-
-Rebuild and flash after any change:
+To rebuild and flash after any change:
 
 ```sh
 . tools/idf-env.sh && idf.py build

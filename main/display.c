@@ -31,6 +31,11 @@
 _Static_assert(LCD_W / FONT_W >= DISPLAY_COLS, "font too wide for DISPLAY_COLS");
 _Static_assert(LCD_H / FONT_H >= DISPLAY_ROWS, "font too tall for DISPLAY_ROWS");
 
+/* Centre the text block in the leftover pixels. Without this the first row
+   starts at y=0, where a small panel-offset error clips the tops of glyphs. */
+#define MARGIN_X ((LCD_W - DISPLAY_COLS * FONT_W) / 2)
+#define MARGIN_Y ((LCD_H - DISPLAY_ROWS * FONT_H) / 2)
+
 /* 0xFFFF and 0x0000 are byte-order agnostic, so white-on-black needs no swap. */
 #define COLOR_FG 0xFFFF
 #define COLOR_BG 0x0000
@@ -84,11 +89,11 @@ esp_err_t display_init(void)
     ESP_ERROR_CHECK(esp_lcd_panel_reset(s_panel));
     ESP_ERROR_CHECK(esp_lcd_panel_init(s_panel));
     ESP_ERROR_CHECK(esp_lcd_panel_invert_color(s_panel, true));
-    /* Landscape: swapping X/Y also swaps the panel's offset within the
-       controller's 240x320 address space, hence (53, 40) not (40, 53). */
+    /* Landscape: with swap_xy the 240px axis maps to the controller's 320-long
+       axis (offset 40) and the 135px axis to the 240-long one (offset 53). */
     ESP_ERROR_CHECK(esp_lcd_panel_swap_xy(s_panel, true));
     ESP_ERROR_CHECK(esp_lcd_panel_mirror(s_panel, true, false));
-    ESP_ERROR_CHECK(esp_lcd_panel_set_gap(s_panel, 53, 40));
+    ESP_ERROR_CHECK(esp_lcd_panel_set_gap(s_panel, 40, 53));
     ESP_ERROR_CHECK(esp_lcd_panel_disp_on_off(s_panel, true));
 
     s_fb = heap_caps_malloc(LCD_W * LCD_H * sizeof(uint16_t), MALLOC_CAP_DMA);
@@ -109,7 +114,7 @@ static void draw_glyph(char ch, size_t col, size_t row)
     const uint8_t *glyph = font_glyphs[(unsigned char)ch - FONT_FIRST];
 
     for (int y = 0; y < FONT_H; y++) {
-        int py = (int)row * FONT_H + y;
+        int py = MARGIN_Y + (int)row * FONT_H + y;
         if (py >= LCD_H) return;
 
         /* Each row is FONT_STRIDE bytes, big-endian, pixel 0 the highest bit. */
@@ -120,7 +125,7 @@ static void draw_glyph(char ch, size_t col, size_t row)
 
         for (int x = 0; x < FONT_W; x++) {
             if (!((bits >> (FONT_W - 1 - x)) & 1)) continue;
-            int px = (int)col * FONT_W + x;
+            int px = MARGIN_X + (int)col * FONT_W + x;
             if (px < LCD_W) s_fb[py * LCD_W + px] = COLOR_FG;
         }
     }
