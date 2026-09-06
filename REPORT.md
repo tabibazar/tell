@@ -1,5 +1,7 @@
 # Overnight report — 2026-09-05
 
+*Display geometry confirmed on hardware 2026-09-06.*
+
 ## What the board runs now
 
 Your own firmware, built from this repo: a BLE peripheral that displays text you
@@ -89,6 +91,6 @@ liveness is observable at any time.
 ## Not done
 
 The plan's Task 7 called for a visual check of wrapping and the `...` truncation
-marker on the panel. I verified those at the wrap layer with unit tests and
-confirmed the bytes reach the firmware, but the on-screen result is unconfirmed
-for the same reason as orientation: I cannot see the display.
+marker on the panel. Both are verified at the wrap layer by unit tests, and the
+bytes are confirmed reaching the firmware, but neither has been eyeballed on the
+screen. Orientation and geometry, which were in this list, are now confirmed.
