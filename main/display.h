@@ -14,4 +14,8 @@ esp_err_t display_init(void);
    A NULL or empty string clears the screen. */
 void display_show_text(const char *utf8);
 
+/* Renders a short single line as large as it will fit, centred. Used for the
+   clock, which must be readable across a room. */
+void display_show_big(const char *text);
+
 #endif /* DISPLAY_H */

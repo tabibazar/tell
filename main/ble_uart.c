@@ -20,6 +20,7 @@
 static const char *TAG = "ble_uart";
 
 static ble_uart_cb_t s_cb;
+static ble_uart_time_cb_t s_time_cb;
 static uint8_t s_addr_type;
 static char s_buf[MSG_MAX + 1];
 static size_t s_len;
@@ -33,6 +34,10 @@ static const ble_uuid128_t svc_uuid = BLE_UUID128_INIT(
 static const ble_uuid128_t rx_uuid = BLE_UUID128_INIT(
     0x9E, 0xCA, 0xDC, 0x24, 0x0E, 0xE5, 0xA9, 0xE0,
     0x93, 0xF3, 0xA3, 0xB5, 0x02, 0x00, 0x40, 0x6E);
+/* ...0004: clock sync, four bytes little-endian, seconds since local midnight. */
+static const ble_uuid128_t time_uuid = BLE_UUID128_INIT(
+    0x9E, 0xCA, 0xDC, 0x24, 0x0E, 0xE5, 0xA9, 0xE0,
+    0x93, 0xF3, 0xA3, 0xB5, 0x04, 0x00, 0x40, 0x6E);
 
 static void advertise(void);
 
@@ -67,6 +72,28 @@ static int gatt_rx(uint16_t conn_handle, uint16_t attr_handle,
     return 0;
 }
 
+static int gatt_time(uint16_t conn_handle, uint16_t attr_handle,
+                     struct ble_gatt_access_ctxt *ctxt, void *arg)
+{
+    (void)conn_handle; (void)attr_handle; (void)arg;
+
+    if (ctxt->op != BLE_GATT_ACCESS_OP_WRITE_CHR) return BLE_ATT_ERR_UNLIKELY;
+    if (OS_MBUF_PKTLEN(ctxt->om) != 4) return BLE_ATT_ERR_INVALID_ATTR_VALUE_LEN;
+
+    uint8_t raw[4];
+    uint16_t copied = 0;
+    ble_hs_mbuf_to_flat(ctxt->om, raw, sizeof raw, &copied);
+    if (copied != 4) return BLE_ATT_ERR_UNLIKELY;
+
+    uint32_t secs = (uint32_t)raw[0] | ((uint32_t)raw[1] << 8)
+                  | ((uint32_t)raw[2] << 16) | ((uint32_t)raw[3] << 24);
+    if (secs >= 86400u) return BLE_ATT_ERR_INVALID_ATTR_VALUE_LEN;
+
+    ESP_LOGI(TAG, "clock synced to %u s past midnight", (unsigned)secs);
+    if (s_time_cb) s_time_cb(secs);
+    return 0;
+}
+
 static const struct ble_gatt_svc_def gatt_svcs[] = {
     {
         .type = BLE_GATT_SVC_TYPE_PRIMARY,
@@ -76,6 +103,11 @@ static const struct ble_gatt_svc_def gatt_svcs[] = {
                 .uuid = &rx_uuid.u,
                 .access_cb = gatt_rx,
                 .flags = BLE_GATT_CHR_F_WRITE | BLE_GATT_CHR_F_WRITE_NO_RSP,
+            },
+            {
+                .uuid = &time_uuid.u,
+                .access_cb = gatt_time,
+                .flags = BLE_GATT_CHR_F_WRITE,
             },
             { 0 },
         },
@@ -150,9 +182,10 @@ static void host_task(void *param)
     nimble_port_freertos_deinit();
 }
 
-esp_err_t ble_uart_start(ble_uart_cb_t on_message)
+esp_err_t ble_uart_start(ble_uart_cb_t on_message, ble_uart_time_cb_t on_time)
 {
     s_cb = on_message;
+    s_time_cb = on_time;
 
     esp_err_t err = nvs_flash_init();
     if (err == ESP_ERR_NVS_NO_FREE_PAGES || err == ESP_ERR_NVS_NEW_VERSION_FOUND) {

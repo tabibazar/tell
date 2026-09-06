@@ -10,6 +10,7 @@ import CoreBluetooth
 
 let serviceUUID = CBUUID(string: "6E400001-B5A3-F393-E0A9-E50E24DCCA9E")
 let rxUUID      = CBUUID(string: "6E400002-B5A3-F393-E0A9-E50E24DCCA9E")
+let timeUUID    = CBUUID(string: "6E400004-B5A3-F393-E0A9-E50E24DCCA9E")
 let maxMessage  = 512
 let timeout     = 10.0
 
@@ -22,9 +23,21 @@ func fail(_ msg: String) -> Never {
     exit(1)
 }
 
+/// Seconds since local midnight. Sending this rather than a Unix timestamp
+/// means the firmware never has to know about timezones.
+func secondsSinceLocalMidnight() -> UInt32 {
+    let now = Date()
+    let midnight = Calendar.current.startOfDay(for: now)
+    return UInt32(now.timeIntervalSince(midnight))
+}
+
+let syncOnly = CommandLine.arguments.dropFirst().first == "--sync"
+
 func readMessage() -> Data {
-    let args = Array(CommandLine.arguments.dropFirst())
+    var args = Array(CommandLine.arguments.dropFirst())
+    if args.first == "--sync" { args.removeFirst() }
     var text: String
+    if syncOnly { return Data() }
     if args.isEmpty {
         let raw = FileHandle.standardInput.readDataToEndOfFile()
         text = String(data: raw, encoding: .utf8) ?? ""
@@ -92,7 +105,7 @@ final class Client: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate {
         guard let svc = p.services?.first(where: { $0.uuid == serviceUUID }) else {
             fail("Nordic UART service not found on device")
         }
-        p.discoverCharacteristics([rxUUID], for: svc)
+        p.discoverCharacteristics([rxUUID, timeUUID], for: svc)
     }
 
     func peripheral(_ p: CBPeripheral,
@@ -102,25 +115,40 @@ final class Client: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate {
             fail("RX characteristic not found")
         }
 
-        // An empty payload is a deliberate "clear the screen".
-        if payload.isEmpty {
-            outstanding = 1
-            p.writeValue(Data(), for: chr, type: .withResponse)
-            return
+        // Re-sync the clock on every connect. The board has no RTC, so this is
+        // what keeps it accurate; a missing characteristic is not fatal, since
+        // older firmware still displays text fine.
+        var writes: [(Data, CBCharacteristic)] = []
+        if let timeChr = service.characteristics?.first(where: { $0.uuid == timeUUID }) {
+            var secs = secondsSinceLocalMidnight().littleEndian
+            let stamp = Data(bytes: &secs, count: 4)
+            writes.append((stamp, timeChr))
+        } else if syncOnly {
+            fail("clock characteristic not found -- is the firmware up to date?")
         }
 
-        let limit = max(20, p.maximumWriteValueLength(for: .withResponse))
-        var offset = 0
-        var chunks: [Data] = []
-        while offset < payload.count {
-            let end = min(offset + limit, payload.count)
-            chunks.append(payload.subdata(in: offset..<end))
-            offset = end
+        if !syncOnly {
+            if payload.isEmpty {
+                // An empty payload is a deliberate "clear", which the firmware
+                // treats as "return to the clock".
+                writes.append((Data(), chr))
+            } else {
+                let limit = max(20, p.maximumWriteValueLength(for: .withResponse))
+                var offset = 0
+                while offset < payload.count {
+                    let end = min(offset + limit, payload.count)
+                    writes.append((payload.subdata(in: offset..<end), chr))
+                    offset = end
+                }
+            }
         }
-        outstanding = chunks.count
-        for chunk in chunks {
-            p.writeValue(chunk, for: chr, type: .withResponse)
+
+        outstanding = writes.count
+        for (data, target) in writes {
+            p.writeValue(data, for: target, type: .withResponse)
         }
+        return
+
     }
 
     func peripheral(_ p: CBPeripheral, didWriteValueFor chr: CBCharacteristic,

@@ -108,15 +108,14 @@ esp_err_t display_init(void)
     return ESP_OK;
 }
 
-static void draw_glyph(char ch, size_t col, size_t row)
+/* Draws one glyph at an absolute pixel position, scaled by an integer factor.
+   Scaling by pixel replication keeps the font table single-source. */
+static void draw_glyph_at(char ch, int ox, int oy, int scale)
 {
     if (ch < FONT_FIRST || ch > FONT_LAST) ch = '?';
     const uint8_t *glyph = font_glyphs[(unsigned char)ch - FONT_FIRST];
 
     for (int y = 0; y < FONT_H; y++) {
-        int py = MARGIN_Y + (int)row * FONT_H + y;
-        if (py >= LCD_H) return;
-
         /* Each row is FONT_STRIDE bytes, big-endian, pixel 0 the highest bit. */
         uint32_t bits = 0;
         for (int b = 0; b < FONT_STRIDE; b++)
@@ -125,10 +124,21 @@ static void draw_glyph(char ch, size_t col, size_t row)
 
         for (int x = 0; x < FONT_W; x++) {
             if (!((bits >> (FONT_W - 1 - x)) & 1)) continue;
-            int px = MARGIN_X + (int)col * FONT_W + x;
-            if (px < LCD_W) s_fb[py * LCD_W + px] = COLOR_FG;
+            for (int sy = 0; sy < scale; sy++) {
+                int py = oy + y * scale + sy;
+                if (py < 0 || py >= LCD_H) continue;
+                for (int sx = 0; sx < scale; sx++) {
+                    int px = ox + x * scale + sx;
+                    if (px >= 0 && px < LCD_W) s_fb[py * LCD_W + px] = COLOR_FG;
+                }
+            }
         }
     }
+}
+
+static void clear_fb(void)
+{
+    for (int i = 0; i < LCD_W * LCD_H; i++) s_fb[i] = COLOR_BG;
 }
 
 void display_show_text(const char *utf8)
@@ -139,10 +149,34 @@ void display_show_text(const char *utf8)
     size_t n = textwrap(utf8, DISPLAY_COLS, DISPLAY_ROWS, lines);
 
     /* Render off-screen, then blit once: no partial frames, no flicker. */
-    for (int i = 0; i < LCD_W * LCD_H; i++) s_fb[i] = COLOR_BG;
+    clear_fb();
     for (size_t row = 0; row < n; row++)
         for (size_t col = 0; lines[row][col] != '\0'; col++)
-            draw_glyph(lines[row][col], col, row);
+            draw_glyph_at(lines[row][col],
+                          MARGIN_X + (int)col * FONT_W,
+                          MARGIN_Y + (int)row * FONT_H, 1);
+
+    esp_lcd_panel_draw_bitmap(s_panel, 0, 0, LCD_W, LCD_H, s_fb);
+}
+
+void display_show_big(const char *text)
+{
+    if (s_fb == NULL || text == NULL) return;
+
+    int len = 0;
+    while (text[len] != '\0' && len < DISPLAY_COLS) len++;
+
+    /* Largest whole-integer scale that still fits, so the clock fills the panel. */
+    int scale = 1;
+    while ((scale + 1) * FONT_W * len <= LCD_W && (scale + 1) * FONT_H <= LCD_H)
+        scale++;
+
+    int ox = (LCD_W - len * FONT_W * scale) / 2;
+    int oy = (LCD_H - FONT_H * scale) / 2;
+
+    clear_fb();
+    for (int i = 0; i < len; i++)
+        draw_glyph_at(text[i], ox + i * FONT_W * scale, oy, scale);
 
     esp_lcd_panel_draw_bitmap(s_panel, 0, 0, LCD_W, LCD_H, s_fb);
 }
