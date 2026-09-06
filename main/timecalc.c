@@ -24,3 +24,13 @@ void timecalc_format(uint32_t secs, char out[6])
     out[4] = (char)('0' + m % 10);
     out[5] = '\0';
 }
+
+void timecalc_format_hms(uint32_t secs, char out[9])
+{
+    secs %= SECS_PER_DAY;
+    timecalc_format(secs, out);
+    out[5] = ':';
+    out[6] = (char)('0' + (secs % 60u) / 10u);
+    out[7] = (char)('0' + (secs % 60u) % 10u);
+    out[8] = '\0';
+}
