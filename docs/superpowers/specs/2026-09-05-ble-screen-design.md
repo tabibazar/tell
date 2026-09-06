@@ -156,7 +156,7 @@ explicit test.
   exactly: **30 columns × 8 rows**, no partial cells.
 - Text wraps at 30 columns.
 - If wrapping yields more than 8 lines, the first 8 are shown and the final cell
-  is replaced with `…`. Truncation is always visible — silently dropping text
+  is replaced with `...` (three ASCII dots; the font is ASCII-only). Truncation is always visible — silently dropping text
   would make the display untrustworthy.
 - White on black. Not configurable; add it when it is actually wanted.
 
@@ -185,7 +185,7 @@ otherwise be missed.
 | Panel init fails | Log over serial and halt. There is no way to report a display fault on the display. |
 | BLE stack fails to start | Log over serial, show `BLE FAILED` on the panel. |
 | Message longer than 512 bytes | Client truncates and warns on stderr. |
-| Message wraps past 8 lines | Firmware shows the first 8 lines, ends with `…`. |
+| Message wraps past 8 lines | Firmware shows the first 8 lines, ends with `...`. |
 | Empty message | Clears the screen. Explicitly allowed; it is how you blank the display. |
 | Invalid UTF-8 | Non-renderable bytes become `?`. Never drop the whole message. |
 | Device not found | Client exits non-zero after 10 s with a message on stderr. |
