@@ -55,8 +55,13 @@ typedef struct {
     int model_count;
     ud_day_t days[UD_MAX_DAYS];
     int day_count;
-    int host_count;          /* machines contributing to this view */
-    char host[UD_HOST_MAX + 1];  /* the filtered machine, empty when all */
+
+    /* Every machine's totals, and each machine's share of them, so a bar can
+       be drawn stacked rather than needing a filter to see the split. */
+    int host_count;
+    char host_names[UD_MAX_HOSTS][UD_HOST_MAX + 1];
+    uint64_t model_by_host[UD_MAX_MODELS][UD_MAX_HOSTS];
+    uint64_t day_by_host[UD_MAX_DAYS][UD_MAX_HOSTS];
 } ud_view_t;
 
 typedef enum { UD_NONE = 0, UD_STATS, UD_DAILY, UD_CLOCK, UD_TODAY } ud_kind_t;
@@ -70,14 +75,6 @@ ud_kind_t usagedata_parse(usagedata_t *d, const char *payload);
 /* Sums every machine into one view: models added by name, days by label,
    both ordered largest and latest first respectively. */
 void usagedata_merge(const usagedata_t *d, ud_view_t *out);
-
-/* As usagedata_merge, but restricted to one machine. `which` counts only
-   machines that have sent something; -1 means all of them. */
-void usagedata_merge_host(const usagedata_t *d, ud_view_t *out, int which);
-
-/* The index of a named machine, or -1 when it has sent nothing yet. Used to
-   turn a remembered name back into a filter after a restart. */
-int usagedata_host_index(const usagedata_t *d, const char *name);
 
 /* How many machines have sent anything, and the name of the nth. */
 int usagedata_hosts(const usagedata_t *d);

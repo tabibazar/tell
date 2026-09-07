@@ -14,42 +14,6 @@ static void human(uint64_t n, char *out, int size)
     else snprintf(out, size, "%llu", (unsigned long long)n);
 }
 
-/* The machine-filter button. Drawn two rows tall and hit-tested over three,
-   because one row is 24px -- about 4mm on this panel, far smaller than a
-   fingertip, so most taps missed it and advanced the page instead. */
-#define BUTTON_COLS 12
-#define BUTTON_ROWS 2
-#define BUTTON_HIT_ROWS 3
-
-bool views_button_hit(canvas_t *c, int x, int y)
-{
-    return y < BUTTON_HIT_ROWS * c->cell_h
-        && x > c->w - (BUTTON_COLS + 1) * c->cell_w;
-}
-
-/* Draws the button showing which machine's tokens are on screen. It is drawn
-   as a raised block with a border so it reads as pressable, rather than as a
-   label someone has to guess is interactive. */
-static void button(canvas_t *c, const ud_view_t *d)
-{
-    int bw = BUTTON_COLS * c->cell_w;
-    int bh = BUTTON_ROWS * c->cell_h;
-    int bx = c->w - bw;
-
-    canvas_fill_rect(c, bx, 0, bw, bh, PAL_A1);
-    canvas_fill_rect(c, bx, 0, bw, 3, pal_lighten(PAL_A1));
-    /* A shadow under the block, so it reads as raised and its full height is
-       obvious -- the tappable area is what people misjudge. */
-    canvas_fill_rect(c, bx, bh, bw, 2, PAL_DIM);
-
-    const char *label = d->host[0] ? d->host : "ALL MACS";
-    int len = (int)strlen(label);
-    if (len > BUTTON_COLS - 2) len = BUTTON_COLS - 2;
-    int col = bx / c->cell_w + (BUTTON_COLS - len) / 2;
-    canvas_puts(c, col, 0, "showing", PAL_BG);
-    canvas_puts(c, col, 1, label, PAL_BG);
-}
-
 static void title(canvas_t *c, const char *left, const char *right)
 {
     canvas_fill_rect(c, 0, 0, c->w, c->cell_h, PAL_TITLE_BG);
@@ -58,7 +22,7 @@ static void title(canvas_t *c, const char *left, const char *right)
 
     /* Sit left of the button, and drop the note rather than overlap the
        heading if there is no room. */
-    int col = c->cols - BUTTON_COLS - 2 - (int)strlen(right);
+    int col = c->cols - 1 - (int)strlen(right);
     if (col > (int)strlen(left) + 2)
         canvas_puts(c, col, 0, right, PAL_FG);
 }
@@ -93,7 +57,6 @@ void views_stats(canvas_t *c, const ud_view_t *d, float t)
         snprintf(head, sizeof head, "tokens");
     canvas_clear(c);
     title(c, "USAGE BY MODEL", head);
-    button(c, d);
 
     if (d->model_count == 0) {
         canvas_puts(c, 1, 2, "no data yet -- run tools/push-stats.sh", PAL_DIM);
@@ -154,8 +117,7 @@ void views_daily(canvas_t *c, const ud_view_t *d, float t)
 
     if (d->day_count == 0) {
         title(c, "TOKENS PER DAY", NULL);
-        button(c, d);
-        canvas_puts(c, 1, 2, "no data yet -- run tools/push-stats.sh", PAL_DIM);
+            canvas_puts(c, 1, 2, "no data yet -- run tools/push-stats.sh", PAL_DIM);
         return;
     }
 
@@ -168,7 +130,6 @@ void views_daily(canvas_t *c, const ud_view_t *d, float t)
         snprintf(range, sizeof range, "%s to %s",
                  d->days[0].label, d->days[d->day_count - 1].label);
     title(c, "TOKENS PER DAY", range);
-    button(c, d);
 
     uint64_t peak = 1, grand = 0;
     int peak_i = 0;
@@ -211,9 +172,23 @@ void views_daily(canvas_t *c, const ud_view_t *d, float t)
         else if (i == peak_i) colour = PAL_PEAK;
 
         int bx = gutter + i * slot + 2;
-        canvas_fill_rect(c, bx, bottom - h, bar_w, h, colour);
-        if (h >= 3)
-            canvas_fill_rect(c, bx, bottom - h, bar_w, 2, pal_lighten(colour));
+
+        /* Stack the machines up the bar, newest colour on top. */
+        int drawn = 0;
+        uint64_t day_total = d->days[i].tokens;
+        for (int hh = 0; hh < d->host_count && day_total > 0; hh++) {
+            int seg = (int)((double)d->day_by_host[i][hh] / (double)day_total
+                            * (double)h);
+            if (hh == d->host_count - 1) seg = h - drawn;
+            if (seg <= 0) continue;
+            uint16_t hc = pal_accent(hh);
+            canvas_fill_rect(c, bx, bottom - drawn - seg, bar_w, seg, hc);
+            canvas_fill_rect(c, bx, bottom - drawn - seg, bar_w, 2,
+                             pal_lighten(hc));
+            drawn += seg;
+        }
+        if (d->host_count == 0)
+            canvas_fill_rect(c, bx, bottom - h, bar_w, h, colour);
 
         int label_col = (gutter + i * slot) / c->cell_w;
         if (slot >= 6 * c->cell_w || (i % 2) == 0)

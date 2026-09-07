@@ -152,48 +152,32 @@ int main(void)
     expect("a today payload replaces all its fields",
            d.moon_name[0] == '\0' && d.dayinfo[0] == '\0');
 
-    /* Filtering to one machine, which is what the button does. */
-    memset(&d, 0, sizeof d);
-    parse("!stats\nhost air\nm opus-5 100 1000\n");
-    parse("!stats\nhost studio\nm opus-5 50 500\nm haiku 1 2\n");
-    expect("two machines contribute", usagedata_hosts(&d) == 2);
-    expect("first machine named", strcmp(usagedata_host_name(&d, 0), "air") == 0);
-    expect("second machine named",
-           strcmp(usagedata_host_name(&d, 1), "studio") == 0);
-    expect("an out-of-range index is empty",
-           usagedata_host_name(&d, 5)[0] == '\0');
-
-    usagedata_merge_host(&d, &v, 0);
-    expect("filtered to the first machine only",
-           v.models[0].out == 100 && v.model_count == 1);
-    expect("the view names the machine it shows",
-           strcmp(v.host, "air") == 0);
-
-    usagedata_merge_host(&d, &v, 1);
-    expect("filtered to the second machine", v.model_count == 2);
-
-    usagedata_merge_host(&d, &v, -1);
-    expect("minus one means every machine",
-           v.models[0].out == 150 && v.host_count == 2);
-    expect("the unfiltered view names no machine", v.host[0] == '\0');
-
-    /* Looking a machine up by name, which is how the remembered choice is
-       restored after a restart. */
-    memset(&d, 0, sizeof d);
-    parse("!stats\nhost air\nm opus-5 100 1000\n");
-    parse("!stats\nhost studio\nm opus-5 50 500\n");
-    expect("name resolves to its index",
-           usagedata_host_index(&d, "studio") == 1);
-    expect("an unknown name means all",
-           usagedata_host_index(&d, "laptop") == -1);
-    expect("an empty name means all", usagedata_host_index(&d, "") == -1);
-    expect("NULL means all", usagedata_host_index(&d, NULL) == -1);
-
     /* A machine that has sent nothing must not become a choice. */
     memset(&d, 0, sizeof d);
     parse("!stats\nhost air\n");
     expect("a machine that sent no rows does not count",
            usagedata_hosts(&d) == 0);
+
+    /* Each machine's share is kept alongside the total, which is what lets a
+       bar be drawn stacked. */
+    memset(&d, 0, sizeof d);
+    parse("!stats\nhost air\nm opus-5 100 900\n");
+    parse("!stats\nhost studio\nm opus-5 50 450\n");
+    expect("total is the sum", v.models[0].out + v.models[0].cread == 1500);
+    expect("first machine's share kept", v.model_by_host[0][0] == 1000);
+    expect("second machine's share kept", v.model_by_host[0][1] == 500);
+    expect("shares add up to the total",
+           v.model_by_host[0][0] + v.model_by_host[0][1] == 1500);
+    expect("machines are named in order",
+           strcmp(v.host_names[0], "air") == 0
+           && strcmp(v.host_names[1], "studio") == 0);
+
+    memset(&d, 0, sizeof d);
+    parse("!daily\nhost air\nd 09-02 60\nd 09-01 10\n");
+    parse("!daily\nhost studio\nd 09-01 30\n");
+    expect("day shares survive the sort",
+           v.day_by_host[0][0] == 10 && v.day_by_host[0][1] == 30);
+    expect("and match their day", v.days[0].tokens == 40);
 
     if (failures == 0) { printf("all tests passed\n"); return 0; }
     printf("%d test(s) failed\n", failures);

@@ -14,10 +14,6 @@
 void views_stats(canvas_t *c, const ud_view_t *d, float t);
 void views_daily(canvas_t *c, const ud_view_t *d, float t);
 
-/* The machine-filter button lives in the top-right of both charts. True when
-   a tap at these display coordinates landed on it. */
-bool views_button_hit(canvas_t *c, int x, int y);
-
 /* The almanac page: moon, sun, the day's numbers and the next holiday. */
 void views_today(canvas_t *c, const usagedata_t *d);
 

@@ -157,33 +157,40 @@ ud_kind_t usagedata_parse(usagedata_t *d, const char *payload)
     return kind;
 }
 
-static void add_model(ud_view_t *v, const ud_model_t *m)
+/* Adds one machine's row, keeping both the total and that machine's share. */
+static void add_model(ud_view_t *v, const ud_model_t *m, int host)
 {
     for (int i = 0; i < v->model_count; i++) {
         if (strcmp(v->models[i].name, m->name) == 0) {
             v->models[i].out += m->out;
             v->models[i].cread += m->cread;
+            v->model_by_host[i][host] += m->out + m->cread;
             return;
         }
     }
     if (v->model_count >= UD_MAX_MODELS) return;
-    v->models[v->model_count++] = *m;
+    int i = v->model_count++;
+    v->models[i] = *m;
+    v->model_by_host[i][host] = m->out + m->cread;
 }
 
-static void add_day(ud_view_t *v, const ud_day_t *day)
+static void add_day(ud_view_t *v, const ud_day_t *day, int host)
 {
     for (int i = 0; i < v->day_count; i++) {
         if (strcmp(v->days[i].label, day->label) == 0) {
             v->days[i].tokens += day->tokens;
+            v->day_by_host[i][host] += day->tokens;
             return;
         }
     }
     if (v->day_count >= UD_MAX_DAYS) return;
-    v->days[v->day_count++] = *day;
+    int i = v->day_count++;
+    v->days[i] = *day;
+    v->day_by_host[i][host] = day->tokens;
 }
 
-/* Only machines that have actually sent something are counted or nameable,
-   so an empty slot never shows up as a choice on the button. */
+/* Only machines that have actually sent something are counted, so an empty
+   slot never appears in a legend. */
 static bool contributes(const ud_host_t *h)
 {
     return h->used && (h->model_count || h->day_count);
@@ -195,18 +202,6 @@ int usagedata_hosts(const usagedata_t *d)
     for (int i = 0; i < UD_MAX_HOSTS; i++)
         if (contributes(&d->hosts[i])) n++;
     return n;
-}
-
-int usagedata_host_index(const usagedata_t *d, const char *name)
-{
-    if (name == NULL || name[0] == '\0') return -1;
-    int n = 0;
-    for (int i = 0; i < UD_MAX_HOSTS; i++) {
-        if (!contributes(&d->hosts[i])) continue;
-        if (strcmp(d->hosts[i].host, name) == 0) return n;
-        n++;
-    }
-    return -1;
 }
 
 const char *usagedata_host_name(const usagedata_t *d, int which)
@@ -222,45 +217,48 @@ const char *usagedata_host_name(const usagedata_t *d, int which)
 
 void usagedata_merge(const usagedata_t *d, ud_view_t *out)
 {
-    usagedata_merge_host(d, out, -1);
-}
-
-void usagedata_merge_host(const usagedata_t *d, ud_view_t *out, int which)
-{
     memset(out, 0, sizeof *out);
 
-    int n = 0;
     for (int i = 0; i < UD_MAX_HOSTS; i++) {
         const ud_host_t *h = &d->hosts[i];
         if (!contributes(h)) continue;
-        int index = n++;
-        if (which >= 0 && index != which) continue;
-        if (which >= 0) strncpy(out->host, h->host, UD_HOST_MAX);
-        out->host_count++;
-        for (int m = 0; m < h->model_count; m++) add_model(out, &h->models[m]);
-        for (int k = 0; k < h->day_count; k++) add_day(out, &h->days[k]);
+        int host = out->host_count++;
+        strncpy(out->host_names[host], h->host, UD_HOST_MAX);
+
+        for (int m = 0; m < h->model_count; m++) add_model(out, &h->models[m], host);
+        for (int k = 0; k < h->day_count; k++) add_day(out, &h->days[k], host);
     }
 
-    /* Models largest first, so the bars rank sensibly after summing. */
+    /* Models largest first, so the bars rank sensibly after summing. The
+       per-host shares move with their row. */
     for (int i = 1; i < out->model_count; i++) {
         ud_model_t key = out->models[i];
+        uint64_t share[UD_MAX_HOSTS];
+        memcpy(share, out->model_by_host[i], sizeof share);
         uint64_t kt = key.out + key.cread;
         int j = i - 1;
         while (j >= 0 && out->models[j].out + out->models[j].cread < kt) {
             out->models[j + 1] = out->models[j];
+            memcpy(out->model_by_host[j + 1], out->model_by_host[j],
+                   sizeof share);
             j--;
         }
         out->models[j + 1] = key;
+        memcpy(out->model_by_host[j + 1], share, sizeof share);
     }
 
     /* Days oldest first: the labels are MM-DD, which sorts correctly. */
     for (int i = 1; i < out->day_count; i++) {
         ud_day_t key = out->days[i];
+        uint64_t share[UD_MAX_HOSTS];
+        memcpy(share, out->day_by_host[i], sizeof share);
         int j = i - 1;
         while (j >= 0 && strcmp(out->days[j].label, key.label) > 0) {
             out->days[j + 1] = out->days[j];
+            memcpy(out->day_by_host[j + 1], out->day_by_host[j], sizeof share);
             j--;
         }
         out->days[j + 1] = key;
+        memcpy(out->day_by_host[j + 1], share, sizeof share);
     }
 }
