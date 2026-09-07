@@ -75,6 +75,10 @@ void usagedata_merge(const usagedata_t *d, ud_view_t *out);
    machines that have sent something; -1 means all of them. */
 void usagedata_merge_host(const usagedata_t *d, ud_view_t *out, int which);
 
+/* The index of a named machine, or -1 when it has sent nothing yet. Used to
+   turn a remembered name back into a filter after a restart. */
+int usagedata_host_index(const usagedata_t *d, const char *name);
+
 /* How many machines have sent anything, and the name of the nth. */
 int usagedata_hosts(const usagedata_t *d);
 const char *usagedata_host_name(const usagedata_t *d, int which);

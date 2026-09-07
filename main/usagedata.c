@@ -197,6 +197,18 @@ int usagedata_hosts(const usagedata_t *d)
     return n;
 }
 
+int usagedata_host_index(const usagedata_t *d, const char *name)
+{
+    if (name == NULL || name[0] == '\0') return -1;
+    int n = 0;
+    for (int i = 0; i < UD_MAX_HOSTS; i++) {
+        if (!contributes(&d->hosts[i])) continue;
+        if (strcmp(d->hosts[i].host, name) == 0) return n;
+        n++;
+    }
+    return -1;
+}
+
 const char *usagedata_host_name(const usagedata_t *d, int which)
 {
     int n = 0;

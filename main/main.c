@@ -4,6 +4,9 @@
 #include "pages.h"
 #include "timecalc.h"
 #include "usagedata.h"
+
+#include "nvs.h"
+#include "nvs_flash.h"
 #include "palette.h"
 #include "views.h"
 
@@ -35,8 +38,32 @@ static int s_drawn_second = -1;
 
 /* Screensaver: the clock drifts to a new spot each minute, so no pixel stays
    lit. Position is derived from the minute, so it is stable within one. */
-/* Which machine the charts show: -1 for all, otherwise its index. */
-static int s_host_filter = -1;
+/* Which machine the charts show, by name so it survives machines coming and
+   going. Empty means all of them. Remembered in NVS, so a choice outlasts a
+   restart or a reflash. */
+static char s_filter_host[UD_HOST_MAX + 1];
+
+#define NVS_NS   "screen"
+#define NVS_KEY  "filter"
+
+static void filter_load(void)
+{
+    nvs_handle_t h;
+    if (nvs_open(NVS_NS, NVS_READONLY, &h) != ESP_OK) return;
+    size_t len = sizeof s_filter_host;
+    if (nvs_get_str(h, NVS_KEY, s_filter_host, &len) != ESP_OK)
+        s_filter_host[0] = '\0';
+    nvs_close(h);
+}
+
+static void filter_save(void)
+{
+    nvs_handle_t h;
+    if (nvs_open(NVS_NS, NVS_READWRITE, &h) != ESP_OK) return;
+    nvs_set_str(h, NVS_KEY, s_filter_host);
+    nvs_commit(h);
+    nvs_close(h);
+}
 
 /* Charts grow into place when a page appears; 0 means no animation running. */
 #define ANIM_US (600 * 1000LL)
@@ -181,12 +208,18 @@ void app_main(void)
 
     canvas_t *c = display_canvas();
 
+    /* NVS is initialised by ble_uart_start, so read the remembered filter
+       after it, not before. */
     if (ble_uart_start(on_message, on_time) != ESP_OK) {
         ESP_LOGE(TAG, "ble start failed");
         canvas_text(c, "BLE FAILED");
         display_blit();
         return;
     }
+
+    filter_load();
+    if (s_filter_host[0])
+        ESP_LOGI(TAG, "charts filtered to %s", s_filter_host);
 
     int64_t last_beat = 0;
 
@@ -201,14 +234,23 @@ void app_main(void)
                          || s_pages.current == PAGE_DAILY;
 
             if (!s_saver && on_chart && views_button_hit(c, tx, ty)) {
-                /* Cycle all -> each machine -> all. */
+                /* Cycle all -> each machine -> all, remembering the choice. */
                 int hosts = usagedata_hosts(&s_data);
-                s_host_filter = (hosts > 0 && s_host_filter + 1 < hosts)
-                              ? s_host_filter + 1 : -1;
+                int cur = usagedata_host_index(&s_data, s_filter_host);
+                int next = (s_filter_host[0] == '\0') ? 0 : cur + 1;
+                if (next >= hosts || hosts == 0) {
+                    s_filter_host[0] = '\0';
+                } else {
+                    strncpy(s_filter_host, usagedata_host_name(&s_data, next),
+                            UD_HOST_MAX);
+                    s_filter_host[UD_HOST_MAX] = '\0';
+                }
+                filter_save();
                 s_pages.last_activity_us = now;
                 s_drawn_page = PAGE_COUNT;
                 s_anim_start = now;
-                ESP_LOGI(TAG, "filter -> %d", s_host_filter);
+                ESP_LOGI(TAG, "filter -> %s",
+                         s_filter_host[0] ? s_filter_host : "all");
             } else if (s_saver) {
                 /* The first tap dismisses the saver rather than also changing
                    the page, which would be a surprise. */
@@ -264,7 +306,8 @@ void app_main(void)
             t = 1.0f - (1.0f - t) * (1.0f - t);
 
             ud_view_t v;
-            usagedata_merge_host(&s_data, &v, s_host_filter);
+            usagedata_merge_host(&s_data, &v,
+                                 usagedata_host_index(&s_data, s_filter_host));
             if (s_pages.current == PAGE_STATS) views_stats(c, &v, t);
             else views_daily(c, &v, t);
             display_blit();

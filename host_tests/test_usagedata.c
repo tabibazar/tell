@@ -177,6 +177,18 @@ int main(void)
            v.models[0].out == 150 && v.host_count == 2);
     expect("the unfiltered view names no machine", v.host[0] == '\0');
 
+    /* Looking a machine up by name, which is how the remembered choice is
+       restored after a restart. */
+    memset(&d, 0, sizeof d);
+    parse("!stats\nhost air\nm opus-5 100 1000\n");
+    parse("!stats\nhost studio\nm opus-5 50 500\n");
+    expect("name resolves to its index",
+           usagedata_host_index(&d, "studio") == 1);
+    expect("an unknown name means all",
+           usagedata_host_index(&d, "laptop") == -1);
+    expect("an empty name means all", usagedata_host_index(&d, "") == -1);
+    expect("NULL means all", usagedata_host_index(&d, NULL) == -1);
+
     /* A machine that has sent nothing must not become a choice. */
     memset(&d, 0, sizeof d);
     parse("!stats\nhost air\n");

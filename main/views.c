@@ -14,12 +14,17 @@ static void human(uint64_t n, char *out, int size)
     else snprintf(out, size, "%llu", (unsigned long long)n);
 }
 
-/* Width of the machine-filter button, in character cells. */
+/* The machine-filter button. Drawn two rows tall and hit-tested over three,
+   because one row is 24px -- about 4mm on this panel, far smaller than a
+   fingertip, so most taps missed it and advanced the page instead. */
 #define BUTTON_COLS 12
+#define BUTTON_ROWS 2
+#define BUTTON_HIT_ROWS 3
 
 bool views_button_hit(canvas_t *c, int x, int y)
 {
-    return y < c->cell_h && x > c->w - BUTTON_COLS * c->cell_w;
+    return y < BUTTON_HIT_ROWS * c->cell_h
+        && x > c->w - (BUTTON_COLS + 1) * c->cell_w;
 }
 
 /* Draws the button showing which machine's tokens are on screen. It is drawn
@@ -28,16 +33,21 @@ bool views_button_hit(canvas_t *c, int x, int y)
 static void button(canvas_t *c, const ud_view_t *d)
 {
     int bw = BUTTON_COLS * c->cell_w;
+    int bh = BUTTON_ROWS * c->cell_h;
     int bx = c->w - bw;
 
-    canvas_fill_rect(c, bx, 0, bw, c->cell_h, PAL_A1);
-    canvas_fill_rect(c, bx, 0, bw, 2, pal_lighten(PAL_A1));
+    canvas_fill_rect(c, bx, 0, bw, bh, PAL_A1);
+    canvas_fill_rect(c, bx, 0, bw, 3, pal_lighten(PAL_A1));
+    /* A shadow under the block, so it reads as raised and its full height is
+       obvious -- the tappable area is what people misjudge. */
+    canvas_fill_rect(c, bx, bh, bw, 2, PAL_DIM);
 
     const char *label = d->host[0] ? d->host : "ALL MACS";
     int len = (int)strlen(label);
     if (len > BUTTON_COLS - 2) len = BUTTON_COLS - 2;
     int col = bx / c->cell_w + (BUTTON_COLS - len) / 2;
-    canvas_puts(c, col, 0, label, PAL_BG);
+    canvas_puts(c, col, 0, "showing", PAL_BG);
+    canvas_puts(c, col, 1, label, PAL_BG);
 }
 
 static void title(canvas_t *c, const char *left, const char *right)
@@ -48,7 +58,7 @@ static void title(canvas_t *c, const char *left, const char *right)
 
     /* Sit left of the button, and drop the note rather than overlap the
        heading if there is no room. */
-    int col = c->cols - BUTTON_COLS - 1 - (int)strlen(right);
+    int col = c->cols - BUTTON_COLS - 2 - (int)strlen(right);
     if (col > (int)strlen(left) + 2)
         canvas_puts(c, col, 0, right, PAL_FG);
 }
