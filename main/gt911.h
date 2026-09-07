@@ -11,6 +11,10 @@ esp_err_t gt911_init(void);
 /* True once per press, reported on release. Poll this. */
 bool gt911_tapped(void);
 
+/* Where the last tap landed, in controller coordinates. Only meaningful
+   after gt911_tapped() has returned true. */
+void gt911_point(int *x, int *y);
+
 /* Diagnostic one-liner: probe result, last status byte, counters. The serial
    console is unreadable on this board, so this goes on the screen. */
 const char *gt911_debug(void);

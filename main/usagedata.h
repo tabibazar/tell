@@ -55,7 +55,8 @@ typedef struct {
     int model_count;
     ud_day_t days[UD_MAX_DAYS];
     int day_count;
-    int host_count;
+    int host_count;          /* machines contributing to this view */
+    char host[UD_HOST_MAX + 1];  /* the filtered machine, empty when all */
 } ud_view_t;
 
 typedef enum { UD_NONE = 0, UD_STATS, UD_DAILY, UD_CLOCK, UD_TODAY } ud_kind_t;
@@ -69,5 +70,13 @@ ud_kind_t usagedata_parse(usagedata_t *d, const char *payload);
 /* Sums every machine into one view: models added by name, days by label,
    both ordered largest and latest first respectively. */
 void usagedata_merge(const usagedata_t *d, ud_view_t *out);
+
+/* As usagedata_merge, but restricted to one machine. `which` counts only
+   machines that have sent something; -1 means all of them. */
+void usagedata_merge_host(const usagedata_t *d, ud_view_t *out, int which);
+
+/* How many machines have sent anything, and the name of the nth. */
+int usagedata_hosts(const usagedata_t *d);
+const char *usagedata_host_name(const usagedata_t *d, int which);
 
 #endif /* USAGEDATA_H */

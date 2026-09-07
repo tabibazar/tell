@@ -152,6 +152,37 @@ int main(void)
     expect("a today payload replaces all its fields",
            d.moon_name[0] == '\0' && d.dayinfo[0] == '\0');
 
+    /* Filtering to one machine, which is what the button does. */
+    memset(&d, 0, sizeof d);
+    parse("!stats\nhost air\nm opus-5 100 1000\n");
+    parse("!stats\nhost studio\nm opus-5 50 500\nm haiku 1 2\n");
+    expect("two machines contribute", usagedata_hosts(&d) == 2);
+    expect("first machine named", strcmp(usagedata_host_name(&d, 0), "air") == 0);
+    expect("second machine named",
+           strcmp(usagedata_host_name(&d, 1), "studio") == 0);
+    expect("an out-of-range index is empty",
+           usagedata_host_name(&d, 5)[0] == '\0');
+
+    usagedata_merge_host(&d, &v, 0);
+    expect("filtered to the first machine only",
+           v.models[0].out == 100 && v.model_count == 1);
+    expect("the view names the machine it shows",
+           strcmp(v.host, "air") == 0);
+
+    usagedata_merge_host(&d, &v, 1);
+    expect("filtered to the second machine", v.model_count == 2);
+
+    usagedata_merge_host(&d, &v, -1);
+    expect("minus one means every machine",
+           v.models[0].out == 150 && v.host_count == 2);
+    expect("the unfiltered view names no machine", v.host[0] == '\0');
+
+    /* A machine that has sent nothing must not become a choice. */
+    memset(&d, 0, sizeof d);
+    parse("!stats\nhost air\n");
+    expect("a machine that sent no rows does not count",
+           usagedata_hosts(&d) == 0);
+
     if (failures == 0) { printf("all tests passed\n"); return 0; }
     printf("%d test(s) failed\n", failures);
     return 1;

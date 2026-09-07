@@ -35,6 +35,9 @@ static int s_drawn_second = -1;
 
 /* Screensaver: the clock drifts to a new spot each minute, so no pixel stays
    lit. Position is derived from the minute, so it is stable within one. */
+/* Which machine the charts show: -1 for all, otherwise its index. */
+static int s_host_filter = -1;
+
 /* Charts grow into place when a page appears; 0 means no animation running. */
 #define ANIM_US (600 * 1000LL)
 static int64_t s_anim_start = 0;
@@ -192,7 +195,21 @@ void app_main(void)
         int64_t now = esp_timer_get_time();
 
         if (touch && gt911_tapped()) {
-            if (s_saver) {
+            int tx, ty;
+            gt911_point(&tx, &ty);
+            bool on_chart = s_pages.current == PAGE_STATS
+                         || s_pages.current == PAGE_DAILY;
+
+            if (!s_saver && on_chart && views_button_hit(c, tx, ty)) {
+                /* Cycle all -> each machine -> all. */
+                int hosts = usagedata_hosts(&s_data);
+                s_host_filter = (hosts > 0 && s_host_filter + 1 < hosts)
+                              ? s_host_filter + 1 : -1;
+                s_pages.last_activity_us = now;
+                s_drawn_page = PAGE_COUNT;
+                s_anim_start = now;
+                ESP_LOGI(TAG, "filter -> %d", s_host_filter);
+            } else if (s_saver) {
                 /* The first tap dismisses the saver rather than also changing
                    the page, which would be a surprise. */
                 s_pages.last_activity_us = now;
@@ -247,7 +264,7 @@ void app_main(void)
             t = 1.0f - (1.0f - t) * (1.0f - t);
 
             ud_view_t v;
-            usagedata_merge(&s_data, &v);
+            usagedata_merge_host(&s_data, &v, s_host_filter);
             if (s_pages.current == PAGE_STATS) views_stats(c, &v, t);
             else views_daily(c, &v, t);
             display_blit();

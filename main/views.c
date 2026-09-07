@@ -14,14 +14,41 @@ static void human(uint64_t n, char *out, int size)
     else snprintf(out, size, "%llu", (unsigned long long)n);
 }
 
+/* Width of the machine-filter button, in character cells. */
+#define BUTTON_COLS 12
+
+bool views_button_hit(canvas_t *c, int x, int y)
+{
+    return y < c->cell_h && x > c->w - BUTTON_COLS * c->cell_w;
+}
+
+/* Draws the button showing which machine's tokens are on screen. It is drawn
+   as a raised block with a border so it reads as pressable, rather than as a
+   label someone has to guess is interactive. */
+static void button(canvas_t *c, const ud_view_t *d)
+{
+    int bw = BUTTON_COLS * c->cell_w;
+    int bx = c->w - bw;
+
+    canvas_fill_rect(c, bx, 0, bw, c->cell_h, PAL_A1);
+    canvas_fill_rect(c, bx, 0, bw, 2, pal_lighten(PAL_A1));
+
+    const char *label = d->host[0] ? d->host : "ALL MACS";
+    int len = (int)strlen(label);
+    if (len > BUTTON_COLS - 2) len = BUTTON_COLS - 2;
+    int col = bx / c->cell_w + (BUTTON_COLS - len) / 2;
+    canvas_puts(c, col, 0, label, PAL_BG);
+}
+
 static void title(canvas_t *c, const char *left, const char *right)
 {
     canvas_fill_rect(c, 0, 0, c->w, c->cell_h, PAL_TITLE_BG);
     canvas_puts(c, 1, 0, left, PAL_FG);
     if (right == NULL) return;
 
-    /* Drop the right-hand note rather than let it overlap the heading. */
-    int col = c->cols - 1 - (int)strlen(right);
+    /* Sit left of the button, and drop the note rather than overlap the
+       heading if there is no room. */
+    int col = c->cols - BUTTON_COLS - 1 - (int)strlen(right);
     if (col > (int)strlen(left) + 2)
         canvas_puts(c, col, 0, right, PAL_FG);
 }
@@ -56,6 +83,7 @@ void views_stats(canvas_t *c, const ud_view_t *d, float t)
         snprintf(head, sizeof head, "tokens");
     canvas_clear(c);
     title(c, "USAGE BY MODEL", head);
+    button(c, d);
 
     if (d->model_count == 0) {
         canvas_puts(c, 1, 2, "no data yet -- run tools/push-stats.sh", PAL_DIM);
@@ -116,6 +144,7 @@ void views_daily(canvas_t *c, const ud_view_t *d, float t)
 
     if (d->day_count == 0) {
         title(c, "TOKENS PER DAY", NULL);
+        button(c, d);
         canvas_puts(c, 1, 2, "no data yet -- run tools/push-stats.sh", PAL_DIM);
         return;
     }
@@ -129,6 +158,7 @@ void views_daily(canvas_t *c, const ud_view_t *d, float t)
         snprintf(range, sizeof range, "%s to %s",
                  d->days[0].label, d->days[d->day_count - 1].label);
     title(c, "TOKENS PER DAY", range);
+    button(c, d);
 
     uint64_t peak = 1, grand = 0;
     int peak_i = 0;

@@ -12,10 +12,12 @@
 #define ADDR_B 0x14
 
 #define REG_STATUS 0x814E
+#define REG_POINT1 0x8150
 
 static const char *TAG = "gt911";
 static i2c_master_dev_handle_t s_dev;
 static bool s_present;
+static int s_x, s_y;          /* where the last press was seen */
 static bool s_was_down;
 
 /* Instrumentation, because the serial console on this board is unreadable. */
@@ -37,6 +39,25 @@ static esp_err_t read_status(uint8_t *status)
        here yielded 2, which the driver rounded to a zero-tick wait, so every
        transaction returned ESP_ERR_INVALID_STATE without waiting. */
     return i2c_master_transmit_receive(s_dev, reg, sizeof reg, status, 1, 50);
+}
+
+/* Point 1 is seven bytes at 0x8150: track id, x low/high, y low/high,
+   size low/high. */
+static void read_point(void)
+{
+    uint8_t reg[2] = { REG_POINT1 >> 8, REG_POINT1 & 0xFF };
+    uint8_t buf[7] = {0};
+    if (i2c_master_transmit_receive(s_dev, reg, sizeof reg, buf, sizeof buf,
+                                    50) != ESP_OK)
+        return;
+    s_x = buf[1] | (buf[2] << 8);
+    s_y = buf[3] | (buf[4] << 8);
+}
+
+void gt911_point(int *x, int *y)
+{
+    *x = s_x;
+    *y = s_y;
 }
 
 static void clear_status(void)
@@ -89,7 +110,7 @@ bool gt911_tapped(void)
     s_last_status = status;
 
     bool down = (status & 0x80) && (status & 0x0F) > 0;
-    if (down) s_downs++;
+    if (down) { s_downs++; read_point(); }
     if (status & 0x80) clear_status();   /* the controller latches until cleared */
 
     /* Fire on release, so a resting finger does not cycle pages. */
@@ -109,9 +130,7 @@ const char *gt911_debug(void)
     } else {
         /* esp_err_t names: 0x107 TIMEOUT, 0x105 NOT_FOUND, 0xffff FAIL(NAK). */
         snprintf(s_dbg, sizeof s_dbg,
-                 "A=%02X P:5D=%d 14=%d 33=%d OK=%d ER=%d ERR=0x%X",
-                 s_addr, s_probe_a, s_probe_b, s_probe_bogus,
-                 s_reads_ok, s_read_errs, (unsigned)s_last_read_err);
+                 "touch x=%d y=%d   taps=%d", s_x, s_y, s_taps);
     }
     return s_dbg;
 }

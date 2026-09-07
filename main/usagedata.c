@@ -182,14 +182,49 @@ static void add_day(ud_view_t *v, const ud_day_t *day)
     v->days[v->day_count++] = *day;
 }
 
+/* Only machines that have actually sent something are counted or nameable,
+   so an empty slot never shows up as a choice on the button. */
+static bool contributes(const ud_host_t *h)
+{
+    return h->used && (h->model_count || h->day_count);
+}
+
+int usagedata_hosts(const usagedata_t *d)
+{
+    int n = 0;
+    for (int i = 0; i < UD_MAX_HOSTS; i++)
+        if (contributes(&d->hosts[i])) n++;
+    return n;
+}
+
+const char *usagedata_host_name(const usagedata_t *d, int which)
+{
+    int n = 0;
+    for (int i = 0; i < UD_MAX_HOSTS; i++) {
+        if (!contributes(&d->hosts[i])) continue;
+        if (n == which) return d->hosts[i].host;
+        n++;
+    }
+    return "";
+}
+
 void usagedata_merge(const usagedata_t *d, ud_view_t *out)
+{
+    usagedata_merge_host(d, out, -1);
+}
+
+void usagedata_merge_host(const usagedata_t *d, ud_view_t *out, int which)
 {
     memset(out, 0, sizeof *out);
 
+    int n = 0;
     for (int i = 0; i < UD_MAX_HOSTS; i++) {
         const ud_host_t *h = &d->hosts[i];
-        if (!h->used) continue;
-        if (h->model_count || h->day_count) out->host_count++;
+        if (!contributes(h)) continue;
+        int index = n++;
+        if (which >= 0 && index != which) continue;
+        if (which >= 0) strncpy(out->host, h->host, UD_HOST_MAX);
+        out->host_count++;
         for (int m = 0; m < h->model_count; m++) add_model(out, &h->models[m]);
         for (int k = 0; k < h->day_count; k++) add_day(out, &h->days[k]);
     }
