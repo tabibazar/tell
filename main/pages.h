@@ -14,14 +14,18 @@ typedef enum {
 
 #define PAGE_BIT(p) (1u << (p))
 
-/* A page other than the clock reverts to the clock after this long with no
-   touch and no new data. */
+/* How long a page stays pinned after a touch or a new message. */
 #define PAGES_IDLE_US (5 * 60 * 1000000LL)
+
+/* Once idle, pages advance this often. A static image on an LCD risks
+   retention, and the clock would otherwise sit unchanged for hours. */
+#define PAGES_ROTATE_US (30 * 1000000LL)
 
 typedef struct {
     unsigned available;      /* bitmask of PAGE_BIT(...) */
     page_t current;
     int64_t last_activity_us;
+    int64_t last_rotate_us;
 } pages_t;
 
 void pages_init(pages_t *p, unsigned available);
@@ -32,7 +36,11 @@ page_t pages_advance(pages_t *p, int64_t now_us);
 /* Jumps to a page, ignored if that page is not available on this board. */
 void pages_show(pages_t *p, page_t page, int64_t now_us);
 
-/* True when the clock should take over. Always false on the clock itself. */
+/* True when the page was pinned by a touch or message and that has expired. */
 bool pages_idle_expired(const pages_t *p, int64_t now_us);
+
+/* Call every loop. Once nothing has been pinned for PAGES_IDLE_US, advances
+   to the next page every PAGES_ROTATE_US. Returns true if the page changed. */
+bool pages_tick(pages_t *p, int64_t now_us);
 
 #endif /* PAGES_H */

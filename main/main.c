@@ -145,9 +145,8 @@ void app_main(void)
             ESP_LOGI(TAG, "tap -> page %d", (int)p);
         }
 
-        if (pages_idle_expired(&s_pages, now)) {
-            pages_show(&s_pages, PAGE_CLOCK, now);
-        }
+        /* Once idle, cycle the pages so no image sits long enough to burn in. */
+        pages_tick(&s_pages, now);
 
         if (s_pages.current != s_drawn_page) {
             s_drawn_page = s_pages.current;

@@ -55,6 +55,35 @@ int main(void)
     pages_init(&p, ALL);
     expect("the clock is never idle", !pages_idle_expired(&p, PAGES_IDLE_US * 10));
 
+    /* Rotation, which exists to stop a static image burning in. */
+    pages_init(&p, ALL);
+    expect("no rotation while freshly pinned", !pages_tick(&p, 1000));
+
+    int64_t t = PAGES_IDLE_US + PAGES_ROTATE_US + 1;
+    expect("rotates once idle", pages_tick(&p, t));
+    expect("moved off the clock", p.current == PAGE_STATS);
+    expect("does not rotate again immediately", !pages_tick(&p, t + 1));
+    expect("rotates after the interval", pages_tick(&p, t + PAGES_ROTATE_US + 1));
+    expect("advanced again", p.current == PAGE_DAILY);
+
+    /* Rotation must not count as activity, or it would pin itself and stop. */
+    expect("rotation keeps rotating",
+           pages_tick(&p, t + 2 * PAGES_ROTATE_US + 2));
+    expect("still advancing", p.current == PAGE_MESSAGE);
+
+    /* A touch pins the page again and suspends rotation. */
+    int64_t touched = t + 3 * PAGES_ROTATE_US;
+    pages_advance(&p, touched);
+    expect("touch suspends rotation",
+           !pages_tick(&p, touched + PAGES_ROTATE_US + 1));
+    expect("rotation resumes after the pin expires",
+           pages_tick(&p, touched + PAGES_IDLE_US + PAGES_ROTATE_US + 1));
+
+    /* A board with one page has nothing to rotate to. */
+    pages_init(&p, PAGE_BIT(PAGE_CLOCK));
+    expect("a lone page reports no change",
+           !pages_tick(&p, PAGES_IDLE_US + PAGES_ROTATE_US + 1));
+
     if (failures == 0) { printf("all tests passed\n"); return 0; }
     printf("%d test(s) failed\n", failures);
     return 1;
