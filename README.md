@@ -191,7 +191,9 @@ font, which is fine at their scale.
 ## Building the firmware
 
 Needs [ESP-IDF](https://docs.espressif.com/projects/esp-idf/en/latest/esp32s3/get-started/)
-5.5 or later.
+5.5 or later. **[docs/developing.md](docs/developing.md)** covers setting up a
+new machine, and the traps on this hardware that are worth reading before you
+hit them.
 
 ```sh
 . $IDF_PATH/export.sh
