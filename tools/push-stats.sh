@@ -11,6 +11,11 @@ DEVICE="${1:-big}"
 
 # Runs on a five-minute timer, so refuse to overlap a slow previous run.
 LOCK="/tmp/push-stats-$DEVICE.lock"
+# A lock left by a killed run (a flash or a bootout mid-push) would stop
+# every later run; break it once it is clearly abandoned.
+if [ -d "$LOCK" ] && [ $(( $(date +%s) - $(stat -f %m "$LOCK" 2>/dev/null || echo 0) )) -gt 240 ]; then
+    rmdir "$LOCK" 2>/dev/null || true
+fi
 if ! mkdir "$LOCK" 2>/dev/null; then
     echo "another push to $DEVICE is still running" >&2
     exit 0
