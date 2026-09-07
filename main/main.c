@@ -48,6 +48,11 @@ static void on_message(const char *text, size_t len)
     int64_t now = esp_timer_get_time();
 
     ud_kind_t kind = usagedata_parse(&s_data, text);
+    if (kind == UD_CLOCK) {
+        /* Arrives on a timer like the charts, so it must not steal the view. */
+        if (s_pages.current == PAGE_CLOCK) s_drawn_second = -1;
+        return;
+    }
     if (kind == UD_STATS || kind == UD_DAILY) {
         /* Data arrives on a timer, so it must never steal the view: refresh
            the numbers, and redraw only if that page is already showing. */
@@ -88,12 +93,27 @@ static void draw_log(canvas_t *c)
     }
 }
 
+/* Date above the digits, weather below, both sent from the Mac. Centred so
+   they read as part of the clock rather than as a caption. */
+static void draw_clock_extras(canvas_t *c)
+{
+    if (s_data.date[0]) {
+        int col = (c->cols - (int)strlen(s_data.date)) / 2;
+        canvas_puts(c, col < 0 ? 0 : col, 1, s_data.date, PAL_FG);
+    }
+    if (s_data.weather[0]) {
+        int col = (c->cols - (int)strlen(s_data.weather)) / 2;
+        canvas_puts(c, col < 0 ? 0 : col, c->rows - 2, s_data.weather, PAL_A0);
+    }
+}
+
 static void draw_clock(canvas_t *c, int64_t now)
 {
     if (!s_synced) {
         if (s_drawn_second != -2) {
             s_drawn_second = -2;
             canvas_big(c, "--:--:--");
+            draw_clock_extras(c);
             display_blit();
         }
         return;
@@ -103,6 +123,7 @@ static void draw_clock(canvas_t *c, int64_t now)
     char buf[9];
     timecalc_format_hms(secs, buf);
     canvas_big(c, buf);
+    draw_clock_extras(c);
     display_blit();
     s_drawn_second = (int)secs;
 }

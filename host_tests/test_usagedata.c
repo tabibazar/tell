@@ -61,6 +61,29 @@ int main(void)
     usagedata_parse(&d, "!stats\n");
     expect("empty section yields no rows", d.model_count == 0);
 
+    expect("clock marker recognised",
+           usagedata_parse(&d, "!clock\ndate Sunday 06 September 2026\n"
+                               "wx Moderate rain  18C feels 19C\n") == UD_CLOCK);
+    expect("date kept verbatim",
+           strcmp(d.date, "Sunday 06 September 2026") == 0);
+    expect("weather keeps its spaces",
+           strcmp(d.weather, "Moderate rain  18C feels 19C") == 0);
+
+    usagedata_parse(&d, "!clock\ndate only a date\n");
+    expect("a clock payload replaces both fields",
+           strcmp(d.date, "only a date") == 0 && d.weather[0] == '\0');
+
+    {
+        char longp[256] = "!clock\nwx ";
+        for (int i = 0; i < 100; i++) strncat(longp, "y", sizeof longp - strlen(longp) - 1);
+        usagedata_parse(&d, longp);
+        expect("long weather is truncated, not overflowed",
+               strlen(d.weather) == UD_TEXT_MAX);
+    }
+
+    usagedata_parse(&d, "!stats\nm a 1 2\n");
+    expect("stats still parse after clock", d.model_count == 1);
+
     if (failures == 0) { printf("all tests passed\n"); return 0; }
     printf("%d test(s) failed\n", failures);
     return 1;
