@@ -157,8 +157,9 @@ The Feather has the same exposure for a different reason — RGB565 over SPI
 usually needs byte-swapped pixels, which white-on-black also hides. It may need
 `lsb_first` where the CrowPanel does not.
 
-**Expect one round of colour correction per board.** This is predicted, not a
-surprise to be debugged from scratch.
+**Outcome:** the CrowPanel needed no correction — a blue title bar rendered
+blue on the first try, so its pin order was right all along. The Feather's SPI
+byte order remains untested, since nothing colourful is drawn there yet.
 
 ## Error handling
 

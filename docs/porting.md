@@ -116,6 +116,24 @@ garbled boot log: the firmware ran correctly the whole time it looked broken.
 3. Watch the console at 115200 for `RGB panel up: 800x480, 33 cols x 10 rows`.
    Reaching that line means the panel accepted its configuration.
 
+## Colour: verified 2026-09-06
+
+The RGB data pin order in `display_rgb.c` is **correct**. A blue title bar
+(`0x001F`) renders blue, which is the first thing that could test it: white is
+all-bits-set and black all-bits-clear, so every permutation of the sixteen data
+lines looked identical for as long as the display was monochrome.
+
+```
+data  B0-B4  15, 7, 6, 5, 4
+      G0-G5  9, 46, 3, 8, 16, 1
+      R0-R4  14, 21, 47, 48, 45
+```
+
+**Touch also needs the secondary USB console disabled.** GPIO19 and GPIO20 are
+USB D- and D+ on the ESP32-S3, and the touch I2C is wired to exactly those
+pins, so `CONFIG_ESP_CONSOLE_SECONDARY_NONE=y` is required. This board has no
+usable USB console anyway.
+
 ## What went wrong, and what did not
 
 None of the display risks materialised. No tearing, no offset, no rotation
