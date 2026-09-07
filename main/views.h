@@ -33,6 +33,12 @@ void views_rhythm(canvas_t *c, const ud_view_t *d, int64_t now_us);
    Redraw it every few seconds; the "last message" age keeps counting. */
 void views_now(canvas_t *c, const ud_view_t *d, int64_t now_us);
 
+/* By project: a bar per repository with its tokens and cost. */
+void views_projects(canvas_t *c, const ud_view_t *d, float t, int64_t now_us);
+
+/* Cache efficiency: hit rate per model and per day, and what caching saved. */
+void views_cache(canvas_t *c, const ud_view_t *d, float t, int64_t now_us);
+
 /* The settings page: each setting as a row of buttons, the current choice
    lit. Touch only, so it is not offered on the Feather. */
 void views_settings(canvas_t *c, const settings_t *s);

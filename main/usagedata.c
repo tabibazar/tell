@@ -78,6 +78,15 @@ static void find_host(const char *payload, char *out)
     }
 }
 
+int usagedata_pct_value(char c)
+{
+    const char *p = c ? strchr(GRID_ALPHABET, c) : NULL;
+    if (p == NULL) return -1;
+    int i = (int)(p - GRID_ALPHABET);
+    int steps = (int)sizeof GRID_ALPHABET - 2;          /* 61 */
+    return (i * 100 + steps / 2) / steps;
+}
+
 ud_kind_t usagedata_parse(usagedata_t *d, const char *payload,
                           int64_t now_us)
 {
@@ -92,6 +101,8 @@ ud_kind_t usagedata_parse(usagedata_t *d, const char *payload,
     else if (starts_with(payload, "!cost")) kind = UD_COST;
     else if (starts_with(payload, "!rhythm")) kind = UD_RHYTHM;
     else if (starts_with(payload, "!now")) kind = UD_NOW;
+    else if (starts_with(payload, "!projects")) kind = UD_PROJECTS;
+    else if (starts_with(payload, "!cache")) kind = UD_CACHE;
     else return UD_NONE;
 
     if (kind == UD_CLOCK) {
@@ -104,7 +115,8 @@ ud_kind_t usagedata_parse(usagedata_t *d, const char *payload,
 
     ud_host_t *h = NULL;
     if (kind == UD_STATS || kind == UD_DAILY || kind == UD_YEAR
-        || kind == UD_COST || kind == UD_RHYTHM || kind == UD_NOW) {
+        || kind == UD_COST || kind == UD_RHYTHM || kind == UD_NOW
+        || kind == UD_PROJECTS || kind == UD_CACHE) {
         char name[UD_HOST_MAX + 1];
         find_host(payload, name);
         h = host_slot(d, name);
@@ -116,6 +128,8 @@ ud_kind_t usagedata_parse(usagedata_t *d, const char *payload,
         else if (kind == UD_YEAR) memset(&h->year, 0, sizeof h->year);
         else if (kind == UD_COST) memset(&h->cost, 0, sizeof h->cost);
         else if (kind == UD_RHYTHM) memset(&h->rhythm, 0, sizeof h->rhythm);
+        else if (kind == UD_PROJECTS) memset(&h->projects, 0, sizeof h->projects);
+        else if (kind == UD_CACHE) memset(&h->cache, 0, sizeof h->cache);
         else { memset(&h->now, 0, sizeof h->now); h->now_sent_us = now_us; }
     }
 
@@ -263,6 +277,50 @@ ud_kind_t usagedata_parse(usagedata_t *d, const char *payload,
             else if (strcmp(tag, "sessions") == 0) n->sessions = (uint32_t)v;
             else if (strcmp(tag, "session") == 0) n->session_secs = (uint32_t)v;
             else if (strcmp(tag, "last") == 0) { n->last_secs = (uint32_t)v; n->have_last = true; }
+        } else if (kind == UD_PROJECTS) {
+            ud_projects_t *pj = &h->projects;
+            char num[24];
+            if (strcmp(tag, "days") == 0) {
+                if (token(q, num, sizeof num - 1) != NULL) pj->days = atoi(num);
+            } else if (strcmp(tag, "p") == 0) {
+                if (pj->count >= UD_MAX_MODELS) continue;
+                ud_project_t row;
+                memset(&row, 0, sizeof row);
+                q = token(q, row.name, UD_NAME_MAX);
+                if (q == NULL || (q = token(q, num, sizeof num - 1)) == NULL) continue;
+                row.tokens = strtoull(num, NULL, 10);
+                if (q && (q = token(q, num, sizeof num - 1)) != NULL) row.cents = strtoull(num, NULL, 10);
+                if (q && (q = token(q, num, sizeof num - 1)) != NULL) row.sessions = (uint32_t)strtoul(num, NULL, 10);
+                if (q && (q = token(q, num, sizeof num - 1)) != NULL) row.msgs = (uint32_t)strtoul(num, NULL, 10);
+                pj->rows[pj->count++] = row;
+            }
+        } else if (kind == UD_CACHE) {
+            ud_cache_t *k = &h->cache;
+            char num[24];
+            if (strcmp(tag, "grid") == 0) {
+                token(q, k->grid, UD_MDAYS);
+            } else if (strcmp(tag, "m") == 0) {
+                if (k->model_count >= UD_MAX_MODELS) continue;
+                ud_cache_model_t m;
+                memset(&m, 0, sizeof m);
+                q = token(q, m.name, UD_NAME_MAX);
+                if (q == NULL) continue;
+                uint64_t *fields[4] = { &m.in, &m.cread, &m.cwrite, &m.saved_cents };
+                int got = 0;
+                for (int f = 0; f < 4 && q; f++) {
+                    q = token(q, num, sizeof num - 1);
+                    if (q == NULL) break;
+                    *fields[f] = strtoull(num, NULL, 10);
+                    got++;
+                }
+                if (got < 3) continue;
+                k->models[k->model_count++] = m;
+            } else if (token(q, num, sizeof num - 1) != NULL) {
+                if (strcmp(tag, "start") == 0) k->start = (int32_t)strtol(num, NULL, 10);
+                else if (strcmp(tag, "today") == 0) k->today = (int32_t)strtol(num, NULL, 10);
+                else if (strcmp(tag, "saved") == 0) k->saved = strtoull(num, NULL, 10);
+                else if (strcmp(tag, "cost") == 0) k->cost = strtoull(num, NULL, 10);
+            }
         } else if (kind == UD_CLOCK) {
             /* The rest of the line is free text, so take it verbatim. */
             char *dest = NULL;
@@ -291,6 +349,14 @@ ud_kind_t usagedata_parse(usagedata_t *d, const char *payload,
     }
     if (kind == UD_RHYTHM) h->rhythm.used = h->rhythm.grid[0] != '\0';
     if (kind == UD_NOW) h->now.used = true;
+    if (kind == UD_PROJECTS) h->projects.used = h->projects.count > 0;
+    if (kind == UD_CACHE) {
+        ud_cache_t *k = &h->cache;
+        int32_t len = k->today - k->start + 1;
+        k->used = k->model_count > 0
+               && (k->today <= 0 || (len >= 1 && len <= UD_MDAYS));
+        if (k->today <= 0) k->grid[0] = '\0';      /* no dates, no daily line */
+    }
     return kind;
 }
 
@@ -347,7 +413,8 @@ static void add_day(ud_view_t *v, const ud_day_t *day, int host)
 static bool contributes(const ud_host_t *h)
 {
     return h->used && (h->model_count || h->day_count || h->year.used
-                       || h->cost.used || h->rhythm.used || h->now.used);
+                       || h->cost.used || h->rhythm.used || h->now.used
+                       || h->projects.used || h->cache.used);
 }
 
 int usagedata_hosts(const usagedata_t *d)
@@ -616,9 +683,117 @@ static void merge_now(const usagedata_t *d, ud_now_view_t *n)
     }
 }
 
+/* Projects merged by name across machines, largest first. */
+static void merge_projects(const usagedata_t *d, ud_projects_view_t *v)
+{
+    memset(v, 0, sizeof *v);
+    for (int i = 0; i < UD_MAX_HOSTS; i++) {
+        const ud_host_t *h = &d->hosts[i];
+        if (!h->used || !h->projects.used) continue;
+        v->present = true;
+        if (h->projects.days > v->days) v->days = h->projects.days;
+        for (int r = 0; r < h->projects.count; r++) {
+            const ud_project_t *row = &h->projects.rows[r];
+            int j;
+            for (j = 0; j < v->count; j++)
+                if (strcmp(v->rows[j].name, row->name) == 0) break;
+            if (j == v->count) {
+                if (v->count >= UD_MAX_MODELS) continue;
+                v->rows[v->count++] = *row;
+            } else {
+                v->rows[j].tokens += row->tokens;
+                v->rows[j].cents += row->cents;
+                v->rows[j].sessions += row->sessions;
+                v->rows[j].msgs += row->msgs;
+            }
+            v->total_tokens += row->tokens;
+        }
+    }
+    for (int i = 1; i < v->count; i++) {
+        ud_project_t key = v->rows[i];
+        int j = i - 1;
+        while (j >= 0 && v->rows[j].tokens < key.tokens) { v->rows[j + 1] = v->rows[j]; j--; }
+        v->rows[j + 1] = key;
+    }
+}
+
+/* Cache use: models merged by name; daily percentages averaged by date. */
+static void merge_cache(const usagedata_t *d, ud_cache_view_t *v)
+{
+    memset(v, 0, sizeof *v);
+    for (int i = 0; i < UD_MDAYS; i++) v->pct[i] = -1;
+
+    const ud_cache_t *anchor = NULL;
+    for (int i = 0; i < UD_MAX_HOSTS; i++) {
+        const ud_host_t *h = &d->hosts[i];
+        if (!h->used || !h->cache.used) continue;
+        v->present = true;
+        if (h->cache.today > 0 && (anchor == NULL || h->cache.today > anchor->today))
+            anchor = &h->cache;
+    }
+    if (!v->present) return;
+    if (anchor) {
+        v->start = anchor->start;
+        v->today = anchor->today;
+        v->len = (int)(anchor->today - anchor->start + 1);
+    }
+
+    int sum[UD_MDAYS] = {0}, n[UD_MDAYS] = {0};
+    uint64_t in = 0, cread = 0, cwrite = 0;
+    for (int i = 0; i < UD_MAX_HOSTS; i++) {
+        const ud_host_t *h = &d->hosts[i];
+        if (!h->used || !h->cache.used) continue;
+        const ud_cache_t *k = &h->cache;
+        v->saved += k->saved;
+        v->cost += k->cost;
+        for (int m = 0; m < k->model_count; m++) {
+            const ud_cache_model_t *cm = &k->models[m];
+            in += cm->in; cread += cm->cread; cwrite += cm->cwrite;
+            int j;
+            for (j = 0; j < v->model_count; j++)
+                if (strcmp(v->models[j].name, cm->name) == 0) break;
+            if (j == v->model_count) {
+                if (v->model_count >= UD_MAX_MODELS) continue;
+                v->models[v->model_count++] = *cm;
+            } else {
+                v->models[j].in += cm->in;
+                v->models[j].cread += cm->cread;
+                v->models[j].cwrite += cm->cwrite;
+                v->models[j].saved_cents += cm->saved_cents;
+            }
+        }
+        if (k->today <= 0 || v->len == 0) continue;
+        for (int c = 0; k->grid[c] != '\0' && c < UD_MDAYS; c++) {
+            int32_t idx = k->start + c - v->start;
+            int pct = usagedata_pct_value(k->grid[c]);
+            if (idx < 0 || idx >= v->len || pct < 0) continue;
+            sum[idx] += pct;
+            n[idx]++;
+        }
+    }
+    for (int i = 0; i < v->len; i++)
+        if (n[i] > 0) v->pct[i] = (int8_t)(sum[i] / n[i]);
+    uint64_t total = in + cread + cwrite;
+    v->hit_pct = total ? (int)((cread * 100 + total / 2) / total) : 0;
+
+    /* Largest input volume first. */
+    for (int i = 1; i < v->model_count; i++) {
+        ud_cache_model_t key = v->models[i];
+        uint64_t kt = key.in + key.cread + key.cwrite;
+        int j = i - 1;
+        while (j >= 0 && v->models[j].in + v->models[j].cread + v->models[j].cwrite < kt) {
+            v->models[j + 1] = v->models[j];
+            j--;
+        }
+        v->models[j + 1] = key;
+    }
+}
+
 void usagedata_merge(const usagedata_t *d, ud_view_t *out)
 {
     memset(out, 0, sizeof *out);
+    merge_projects(d, &out->projects);
+    merge_cache(d, &out->cache);
     merge_year(d, &out->year);
     merge_cost(d, &out->cost);
     merge_rhythm(d, &out->rhythm);

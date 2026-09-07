@@ -12,9 +12,11 @@ typedef enum {
     PAGE_STATS,
     PAGE_TODAY,
     PAGE_MODELS,     /* tokens per day, one line per model */
+    PAGE_PROJECTS,   /* tokens by repository */
     PAGE_YEAR,       /* the last twelve months as a heatmap */
     PAGE_RHYTHM,     /* messages by weekday and hour */
     PAGE_COST,       /* what it would have cost on the API */
+    PAGE_CACHE,      /* prompt-cache hit rate and savings */
     PAGE_MESSAGE,
     PAGE_DAILY,      /* tokens per day as bars */
     PAGE_SETTINGS,   /* touch-only; last, so it is out of the way */

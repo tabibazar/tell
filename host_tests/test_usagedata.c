@@ -463,6 +463,59 @@ int main(void)
     expect("now without a last message is still present",
            v.now.present && !v.now.have_last);
 
+    /* Percent characters: linear, unlike the token grid. */
+    expect("percent zero", usagedata_pct_value('0') == 0);
+    expect("percent full", usagedata_pct_value('z') == 100);
+    expect("percent midpoint",
+           usagedata_pct_value('U') >= 49 && usagedata_pct_value('U') <= 51);
+    expect("percent none", usagedata_pct_value('.') == -1);
+
+    /* By project. */
+    memset(&d, 0, sizeof d);
+    expect("projects marker recognised",
+           parse("!projects\nhost air\ndays 23\np stan 1500 125 10 4372\n"
+                 "p tf 900 65 10 2795\np other 700 70 19 4228\n") == UD_PROJECTS);
+    expect("projects present and ranked",
+           v.projects.present && v.projects.count == 3
+           && strcmp(v.projects.rows[0].name, "stan") == 0
+           && v.projects.rows[0].sessions == 10 && v.projects.rows[0].msgs == 4372);
+    expect("project total", v.projects.total_tokens == 3100 && v.projects.days == 23);
+    parse("!projects\nhost studio\ndays 30\np tf 1000 10 1 1\np new 5 1 1 1\n");
+    expect("projects merge by name across machines",
+           v.projects.rows[0].tokens == 1900 && strcmp(v.projects.rows[0].name, "tf") == 0
+           && v.projects.count == 4 && v.projects.days == 30);
+    parse("!projects\nhost studio\n");
+    expect("an empty projects payload drops that machine's rows",
+           v.projects.count == 3 && v.projects.rows[0].tokens == 1500);
+
+    /* Cache efficiency. */
+    memset(&d, 0, sizeof d);
+    expect("cache marker recognised",
+           parse("!cache\nhost air\nstart 100\ntoday 106\n"
+                 "m opus-5 100 900 0 810\nm haiku 50 50 0 4\n"
+                 "saved 814\ncost 200\ngrid zU.0zzz\n") == UD_CACHE);
+    expect("cache present with window", v.cache.present && v.cache.len == 7);
+    expect("cache models ranked by volume",
+           v.cache.model_count == 2 && strcmp(v.cache.models[0].name, "opus-5") == 0
+           && v.cache.models[0].saved_cents == 810);
+    expect("all-time hit rate", v.cache.hit_pct == 86);   /* 950 of 1100 */
+    expect("saved and cost kept", v.cache.saved == 814 && v.cache.cost == 200);
+    expect("daily percentages decoded",
+           v.cache.pct[0] == 100 && v.cache.pct[1] >= 49 && v.cache.pct[1] <= 51
+           && v.cache.pct[2] == -1 && v.cache.pct[3] == 0);
+    parse("!cache\nhost studio\nstart 103\ntoday 106\nm opus-5 100 100 0 90\n"
+          "saved 90\ncost 50\ngrid 000z\n");
+    expect("cache models sum across machines",
+           v.cache.models[0].cread == 1000 && v.cache.saved == 904 && v.cache.cost == 250);
+    expect("daily percentages average where both report",
+           v.cache.pct[3] == 0 && v.cache.pct[4] == 50 && v.cache.pct[6] == 100);
+    memset(&d, 0, sizeof d);
+    parse("!cache\nhost air\nm opus-5 1 9 0 8\nsaved 8\ncost 1\n");
+    expect("cache without dates still gives the totals",
+           v.cache.present && v.cache.hit_pct == 90 && v.cache.len == 0);
+    parse("!cache\nhost air\nstart 1\ntoday 5\n");
+    expect("cache without models is not drawn", !v.cache.present);
+
     if (failures == 0) { printf("all tests passed\n"); return 0; }
     printf("%d test(s) failed\n", failures);
     return 1;

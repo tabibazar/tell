@@ -87,6 +87,36 @@ typedef struct {
     char project[UD_NAME_MAX + 1];
 } ud_now_t;
 
+/* Tokens by project directory, from one machine's transcripts. */
+typedef struct {
+    char name[UD_NAME_MAX + 1];
+    uint64_t tokens, cents;
+    uint32_t sessions, msgs;
+} ud_project_t;
+
+typedef struct {
+    bool used;
+    int days;
+    ud_project_t rows[UD_MAX_MODELS];
+    int count;
+} ud_projects_t;
+
+/* Prompt-cache use: per model all time, and per day as a percentage. */
+typedef struct {
+    char name[UD_NAME_MAX + 1];
+    uint64_t in, cread, cwrite;
+    uint64_t saved_cents;    /* cached tokens at input price minus at read price */
+} ud_cache_model_t;
+
+typedef struct {
+    bool used;
+    int32_t start, today;
+    char grid[UD_MDAYS + 1]; /* hit rate per day, linear percent chars; '.' none */
+    ud_cache_model_t models[UD_MAX_MODELS];
+    int model_count;
+    uint64_t saved, cost;    /* cents, all time */
+} ud_cache_t;
+
 /* One machine's contribution. Kept separately so a re-push from one Mac
    replaces only its own share instead of clobbering the other's. */
 typedef struct {
@@ -100,6 +130,8 @@ typedef struct {
     ud_cost_t cost;
     ud_rhythm_t rhythm;
     ud_now_t now;
+    ud_projects_t projects;
+    ud_cache_t cache;
     int64_t now_sent_us;     /* when the now section arrived, to age "last" */
     int64_t updated_us;      /* when this machine last sent anything */
     bool used;
@@ -175,6 +207,29 @@ typedef struct {
     char project[UD_NAME_MAX + 1];
 } ud_now_view_t;
 
+/* Every machine's projects merged by name, largest first. */
+typedef struct {
+    bool present;
+    int days;
+    ud_project_t rows[UD_MAX_MODELS];
+    int count;
+    uint64_t total_tokens;
+} ud_projects_view_t;
+
+/* Every machine's cache use. Daily percentages are averaged across the
+   machines that reported that day, since the volumes behind them are not
+   sent. */
+typedef struct {
+    bool present;
+    int32_t start, today;
+    int len;
+    int8_t pct[UD_MDAYS];             /* -1 when no machine had input that day */
+    ud_cache_model_t models[UD_MAX_MODELS];
+    int model_count;
+    uint64_t saved, cost;
+    int hit_pct;                      /* all time, all models */
+} ud_cache_view_t;
+
 /* Every machine's data summed, which is what the charts draw. */
 typedef struct {
     ud_model_t models[UD_MAX_MODELS];
@@ -193,6 +248,8 @@ typedef struct {
     ud_cost_view_t cost;
     ud_rhythm_view_t rhythm;
     ud_now_view_t now;
+    ud_projects_view_t projects;
+    ud_cache_view_t cache;
 
     /* Each model's tokens per day, every machine summed, on the window of the
        machine that sent most recently. mlen is 0 when no machine sent grids. */
@@ -203,14 +260,15 @@ typedef struct {
 
 typedef enum {
     UD_NONE = 0, UD_STATS, UD_DAILY, UD_CLOCK, UD_TODAY, UD_YEAR, UD_COST,
-    UD_RHYTHM, UD_NOW
+    UD_RHYTHM, UD_NOW, UD_PROJECTS, UD_CACHE
 } ud_kind_t;
 
 /* Parses one payload. "!stats" and "!daily" replace that section for the
    sending machine, named by a "host <name>" line and defaulting to "mac".
    "!clock" carries the date and weather; "!year" a machine's
    heatmap grid and headline figures; "!cost" what its usage would have cost
-   on the API; "!rhythm" messages by weekday and hour; "!now" today so far. Anything else returns UD_NONE and
+   on the API; "!rhythm" messages by weekday and hour; "!now" today so far;
+   "!projects" tokens by repository; "!cache" prompt-cache use. Anything else returns UD_NONE and
    leaves `d` untouched, so the caller can treat it as a text message. */
 ud_kind_t usagedata_parse(usagedata_t *d, const char *payload, int64_t now_us);
 
@@ -221,6 +279,10 @@ void usagedata_merge(const usagedata_t *d, ud_view_t *out);
 /* The tokens one grid character stands for: '.' is none, otherwise a
    half-octave log scale, 1000 * 2^(i/2) for the i-th of 0-9A-Za-z. */
 uint64_t usagedata_grid_value(char c);
+
+/* A percentage from a linear grid character (the same alphabet, 0..100
+   spread over its 62 steps); -1 for '.' or anything unknown. */
+int usagedata_pct_value(char c);
 
 /* How many machines have sent anything, and the name of the nth. */
 int usagedata_hosts(const usagedata_t *d);

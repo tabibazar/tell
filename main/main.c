@@ -107,7 +107,8 @@ static void on_message(const char *text, size_t len)
         return;
     }
     if (kind == UD_STATS || kind == UD_DAILY || kind == UD_YEAR
-        || kind == UD_COST || kind == UD_RHYTHM || kind == UD_NOW) {
+        || kind == UD_COST || kind == UD_RHYTHM || kind == UD_NOW
+        || kind == UD_PROJECTS || kind == UD_CACHE) {
         /* Data arrives on a timer, so it must never steal the view: refresh
            the numbers, and redraw only if a page it feeds is showing. */
         page_t cur = s_pages.current;
@@ -116,7 +117,9 @@ static void on_message(const char *text, size_t len)
                     || (kind == UD_YEAR && cur == PAGE_YEAR)
                     || (kind == UD_COST && cur == PAGE_COST)
                     || (kind == UD_RHYTHM && cur == PAGE_RHYTHM)
-                    || (kind == UD_NOW && cur == PAGE_NOW);
+                    || (kind == UD_NOW && cur == PAGE_NOW)
+                    || (kind == UD_PROJECTS && cur == PAGE_PROJECTS)
+                    || (kind == UD_CACHE && cur == PAGE_CACHE);
         if (showing) s_drawn_page = PAGE_COUNT;
         return;
     }
@@ -221,7 +224,8 @@ void app_main(void)
     available |= PAGE_BIT(PAGE_STATS) | PAGE_BIT(PAGE_DAILY)
                | PAGE_BIT(PAGE_TODAY) | PAGE_BIT(PAGE_MODELS)
                | PAGE_BIT(PAGE_YEAR) | PAGE_BIT(PAGE_COST)
-               | PAGE_BIT(PAGE_RHYTHM) | PAGE_BIT(PAGE_NOW);
+               | PAGE_BIT(PAGE_RHYTHM) | PAGE_BIT(PAGE_NOW)
+               | PAGE_BIT(PAGE_PROJECTS) | PAGE_BIT(PAGE_CACHE);
     touch = gt911_init() == ESP_OK;
     if (touch) available |= PAGE_BIT(PAGE_SETTINGS);   /* useless without a finger */
 
@@ -337,6 +341,8 @@ void app_main(void)
             case PAGE_DAILY:
             case PAGE_MODELS:
             case PAGE_COST:
+            case PAGE_PROJECTS:
+            case PAGE_CACHE:
                 s_anim_start = now;      /* drawn by the animation below */
                 break;
             case PAGE_MESSAGE: draw_message(c); display_blit(); break;
@@ -368,7 +374,9 @@ void app_main(void)
         if (s_anim_start != 0
             && (s_pages.current == PAGE_STATS || s_pages.current == PAGE_DAILY
                 || s_pages.current == PAGE_MODELS
-                || s_pages.current == PAGE_COST)) {
+                || s_pages.current == PAGE_COST
+                || s_pages.current == PAGE_PROJECTS
+                || s_pages.current == PAGE_CACHE)) {
             int64_t elapsed = now - s_anim_start;
             float t = (float)elapsed / (float)ANIM_US;
             bool last = t >= 1.0f;
@@ -380,6 +388,8 @@ void app_main(void)
             if (s_pages.current == PAGE_STATS) views_stats(c, &v, t, now);
             else if (s_pages.current == PAGE_MODELS) views_models(c, &v, t, now);
             else if (s_pages.current == PAGE_COST) views_cost(c, &v, t, now);
+            else if (s_pages.current == PAGE_PROJECTS) views_projects(c, &v, t, now);
+            else if (s_pages.current == PAGE_CACHE) views_cache(c, &v, t, now);
             else views_daily(c, &v, t, now);
             display_blit();
         }

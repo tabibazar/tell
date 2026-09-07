@@ -150,6 +150,28 @@ static void synthetic(void)
     rhythm[at] = '\0';
     usagedata_parse(&data, rhythm, 1000000);
 
+    usagedata_parse(&data, "!projects\nhost air\ndays 23\n"
+                           "p stan 1510018039 125243 10 4372\np tf 958502138 65480 10 2795\n"
+                           "p kanban 749151394 55263 1 1605\np reporting 532726947 36100 3 1755\n"
+                           "p rag 523060098 33587 1 1141\np tenki 433654560 35737 6 1911\n"
+                           "p subagents 426444156 36664 6 5400\np other 706855171 70577 19 4228\n",
+                    1000000);
+    {
+        char cache[640] = "!cache\nhost air\nstart 20644\ntoday 20703\n"
+                          "m opus-5 58975 5359382315 96773724 2411722\n"
+                          "m opus-4.7 70162 4868320670 114822266 2190744\n"
+                          "m opus-4.8 273497 1697677219 29796157 763955\n"
+                          "m fable-5.1 629791 395973556 29088319 386074\n"
+                          "m sonnet-5 6606 213269707 9557790 38389\n"
+                          "m haiku-4.5 9675 106703725 5342151 9603\n"
+                          "saved 5845575\ncost 949126\ngrid ";
+        size_t n = strlen(cache);
+        for (int i = 0; i < 60; i++) cache[n++] = (i % 7 == 6) ? '.' : (char)('p' + (i % 10));
+        cache[n++] = '\n';
+        cache[n] = '\0';
+        usagedata_parse(&data, cache, 1000000);
+    }
+
     usagedata_parse(&data, "!now\nhost air\ntokens 85406000\ncost 8337\nmsgs 290\n"
                            "sessions 1\navg 306469905\nlast 5\nmodel fable-5.1\n"
                            "project tell\nsession 4883\n", 1000000);
@@ -250,6 +272,29 @@ int main(int argc, char **argv)
     }
     views_now(&cv, &empty, now);
     expect("empty now page shows a message", lit_in(0, 48, W, 72) > 0);
+
+    /* By project. */
+    views_projects(&cv, &view, 1.0f, now);
+    save(prefix, "projects");
+    expect("projects present", view.projects.present && view.projects.count == 8);
+    expect("project bars drawn", lit_in(17 * 12, 2 * 24, 44 * 12, 10 * 24) > 500);
+    expect("project values drawn", lit_in(45 * 12, 2 * 24, W, 10 * 24) > 200);
+    expect("project summary drawn", lit_in(0, 18 * 24, W, 19 * 24) > 0);
+    expect("projects text stops short of the right edge", lit_in(W - 12, 24, W, H) == 0);
+    views_projects(&cv, &empty, 1.0f, now);
+    expect("empty projects page shows a message", lit_in(0, 48, W, 72) > 0);
+
+    /* Cache efficiency. */
+    views_cache(&cv, &view, 1.0f, now);
+    save(prefix, "cache");
+    expect("cache present", view.cache.present && view.cache.hit_pct > 90);
+    expect("cache headline drawn", lit_in(0, 2 * 24, W, 4 * 24) > 200);
+    expect("cache model bars drawn", lit_in(17 * 12, 6 * 24, 45 * 12, 12 * 24) > 500);
+    expect("cache daily line drawn", count_colour(pal_heat(4)) > 300);
+    expect("cache dates drawn", lit_in(60, 18 * 24, W, 19 * 24) > 0);
+    expect("cache text stops short of the right edge", lit_in(W - 12, 24, W, H) == 0);
+    views_cache(&cv, &empty, 1.0f, now);
+    expect("empty cache page shows a message", lit_in(0, 48, W, 72) > 0);
 
     /* The settings page, and whether its buttons can be hit. */
     settings_t st;

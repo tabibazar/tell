@@ -8,6 +8,8 @@
     tools/claude-stats.py --format data --section cost   # API-equivalent cost
     tools/claude-stats.py --format data --section rhythm # weekday x hour heatmap
     tools/claude-stats.py --format data --section now    # today, live
+    tools/claude-stats.py --format data --section projects  # tokens by repository
+    tools/claude-stats.py --format data --section cache  # prompt-cache hit rate
 
 Reads the session transcripts under ~/.claude/projects for recent, exact
 figures, and merges ~/.claude/stats-cache.json for the months before that:
@@ -152,6 +154,9 @@ def collect(pattern=TRANSCRIPTS, cache=None):
     msgs_by_day = collections.Counter()
     sessions_by_day = collections.defaultdict(set)
     latest = None                       # (epoch, model, project, session id)
+    projects = collections.defaultdict(
+        lambda: {"tokens": 0, "cost": 0.0, "msgs": 0, "sessions": set()})
+    daily_cache = collections.defaultdict(lambda: [0, 0, 0])   # in, cread, cwrite
     files = 0
     calls = 0
     first_day = last_day = None
@@ -215,6 +220,16 @@ def collect(pattern=TRANSCRIPTS, cache=None):
                 model_daily[model][day] += total
                 rhythm[(when.weekday(), when.hour)] += 1
                 rhythm_days.add(day)
+                dc = daily_cache[day]
+                dc[0] += u.get("input_tokens") or 0
+                dc[1] += u.get("cache_read_input_tokens") or 0
+                dc[2] += u.get("cache_creation_input_tokens") or 0
+                pj = projects[project]
+                pj["tokens"] += total
+                pj["cost"] += cost
+                pj["msgs"] += 1
+                if d.get("sessionId"):
+                    pj["sessions"].add(d["sessionId"])
                 msgs_by_day[day] += 1
                 if d.get("sessionId"):
                     sessions_by_day[day].add(d["sessionId"])
@@ -238,7 +253,8 @@ def collect(pattern=TRANSCRIPTS, cache=None):
              "estimated_days": 0,
              "rhythm": rhythm, "rhythm_days": len(rhythm_days),
              "msgs_by_day": msgs_by_day, "sessions_by_day": sessions_by_day,
-             "session_spans": sessions, "latest": latest}
+             "session_spans": sessions, "latest": latest,
+             "projects": projects, "daily_cache": daily_cache}
     if cache is None:
         cache = load_cache()
     elif isinstance(cache, str):
@@ -620,8 +636,83 @@ def render_now(stats, now=None):
     return lines
 
 
+PCT_ALPHABET = GRID_ALPHABET      # 62 steps, linear: 0..100% to within 1.6%
+
+
+def pct_char(pct):
+    """A percentage as one character on a linear scale. The log scale used for
+    tokens would be wrong here: 97% and 93% must not share a character."""
+    if pct is None:
+        return "."
+    i = int(round(max(0.0, min(100.0, pct)) * (len(PCT_ALPHABET) - 1) / 100.0))
+    return PCT_ALPHABET[i]
+
+
+def render_projects(stats):
+    """The !projects payload: the repositories the tokens went to, from the
+    transcripts on this machine (the stats cache has no per-project data)."""
+    projects = stats.get("projects", {})
+    ranked = sorted(projects.items(), key=lambda kv: -kv[1]["tokens"])
+    lines = ["!projects", "host %s" % host_name(),
+             "days %d" % stats.get("rhythm_days", 0)]
+    shown, other = ranked[:7], ranked[7:]
+    for name, pj in shown:
+        lines.append("p %s %d %d %d %d" % (name[:15], pj["tokens"], cents(pj["cost"]),
+                                           len(pj["sessions"]), pj["msgs"]))
+    if other:
+        lines.append("p other %d %d %d %d" % (
+            sum(pj["tokens"] for _, pj in other),
+            cents(sum(pj["cost"] for _, pj in other)),
+            sum(len(pj["sessions"]) for _, pj in other),
+            sum(pj["msgs"] for _, pj in other)))
+    return lines
+
+
+def cache_saving(model, cread):
+    """Dollars saved by serving `cread` tokens from cache instead of as input."""
+    pin, _, pread, _ = price_of(model)
+    return cread * (pin - pread) / 1e6
+
+
+def render_cache(stats, today=None):
+    """The !cache payload: how much of the input came from cache, per model
+    all time and per day for the last MODEL_DAYS, and what that saved."""
+    today = today or dt.date.today()
+    models = stats["models"]
+    start = today - dt.timedelta(days=MODEL_DAYS - 1)
+    lines = ["!cache", "host %s" % host_name(),
+             "start %d" % day_number(start), "today %d" % day_number(today)]
+
+    saved = 0.0
+    ranked = sorted(models.items(),
+                    key=lambda kv: -(kv[1]["in"] + kv[1]["cread"] + kv[1]["ccreate"]))
+    for name, m in ranked[:8]:
+        s_ = cache_saving(name, m["cread"])
+        saved += s_
+        lines.append("m %s %d %d %d %d" % (name[:15], m["in"], m["cread"],
+                                           m["ccreate"], cents(s_)))
+    saved += sum(cache_saving(n, m["cread"]) for n, m in ranked[8:])
+    lines.append("saved %d" % cents(saved))
+    lines.append("cost %d" % cents(sum(m["cost"] for m in models.values())))
+
+    daily_cache = stats.get("daily_cache", {})
+    chars = []
+    day = start
+    while day <= today:
+        dc = daily_cache.get(day.isoformat())
+        total = sum(dc) if dc else 0
+        chars.append(pct_char(100.0 * dc[1] / total if total else None))
+        day += dt.timedelta(days=1)
+    lines.append("grid %s" % "".join(chars))
+    return lines
+
+
 def render_data(stats, section, today=None):
     """Marker-prefixed lines for the firmware to parse."""
+    if section == "projects":
+        return render_projects(stats)
+    if section == "cache":
+        return render_cache(stats, today)
     if section == "year":
         return render_year(stats, today)
     if section == "cost":
@@ -842,6 +933,32 @@ def self_test():
         failures += 1
     print("ok   now payload (%d bytes)" % len(payload))
 
+    if pct_char(0) != "0" or pct_char(100) != "z" or pct_char(None) != "." \
+            or pct_char(50) != PCT_ALPHABET[round(61 * 0.5)]:
+        print("FAIL percent characters: %r %r %r" % (pct_char(0), pct_char(100), pct_char(50)))
+        failures += 1
+    print("ok   percent characters")
+
+    fake["projects"] = {"p%d" % i: {"tokens": 1000 * (10 - i), "cost": float(i),
+                                      "msgs": i, "sessions": set(range(i))}
+                        for i in range(10)}
+    payload = "\n".join(render_projects(fake))
+    rows = [l for l in payload.split("\n") if l.startswith("p ")]
+    if len(rows) != 8 or not rows[-1].startswith("p other ") or "p p0 10000 0 0 0" not in payload:
+        print("FAIL projects payload:\n%s" % payload)
+        failures += 1
+    print("ok   projects payload (%d bytes)" % len(payload))
+
+    fake["daily_cache"] = {"2026-09-07": [10, 90, 0], "2026-09-06": [50, 50, 0]}
+    payload = "\n".join(render_cache(fake, dt.date(2026, 9, 7)))
+    grid = [l for l in payload.split("\n") if l.startswith("grid ")][0][5:]
+    # opus-5: 4e9 cached tokens at $5 - $0.50 per million = $18,000 saved.
+    if len(grid) != MODEL_DAYS or grid[-1] != pct_char(90) or grid[-2] != pct_char(50) \
+            or grid[0] != "." or "m opus-5 1 4000000000 5 1800000" not in payload:
+        print("FAIL cache payload:\n%s" % payload)
+        failures += 1
+    print("ok   cache payload (%d bytes)" % len(payload))
+
     print("all tests passed" if not failures else "%d test(s) failed" % failures)
     return 1 if failures else 0
 
@@ -853,7 +970,8 @@ def main():
     ap.add_argument("--self-test", action="store_true")
     ap.add_argument("--format", choices=("ascii", "data"), default="ascii")
     ap.add_argument("--section",
-                    choices=("stats", "daily", "year", "cost", "rhythm", "now"),
+                    choices=("stats", "daily", "year", "cost", "rhythm", "now",
+                             "projects", "cache"),
                     default="stats")
     ap.add_argument("--no-cache", action="store_true",
                     help="transcripts only; skip ~/.claude/stats-cache.json")
@@ -867,7 +985,8 @@ def main():
     stats = collect(cache=False if a.no_cache else None)
     if a.all:
         os.makedirs(a.all, exist_ok=True)
-        for section in ("stats", "daily", "year", "cost", "rhythm", "now"):
+        for section in ("stats", "daily", "year", "cost", "rhythm", "now",
+                        "projects", "cache"):
             with open(os.path.join(a.all, section + ".txt"), "w") as f:
                 f.write("\n".join(render_data(stats, section)) + "\n")
         return
