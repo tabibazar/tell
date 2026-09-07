@@ -25,5 +25,5 @@ total=$(wc -l < "$LOG" | tr -d ' ')
 new=$((total - sent))
 [ "$new" -gt 40 ] && new=40
 
-tail -n "$new" "$LOG" | ./mac/tell --device "$DEVICE"
+tail -n "$new" "$LOG" | ./tools/tell-locked.sh --device "$DEVICE"
 echo "$total" > "$OFFSET"

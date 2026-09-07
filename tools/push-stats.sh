@@ -14,6 +14,6 @@ if ! mkdir "$LOCK" 2>/dev/null; then
 fi
 trap 'rmdir "$LOCK"' EXIT
 
-./tools/claude-stats.py --format data --section stats | ./mac/tell --device "$DEVICE"
-./tools/claude-stats.py --format data --section daily | ./mac/tell --device "$DEVICE"
+./tools/claude-stats.py --format data --section stats | ./tools/tell-locked.sh --device "$DEVICE"
+./tools/claude-stats.py --format data --section daily | ./tools/tell-locked.sh --device "$DEVICE"
 echo "pushed stats and daily to $DEVICE"

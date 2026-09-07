@@ -25,5 +25,5 @@ WX=$(curl -s --max-time 15 "https://wttr.in/${CITY}?format=%C++%t++feels+%f++%h"
 # A failed fetch must not blank the line and leave the page looking broken.
 [ -n "$WX" ] || WX="weather unavailable"
 
-printf '!clock\ndate %s\nwx %s\n' "$DATE" "$WX" | ./mac/tell --device "$DEVICE"
+printf '!clock\ndate %s\nwx %s\n' "$DATE" "$WX" | ./tools/tell-locked.sh --device "$DEVICE"
 echo "clock: $DATE | $WX"
