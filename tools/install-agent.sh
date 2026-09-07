@@ -1,7 +1,6 @@
 #!/bin/sh
 # Install the launchd agents that keep the board updated:
 #   tell-stats   pushes this machine's Claude usage every 60s
-#   screen-pump  ships the running log every 5s
 #   push-clock   sends the date and weather every 15 min
 #
 # Paths are written at install time, so this works from wherever the repo is
@@ -45,8 +44,7 @@ install_one() {         # name, script, interval
 }
 
 install_one tell-stats  push-stats.sh   60
-install_one screen-pump screen-pump.sh   5
 install_one push-clock  push-clock.sh  300
 
-echo "logs: /tmp/tell-stats.log /tmp/screen-pump.log /tmp/push-clock.log (and .err)"
+echo "logs: /tmp/tell-stats.log /tmp/push-clock.log (and .err)"
 echo "remove: launchctl bootout gui/$(id -u)/com.tabibazar.<name>"
