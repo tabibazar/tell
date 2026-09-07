@@ -1,9 +1,11 @@
 #include "display.h"
 #include "ble_uart.h"
+#include "logview.h"
 #include "gt911.h"
 #include "pages.h"
 #include "timecalc.h"
 #include "usagedata.h"
+#include "palette.h"
 #include "views.h"
 
 #include "esp_log.h"
@@ -18,15 +20,16 @@
 static const char *TAG = "main";
 
 #define TICK_MS 50            /* also the touch poll interval */
-#define MESSAGE_MAX 512
 
 static uint32_t s_base_secs;
 static int64_t  s_base_us;
 static bool     s_synced;
 
 static usagedata_t s_data;
-static char s_message[MESSAGE_MAX + 1];
+static logview_t s_log;
 static pages_t s_pages;
+
+static int s_log_cols = LOG_MAX_COLS;
 
 /* Forces a redraw when the page or the displayed second changes. */
 static page_t s_drawn_page = PAGE_COUNT;
@@ -53,16 +56,36 @@ static void on_message(const char *text, size_t len)
         return;
     }
     if (len == 0) {
-        s_message[0] = '\0';
+        logview_clear(&s_log);
         pages_show(&s_pages, PAGE_CLOCK, now);
     } else {
-        /* A message is someone talking to you, so it does take the view. */
-        size_t n = len < MESSAGE_MAX ? len : MESSAGE_MAX;
-        memcpy(s_message, text, n);
-        s_message[n] = '\0';
+        /* Text appends to a running log rather than replacing it, so the page
+           reads as a feed of what Claude is doing. */
+        logview_append(&s_log, text, s_log_cols);
         pages_show(&s_pages, PAGE_MESSAGE, now);
     }
     s_drawn_page = PAGE_COUNT;    /* force a redraw */
+}
+
+/* The log page: a title row, then the newest lines that fit. */
+static void draw_log(canvas_t *c)
+{
+    canvas_clear(c);
+    canvas_fill_rect(c, 0, 0, c->w, c->cell_h, PAL_TITLE_BG);
+    canvas_puts(c, 1, 0, "CLAUDE", PAL_FG);
+
+    int held = logview_held(&s_log);
+    if (held == 0) {
+        canvas_puts(c, 1, 2, "idle -- nothing yet", PAL_DIM);
+        return;
+    }
+
+    int rows = c->rows - 1;              /* one row goes to the title */
+    int shown = held < rows ? held : rows;
+    for (int i = 0; i < shown; i++) {
+        const char *line = logview_visible(&s_log, shown, i);
+        if (line) canvas_puts(c, 0, i + 1, line, PAL_FG);
+    }
 }
 
 static void draw_clock(canvas_t *c, int64_t now)
@@ -99,8 +122,10 @@ void app_main(void)
     touch = gt911_init() == ESP_OK;
 #endif
     pages_init(&s_pages, available);
+    logview_clear(&s_log);
 
     canvas_t *c = display_canvas();
+    s_log_cols = c->cols;
 
     if (ble_uart_start(on_message, on_time) != ESP_OK) {
         ESP_LOGE(TAG, "ble start failed");
@@ -130,16 +155,7 @@ void app_main(void)
             switch (s_pages.current) {
             case PAGE_STATS:   views_stats(c, &s_data); display_blit(); break;
             case PAGE_DAILY:   views_daily(c, &s_data); display_blit(); break;
-            case PAGE_MESSAGE:
-                /* A blank page says nothing about what it is or why it is
-                   empty, so name it rather than showing nothing. */
-                /* This page carries Claude's running commentary while it
-                   works. Name it, so an empty one reads as "idle" rather
-                   than as a broken screen. */
-                canvas_text(c, s_message[0] ? s_message
-                                            : "CLAUDE\n\nidle -- no update yet");
-                display_blit();
-                break;
+            case PAGE_MESSAGE: draw_log(c); display_blit(); break;
             default: break;
             }
         }
