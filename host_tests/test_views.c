@@ -214,6 +214,12 @@ static void synthetic(void)
                            "longest 46144 20696\n"
                            "grid M...........................F...DEDF..DEDFF..ECBEE..CFCE...C\n",
                     1000000);
+    usagedata_parse(&data, "!story\nhost air\ndate 20703\nprompts 41\n"
+                           "text You spent the day on tell, the desk display: you added a year\n"
+                           "text heatmap, a cost page and a menu, fixed a touch driver bug that had\n"
+                           "text broken every button, and wired in a DS3231 so the clock survives a\n"
+                           "text power cycle. Late in the day you asked for a recap page, which is\n"
+                           "text what you are reading now.\n", 1000000);
     usagedata_parse(&data, "!now\nhost air\ntokens 85406000\ncost 8337\nmsgs 290\n"
                            "sessions 1\navg 306469905\nlast 5\nmodel fable-5.1\n"
                            "project tell\nsession 4883\n", 1000000);
@@ -407,6 +413,15 @@ int main(int argc, char **argv)
     expect("turns text stops short of the right edge", lit_in(W - 12, 24, W, H) == 0);
     views_turns(&cv, &empty, 1.0f, now);
     expect("empty turns page shows a message", lit_in(0, 48, W, 72) > 0);
+
+    /* Today's story. */
+    views_story(&cv, &view, now);
+    save(prefix, "story");
+    expect("story present", view.story.present && view.story.prompts > 0);
+    expect("story prose drawn over several lines", lit_in(24, 2 * 24, W, 10 * 24) > 2000);
+    expect("story text stops short of the right edge", lit_in(W - 12, 24, W, H) == 0);
+    views_story(&cv, &empty, now);
+    expect("empty story page shows a message", lit_in(0, 48, W, 72) > 0);
 
     /* The menu, and whether every tile can be hit. */
     {

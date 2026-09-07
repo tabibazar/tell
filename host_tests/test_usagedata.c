@@ -655,6 +655,27 @@ int main(void)
     parse("!turns\nhost air\ndays 3\n");
     expect("turns without a count is not drawn", !v.turns.present);
 
+    /* Today's story. */
+    memset(&d, 0, sizeof d);
+    expect("story marker recognised",
+           parse("!story\nhost air\ndate 20703\nprompts 41\ntext You spent the day on tell,\n"
+                 "text adding pages.\n") == UD_STORY);
+    expect("story lines joined",
+           v.story.present && v.story.day == 20703 && v.story.prompts == 41
+           && strcmp(v.story.text, "You spent the day on tell, adding pages.") == 0);
+    parse("!story\nhost studio\ndate 20702\nprompts 90\ntext Yesterday's.\n");
+    expect("the newer day's story wins", strcmp(v.story.text, "You spent the day on tell, adding pages.") == 0);
+    parse("!story\nhost studio\ndate 20703\nprompts 90\ntext Busier machine.\n");
+    expect("same day: the machine with more prompts wins", strcmp(v.story.text, "Busier machine.") == 0);
+    {
+        char longp[1200] = "!story\ndate 30000\nprompts 1\ntext ";
+        for (int i = 0; i < 900; i++) strncat(longp, "x", sizeof longp - strlen(longp) - 1);
+        parse(longp);
+        expect("a long story is truncated, not overflowed", strlen(v.story.text) == UD_STORY_MAX);
+    }
+    parse("!story\ndate 5\n");
+    expect("a story without text is not drawn for that machine", !v.story.present || v.story.day != 5);
+
     if (failures == 0) { printf("all tests passed\n"); return 0; }
     printf("%d test(s) failed\n", failures);
     return 1;

@@ -10,6 +10,7 @@ typedef enum {
     PAGE_CLOCK = 0,
     PAGE_MENU,       /* a tile per page; first tap from the clock opens it */
     PAGE_NOW,        /* today so far, and whether Claude is busy */
+    PAGE_STORY,      /* a recap of the day, written by Claude */
     PAGE_WEEK,       /* the last seven days against the seven before */
     PAGE_STATS,
     PAGE_TODAY,

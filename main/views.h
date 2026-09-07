@@ -67,6 +67,9 @@ void views_menu(canvas_t *c, const pages_t *p);
    page it stands for. */
 bool views_menu_hit(canvas_t *c, const pages_t *p, int x, int y, page_t *page);
 
+/* Today's story: the recap as wrapped prose. */
+void views_story(canvas_t *c, const ud_view_t *d, int64_t now_us);
+
 /* The settings page: each setting as a row of buttons, the current choice
    lit. Touch only, so it is not offered on the Feather. */
 void views_settings(canvas_t *c, const settings_t *s);

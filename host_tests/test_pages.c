@@ -20,7 +20,7 @@ static void expect(const char *what, int cond)
              | PAGE_BIT(PAGE_CACHE) | PAGE_BIT(PAGE_TOOLS) \
              | PAGE_BIT(PAGE_THINKING) | PAGE_BIT(PAGE_WEEK) \
              | PAGE_BIT(PAGE_RECORDS) | PAGE_BIT(PAGE_RUNS) \
-             | PAGE_BIT(PAGE_MENU) | PAGE_BIT(PAGE_TURNS))
+             | PAGE_BIT(PAGE_MENU) | PAGE_BIT(PAGE_TURNS) | PAGE_BIT(PAGE_STORY))
 #define FEATHER (PAGE_BIT(PAGE_CLOCK) | PAGE_BIT(PAGE_MESSAGE))
 
 int main(void)
@@ -31,6 +31,7 @@ int main(void)
     expect("starts on the clock", p.current == PAGE_CLOCK);
     expect("advance goes to the menu", pages_advance(&p, 850) == PAGE_MENU);
     expect("then now", pages_advance(&p, 900) == PAGE_NOW);
+    expect("then the story", pages_advance(&p, 920) == PAGE_STORY);
     expect("then the week", pages_advance(&p, 950) == PAGE_WEEK);
     expect("then stats", pages_advance(&p, 1000) == PAGE_STATS);
     expect("then today", pages_advance(&p, 2000) == PAGE_TODAY);

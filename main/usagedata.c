@@ -113,6 +113,7 @@ ud_kind_t usagedata_parse(usagedata_t *d, const char *payload,
     else if (starts_with(payload, "!records")) kind = UD_RECORDS;
     else if (starts_with(payload, "!runs")) kind = UD_RUNS;
     else if (starts_with(payload, "!turns")) kind = UD_TURNS;
+    else if (starts_with(payload, "!story")) kind = UD_STORY;
     else return UD_NONE;
 
     if (kind == UD_CLOCK) {
@@ -128,7 +129,7 @@ ud_kind_t usagedata_parse(usagedata_t *d, const char *payload,
         || kind == UD_COST || kind == UD_RHYTHM || kind == UD_NOW
         || kind == UD_PROJECTS || kind == UD_CACHE || kind == UD_TOOLS
         || kind == UD_THINKING || kind == UD_WEEK || kind == UD_RECORDS
-        || kind == UD_RUNS || kind == UD_TURNS) {
+        || kind == UD_RUNS || kind == UD_TURNS || kind == UD_STORY) {
         char name[UD_HOST_MAX + 1];
         find_host(payload, name);
         h = host_slot(d, name);
@@ -148,6 +149,7 @@ ud_kind_t usagedata_parse(usagedata_t *d, const char *payload,
         else if (kind == UD_RECORDS) memset(&h->records, 0, sizeof h->records);
         else if (kind == UD_RUNS) memset(&h->runs, 0, sizeof h->runs);
         else if (kind == UD_TURNS) memset(&h->turns, 0, sizeof h->turns);
+        else if (kind == UD_STORY) memset(&h->story, 0, sizeof h->story);
         else { memset(&h->now, 0, sizeof h->now); h->now_sent_us = now_us; }
     }
 
@@ -466,6 +468,22 @@ ud_kind_t usagedata_parse(usagedata_t *d, const char *payload,
             else if (strcmp(tag, "longest") == 0) { tn->longest = (uint32_t)a; tn->longest_day = (int32_t)b; }
             else if (strcmp(tag, "start") == 0) tn->start = (int32_t)a;
             else if (strcmp(tag, "today") == 0) tn->today = (int32_t)a;
+        } else if (kind == UD_STORY) {
+            ud_story_t *st = &h->story;
+            char num[24];
+            if (strcmp(tag, "text") == 0) {
+                /* Lines of the recap, joined with spaces, verbatim. */
+                while (*q == ' ' || *q == '\t') q++;
+                size_t have = strlen(st->text);
+                if (have > 0 && have < UD_STORY_MAX) st->text[have++] = ' ';
+                while (*q && *q != '\n' && *q != '\r' && have < UD_STORY_MAX)
+                    st->text[have++] = *q++;
+                st->text[have] = '\0';
+                st->used = true;
+            } else if (token(q, num, sizeof num - 1) != NULL) {
+                if (strcmp(tag, "date") == 0) st->day = (int32_t)strtol(num, NULL, 10);
+                else if (strcmp(tag, "prompts") == 0) st->prompts = (uint32_t)strtoul(num, NULL, 10);
+            }
         } else if (kind == UD_CLOCK) {
             /* The rest of the line is free text, so take it verbatim. */
             char *dest = NULL;
@@ -578,7 +596,7 @@ static bool contributes(const ud_host_t *h)
                        || h->cost.used || h->rhythm.used || h->now.used
                        || h->projects.used || h->cache.used || h->tools.used
                        || h->thinking.used || h->week.used || h->records.used
-                       || h->runs.used || h->turns.used);
+                       || h->runs.used || h->turns.used || h->story.used);
 }
 
 int usagedata_hosts(const usagedata_t *d)
@@ -1227,9 +1245,27 @@ static void merge_turns(const usagedata_t *d, ud_turns_view_t *v)
         if (n[i] > 0) v->day[i] = sum[i] / n[i];
 }
 
+static void merge_story(const usagedata_t *d, ud_story_view_t *v)
+{
+    memset(v, 0, sizeof *v);
+    for (int i = 0; i < UD_MAX_HOSTS; i++) {
+        const ud_host_t *h = &d->hosts[i];
+        if (!h->used || !h->story.used) continue;
+        const ud_story_t *st = &h->story;
+        bool better = !v->present || st->day > v->day
+                   || (st->day == v->day && st->prompts > v->prompts);
+        if (!better) continue;
+        v->present = true;
+        v->day = st->day;
+        v->prompts = st->prompts;
+        strncpy(v->text, st->text, UD_STORY_MAX);
+    }
+}
+
 void usagedata_merge(const usagedata_t *d, ud_view_t *out)
 {
     memset(out, 0, sizeof *out);
+    merge_story(d, &out->story);
     merge_turns(d, &out->turns);
     merge_runs(d, &out->runs);
     merge_week(d, &out->week);

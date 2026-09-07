@@ -125,7 +125,7 @@ static void on_message(const char *text, size_t len)
         || kind == UD_COST || kind == UD_RHYTHM || kind == UD_NOW
         || kind == UD_PROJECTS || kind == UD_CACHE || kind == UD_TOOLS
         || kind == UD_THINKING || kind == UD_WEEK || kind == UD_RECORDS
-        || kind == UD_RUNS || kind == UD_TURNS) {
+        || kind == UD_RUNS || kind == UD_TURNS || kind == UD_STORY) {
         /* Data arrives on a timer, so it must never steal the view: refresh
            the numbers, and redraw only if a page it feeds is showing. */
         page_t cur = s_pages.current;
@@ -142,7 +142,8 @@ static void on_message(const char *text, size_t len)
                     || (kind == UD_WEEK && cur == PAGE_WEEK)
                     || (kind == UD_RECORDS && cur == PAGE_RECORDS)
                     || (kind == UD_RUNS && cur == PAGE_RUNS)
-                    || (kind == UD_TURNS && cur == PAGE_TURNS);
+                    || (kind == UD_TURNS && cur == PAGE_TURNS)
+                    || (kind == UD_STORY && cur == PAGE_STORY);
         if (showing) s_drawn_page = PAGE_COUNT;
         if (kind == UD_NOW) s_busy_check_us = 0;      /* re-judge busy at once */
         return;
@@ -252,7 +253,7 @@ void app_main(void)
                | PAGE_BIT(PAGE_PROJECTS) | PAGE_BIT(PAGE_CACHE)
                | PAGE_BIT(PAGE_TOOLS) | PAGE_BIT(PAGE_THINKING)
                | PAGE_BIT(PAGE_WEEK) | PAGE_BIT(PAGE_RECORDS)
-               | PAGE_BIT(PAGE_RUNS) | PAGE_BIT(PAGE_TURNS);
+               | PAGE_BIT(PAGE_RUNS) | PAGE_BIT(PAGE_TURNS) | PAGE_BIT(PAGE_STORY);
     touch = gt911_init() == ESP_OK;
     /* Useless without a finger: both are driven by taps on their contents. */
     if (touch) available |= PAGE_BIT(PAGE_SETTINGS) | PAGE_BIT(PAGE_MENU);
@@ -424,6 +425,11 @@ void app_main(void)
                 break;
             case PAGE_MENU:
                 views_menu(c, &s_pages);
+                display_blit();
+                break;
+            case PAGE_STORY:
+                usagedata_merge(&s_data, &v);
+                views_story(c, &v, now);
                 display_blit();
                 break;
             case PAGE_RHYTHM:

@@ -15,9 +15,10 @@ style of Claude Code's own `/stats` screen, a weekday-by-hour heatmap of when
 you work, a live page for today with whether Claude is busy right now, the
 tokens by repository, the prompt-cache hit rate and what caching saved, which
 tools Claude calls and the programs behind its Bash calls, how much of its
-output is thinking, this week against last, your personal records, and what
-it all would have cost at API list prices, plus an almanac and a Settings
-page. While Claude is busy the board shows the live page on its own and
+output is thinking, this week against
+last, your personal records, what it all would have cost at API list
+prices, and a recap of the day written by Claude from your prompts, plus an
+almanac and a Settings page. While Claude is busy the board shows the live page on its own and
 returns to the clock when the work stops; Settings can turn that off.
 
 On the touch panel a tap on the right half of the screen goes to the next
@@ -109,8 +110,8 @@ cd tell
 ```
 
 That checks the prerequisites, builds the client, links it onto your PATH,
-looks for the boards, and starts the agents that keep the clock, charts and
-almanac fresh. `./install.sh big --no-agents` sets up the client alone.
+looks for the boards, and starts the agents that keep the clock, charts,
+almanac and story fresh. `./install.sh big --no-agents` sets up the client alone.
 
 macOS asks your **terminal** for Bluetooth permission the first time; if no
 board is found, grant it under System Settings > Privacy & Security >
@@ -196,13 +197,15 @@ firmware bugs apart from client bugs.
 
 **Data payloads.** A text message that starts with `!stats`, `!daily`,
 `!year`, `!cost`, `!rhythm`, `!now`, `!projects`, `!cache`, `!tools`,
-`!thinking`, `!week`, `!records`, `!runs`, `!turns`, `!clock` or `!today` is
-data for a page rather than a
+`!thinking`, `!week`, `!records`, `!runs`, `!turns`, `!story`, `!clock` or
+`!today` is data for a page rather than a
 message to show, and replaces that section for the sending machine (named on
 a `host` line) without changing what is on screen. `tools/claude-stats.py
 --format data --section <name>` produces each of the first fourteen (or `--all
-DIR` writes them all from one pass); the almanac and weather scripts produce
-the other two.
+DIR` writes them all from one pass); `tools/story.py` writes the recap by
+handing the day's prompts to the `claude` command in headless mode, on your
+subscription, and regenerates only when the prompt count has changed; the
+almanac and weather scripts produce the last two.
 
 The script reads the transcripts under `~/.claude/projects` for recent, exact
 figures and merges `~/.claude/stats-cache.json` for the months before that,

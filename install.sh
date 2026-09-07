@@ -76,4 +76,5 @@ To stop the agents later:
   launchctl bootout gui/$(id -u)/com.tabibazar.tell-stats
   launchctl bootout gui/$(id -u)/com.tabibazar.push-clock
   launchctl bootout gui/$(id -u)/com.tabibazar.push-today
+  launchctl bootout gui/$(id -u)/com.tabibazar.push-story
 USAGE

@@ -16,6 +16,7 @@
 #define UD_RHYTHM_CELLS 168      /* 7 weekdays x 24 hours */
 #define UD_RUN_CATS   7          /* git, build, test, files, scripts, infra, other */
 #define UD_BUSY_SECS  180        /* a message this recent means Claude is working */
+#define UD_STORY_MAX  600        /* the recap, about eight lines of sixty */
 #define UD_HEAT_LEVELS 4
 
 typedef struct {
@@ -201,6 +202,14 @@ typedef struct {
     char grid[UD_MDAYS + 1];         /* median turn per day, seconds x1000 on the log scale */
 } ud_turns_t;
 
+/* Today's story: a recap written by Claude, one machine. */
+typedef struct {
+    bool used;
+    int32_t day;
+    uint32_t prompts;
+    char text[UD_STORY_MAX + 1];
+} ud_story_t;
+
 /* One machine's contribution. Kept separately so a re-push from one Mac
    replaces only its own share instead of clobbering the other's. */
 typedef struct {
@@ -222,6 +231,7 @@ typedef struct {
     ud_records_t records;
     ud_runs_t runs;
     ud_turns_t turns;
+    ud_story_t story;
     int64_t now_sent_us;     /* when the now section arrived, to age "last" */
     int64_t updated_us;      /* when this machine last sent anything */
     bool used;
@@ -387,6 +397,15 @@ typedef struct {
     int64_t day[UD_MDAYS];           /* median turn seconds per day, -1 none */
 } ud_turns_view_t;
 
+/* The story shown: the newest day's, and of those the machine with the most
+   prompts, since each machine writes its own. */
+typedef struct {
+    bool present;
+    int32_t day;
+    uint32_t prompts;
+    char text[UD_STORY_MAX + 1];
+} ud_story_view_t;
+
 /* Every machine's data summed, which is what the charts draw. */
 typedef struct {
     ud_model_t models[UD_MAX_MODELS];
@@ -413,6 +432,7 @@ typedef struct {
     ud_records_view_t records;
     ud_runs_view_t runs;
     ud_turns_view_t turns;
+    ud_story_view_t story;
 
     /* Each model's tokens per day, every machine summed, on the window of the
        machine that sent most recently. mlen is 0 when no machine sent grids. */
@@ -424,7 +444,7 @@ typedef struct {
 typedef enum {
     UD_NONE = 0, UD_STATS, UD_DAILY, UD_CLOCK, UD_TODAY, UD_YEAR, UD_COST,
     UD_RHYTHM, UD_NOW, UD_PROJECTS, UD_CACHE, UD_TOOLS, UD_THINKING,
-    UD_WEEK, UD_RECORDS, UD_RUNS, UD_TURNS
+    UD_WEEK, UD_RECORDS, UD_RUNS, UD_TURNS, UD_STORY
 } ud_kind_t;
 
 /* Parses one payload. "!stats" and "!daily" replace that section for the
