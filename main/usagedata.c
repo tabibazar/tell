@@ -70,11 +70,15 @@ ud_kind_t usagedata_parse(usagedata_t *d, const char *payload)
     if (starts_with(payload, "!stats")) kind = UD_STATS;
     else if (starts_with(payload, "!daily")) kind = UD_DAILY;
     else if (starts_with(payload, "!clock")) kind = UD_CLOCK;
+    else if (starts_with(payload, "!today")) kind = UD_TODAY;
     else return UD_NONE;
 
     if (kind == UD_CLOCK) {
         d->date[0] = '\0';
         d->weather[0] = '\0';
+    } else if (kind == UD_TODAY) {
+        d->moon_name[0] = d->sun[0] = d->dayinfo[0] = d->holiday[0] = '\0';
+        d->moon_phase = 0.0f;
     }
 
     ud_host_t *h = NULL;
@@ -116,6 +120,26 @@ ud_kind_t usagedata_parse(usagedata_t *d, const char *payload)
             if (q == NULL) continue;
             day.tokens = strtoull(num, NULL, 10);
             h->days[h->day_count++] = day;
+        } else if (kind == UD_TODAY) {
+            char *dest = NULL;
+            if (strcmp(tag, "moon") == 0) {
+                /* "moon <phase> <name>": a number then free text. */
+                char num[16];
+                const char *r = token(q, num, sizeof num - 1);
+                if (r == NULL) continue;
+                d->moon_phase = (float)atof(num);
+                q = r;
+                dest = d->moon_name;
+            } else if (strcmp(tag, "sun") == 0) dest = d->sun;
+            else if (strcmp(tag, "day") == 0) dest = d->dayinfo;
+            else if (strcmp(tag, "hol") == 0) dest = d->holiday;
+            if (dest == NULL) continue;
+
+            while (*q == ' ' || *q == '\t') q++;
+            int n = 0;
+            while (q[n] && q[n] != '\n' && q[n] != '\r' && n < UD_TEXT_MAX) n++;
+            memcpy(dest, q, (size_t)n);
+            dest[n] = '\0';
         } else if (kind == UD_CLOCK) {
             /* The rest of the line is free text, so take it verbatim. */
             char *dest = NULL;

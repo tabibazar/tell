@@ -56,6 +56,10 @@ static void on_message(const char *text, size_t len)
     int64_t now = esp_timer_get_time();
 
     ud_kind_t kind = usagedata_parse(&s_data, text);
+    if (kind == UD_TODAY) {
+        if (s_pages.current == PAGE_TODAY) s_drawn_page = PAGE_COUNT;
+        return;
+    }
     if (kind == UD_CLOCK) {
         /* Arrives on a timer like the charts, so it must not steal the view. */
         if (s_pages.current == PAGE_CLOCK) s_drawn_second = -1;
@@ -166,7 +170,8 @@ void app_main(void)
     unsigned available = PAGE_BIT(PAGE_CLOCK) | PAGE_BIT(PAGE_MESSAGE);
     bool touch = false;
 #ifdef CONFIG_SCREEN_BOARD_CROWPANEL_7
-    available |= PAGE_BIT(PAGE_STATS) | PAGE_BIT(PAGE_DAILY);
+    available |= PAGE_BIT(PAGE_STATS) | PAGE_BIT(PAGE_DAILY)
+               | PAGE_BIT(PAGE_TODAY);
     touch = gt911_init() == ESP_OK;
 #endif
     pages_init(&s_pages, available);
@@ -227,6 +232,7 @@ void app_main(void)
                 s_anim_start = now;      /* drawn by the animation below */
                 break;
             case PAGE_MESSAGE: draw_message(c); display_blit(); break;
+            case PAGE_TODAY:   views_today(c, &s_data); display_blit(); break;
             default: break;
             }
         }

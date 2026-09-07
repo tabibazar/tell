@@ -3,6 +3,9 @@
 #include "font.h"
 #include "textwrap.h"
 
+#include <math.h>
+#include <stdbool.h>
+
 void canvas_init(canvas_t *c, uint16_t *fb, int w, int h, int scale)
 {
     if (scale < 1) scale = 1;
@@ -180,5 +183,35 @@ void canvas_puts(canvas_t *c, int col, int row, const char *s, uint16_t colour)
         int x = (col + i) * c->cell_w;
         if (x >= c->w) return;
         glyph(c, s[i], x, row * c->cell_h, c->scale, colour);
+    }
+}
+
+void canvas_moon(canvas_t *c, int cx, int cy, int r, float phase,
+                 uint16_t lit, uint16_t dark)
+{
+    if (r <= 0) return;
+    while (phase < 0.0f) phase += 1.0f;
+    while (phase >= 1.0f) phase -= 1.0f;
+
+    /* The terminator is an ellipse across the disc: its half-width goes from
+       the full radius at new moon, through zero at half, to the radius again
+       at full. cos(2*pi*phase) gives exactly that, signed. */
+    float k = cosf(2.0f * (float)M_PI * phase);
+    bool waxing = phase < 0.5f;
+
+    for (int dy = -r; dy <= r; dy++) {
+        int py = cy + dy;
+        if (py < 0 || py >= c->h) continue;
+
+        int hw = (int)(sqrtf((float)(r * r - dy * dy)) + 0.5f);
+        int term = (int)(k * (float)hw);      /* terminator offset on this row */
+
+        for (int dx = -hw; dx <= hw; dx++) {
+            int px = cx + dx;
+            if (px < 0 || px >= c->w) continue;
+            /* Waxing lights the right-hand side, waning the left. */
+            bool is_lit = waxing ? (dx >= term) : (dx <= -term);
+            c->fb[py * c->w + px] = is_lit ? lit : dark;
+        }
     }
 }

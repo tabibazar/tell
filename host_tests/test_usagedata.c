@@ -135,6 +135,23 @@ int main(void)
     parse("!clock\ndate Monday\n");
     expect("a clock payload leaves stats alone", v.model_count == 1);
 
+    memset(&d, 0, sizeof d);
+    expect("today marker recognised",
+           parse("!today\nmoon 0.85 Waning crescent\n"
+                 "sun rise 06:48   set 19:42\n"
+                 "day day 250 of 365\n"
+                 "hol Thanksgiving in 35 days\n") == UD_TODAY);
+    expect("moon phase parsed", d.moon_phase > 0.84f && d.moon_phase < 0.86f);
+    expect("moon name follows the number",
+           strcmp(d.moon_name, "Waning crescent") == 0);
+    expect("sun line kept", strcmp(d.sun, "rise 06:48   set 19:42") == 0);
+    expect("day line kept", strcmp(d.dayinfo, "day 250 of 365") == 0);
+    expect("holiday kept", strcmp(d.holiday, "Thanksgiving in 35 days") == 0);
+
+    parse("!today\nsun only this\n");
+    expect("a today payload replaces all its fields",
+           d.moon_name[0] == '\0' && d.dayinfo[0] == '\0');
+
     if (failures == 0) { printf("all tests passed\n"); return 0; }
     printf("%d test(s) failed\n", failures);
     return 1;

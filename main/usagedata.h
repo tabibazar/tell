@@ -40,6 +40,13 @@ typedef struct {
        cannot work out a date, and it has no network to ask about weather. */
     char date[UD_TEXT_MAX + 1];
     char weather[UD_TEXT_MAX + 1];
+    /* Almanac, also computed on the Mac: the board has neither a calendar
+       nor the ephemeris to work any of it out. */
+    float moon_phase;                    /* 0 new, 0.5 full, 1 new again */
+    char moon_name[UD_TEXT_MAX + 1];
+    char sun[UD_TEXT_MAX + 1];
+    char dayinfo[UD_TEXT_MAX + 1];
+    char holiday[UD_TEXT_MAX + 1];
 } usagedata_t;
 
 /* Every machine's data summed, which is what the charts draw. */
@@ -51,7 +58,7 @@ typedef struct {
     int host_count;
 } ud_view_t;
 
-typedef enum { UD_NONE = 0, UD_STATS, UD_DAILY, UD_CLOCK } ud_kind_t;
+typedef enum { UD_NONE = 0, UD_STATS, UD_DAILY, UD_CLOCK, UD_TODAY } ud_kind_t;
 
 /* Parses one payload. "!stats" and "!daily" replace that section for the
    sending machine, named by a "host <name>" line and defaulting to "mac".

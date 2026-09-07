@@ -9,6 +9,7 @@ typedef enum {
     PAGE_STATS,
     PAGE_DAILY,
     PAGE_MESSAGE,
+    PAGE_TODAY,
     PAGE_COUNT
 } page_t;
 

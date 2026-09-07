@@ -42,6 +42,11 @@ void canvas_big_at(canvas_t *c, const char *text, int ox, int oy);
 /* Filled rectangle in framebuffer pixels. Clipped to the panel. */
 void canvas_fill_rect(canvas_t *c, int x, int y, int w, int h, uint16_t colour);
 
+/* Draws the moon at `phase` (0 new, 0.5 full, 1 new again) as a disc of
+   radius r centred at (cx, cy): the lit part in `lit`, the rest in `dark`. */
+void canvas_moon(canvas_t *c, int cx, int cy, int r, float phase,
+                 uint16_t lit, uint16_t dark);
+
 /* One line of text at a character cell, in the given colour. Not wrapped;
    clipped at the right edge. */
 void canvas_puts(canvas_t *c, int col, int row, const char *s, uint16_t colour);
