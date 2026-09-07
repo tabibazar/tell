@@ -96,8 +96,13 @@ board is found, grant it under System Settings > Privacy & Security >
 Bluetooth and run the script again.
 
 Each machine tags its data with its own name, and the board keeps them apart:
-a push from one Mac replaces only its own share, and the charts show the sum
-with a "2 machines" note. Set `CLAUDE_SCREEN_HOST` to choose the label.
+a push from one Mac replaces only its own share, and every bar is drawn
+stacked with a segment per machine, named in the legend. Set
+`CLAUDE_SCREEN_HOST` to choose the label.
+
+Only a Mac that can see the board over Bluetooth can contribute, so this means
+machines in the same room. A machine that stops pushing keeps whatever it last
+sent until the board restarts.
 
 The board accepts one BLE connection at a time. Sends on the same machine take
 a shared lock; across machines the client simply retries, five times, ten
