@@ -39,6 +39,8 @@ bool pages_idle_expired(const pages_t *p, int64_t now_us)
 
 bool pages_tick(pages_t *p, int64_t now_us)
 {
+    if (PAGES_ROTATE_US <= 0) return false;    /* rotation disabled */
+
     /* While a page is pinned by a touch or a message, leave it alone. */
     if (now_us - p->last_activity_us <= PAGES_IDLE_US) return false;
     if (now_us - p->last_rotate_us < PAGES_ROTATE_US) return false;

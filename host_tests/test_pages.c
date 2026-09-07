@@ -55,7 +55,9 @@ int main(void)
     pages_init(&p, ALL);
     expect("the clock is never idle", !pages_idle_expired(&p, PAGES_IDLE_US * 10));
 
-    /* Rotation, which exists to stop a static image burning in. */
+    /* Rotation, which exists to stop a static image burning in. Compiled out
+       when PAGES_ROTATE_US is zero, so the assertions follow the setting. */
+#if PAGES_ROTATE_US > 0
     pages_init(&p, ALL);
     expect("no rotation while freshly pinned", !pages_tick(&p, 1000));
 
@@ -83,6 +85,12 @@ int main(void)
     pages_init(&p, PAGE_BIT(PAGE_CLOCK));
     expect("a lone page reports no change",
            !pages_tick(&p, PAGES_IDLE_US + PAGES_ROTATE_US + 1));
+#else
+    pages_init(&p, ALL);
+    expect("rotation disabled: never advances on its own",
+           !pages_tick(&p, PAGES_IDLE_US * 100));
+    expect("and the page does not move", p.current == PAGE_CLOCK);
+#endif
 
     if (failures == 0) { printf("all tests passed\n"); return 0; }
     printf("%d test(s) failed\n", failures);

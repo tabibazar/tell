@@ -17,9 +17,11 @@ typedef enum {
 /* How long a page stays pinned after a touch or a new message. */
 #define PAGES_IDLE_US (5 * 60 * 1000000LL)
 
-/* Once idle, pages advance this often. A static image on an LCD risks
-   retention, and the clock would otherwise sit unchanged for hours. */
-#define PAGES_ROTATE_US (30 * 1000000LL)
+/* Once idle, pages advance this often. Zero disables rotation, leaving the
+   display wherever it was last put. Rotation exists because a static image
+   on an LCD risks retention, so turning it off means the clock can sit
+   unchanged for hours. */
+#define PAGES_ROTATE_US 0
 
 typedef struct {
     unsigned available;      /* bitmask of PAGE_BIT(...) */
