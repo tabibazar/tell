@@ -1,6 +1,7 @@
 #include "display.h"
 #include "ble_uart.h"
 #include "gt911.h"
+#include "pagedefs.h"
 #include "pages.h"
 #include "ds3231.h"
 #include "settings.h"
@@ -45,9 +46,8 @@ static pages_t s_pages;
 static page_t s_drawn_page = PAGE_COUNT;
 static int s_drawn_second = -1;
 
-/* The live page redraws on its own so its ages stay current. */
-#define NOW_REDRAW_US (10 * 1000000LL)
-static int64_t s_now_drawn_us = 0;
+/* When the current page was last drawn, for pages that refresh on their own. */
+static int64_t s_page_drawn_us = 0;
 
 /* Auto-jump: while Claude is busy the live page shows itself, and when the
    work stops the clock comes back. Only from the clock or the saver, so a
@@ -87,7 +87,9 @@ static void apply_settings(void)
    has been sent, because "nothing sent yet" is not worth twenty seconds. */
 static unsigned cycle_skip(void)
 {
-    unsigned skip = PAGE_BIT(PAGE_SETTINGS) | PAGE_BIT(PAGE_MENU);
+    unsigned skip = 0;
+    for (int i = 0; i < PAGE_COUNT; i++)
+        if (!page_defs[i].in_saver) skip |= PAGE_BIT(i);
     if (s_message[0] == '\0') skip |= PAGE_BIT(PAGE_MESSAGE);
     return skip;
 }
@@ -112,39 +114,15 @@ static void on_message(const char *text, size_t len)
     int64_t now = esp_timer_get_time();
 
     ud_kind_t kind = usagedata_parse(&s_data, text, now);
-    if (kind == UD_TODAY) {
-        if (s_pages.current == PAGE_TODAY) s_drawn_page = PAGE_COUNT;
-        return;
-    }
     if (kind == UD_CLOCK) {
         /* Arrives on a timer like the charts, so it must not steal the view. */
         if (s_pages.current == PAGE_CLOCK) s_drawn_second = -1;
         return;
     }
-    if (kind == UD_STATS || kind == UD_DAILY || kind == UD_YEAR
-        || kind == UD_COST || kind == UD_RHYTHM || kind == UD_NOW
-        || kind == UD_PROJECTS || kind == UD_CACHE || kind == UD_TOOLS
-        || kind == UD_THINKING || kind == UD_WEEK || kind == UD_RECORDS
-        || kind == UD_RUNS || kind == UD_TURNS || kind == UD_STORY) {
+    if (kind != UD_NONE) {
         /* Data arrives on a timer, so it must never steal the view: refresh
            the numbers, and redraw only if a page it feeds is showing. */
-        page_t cur = s_pages.current;
-        bool showing = (kind == UD_STATS && (cur == PAGE_STATS || cur == PAGE_MODELS))
-                    || (kind == UD_DAILY && cur == PAGE_DAILY)
-                    || (kind == UD_YEAR && cur == PAGE_YEAR)
-                    || (kind == UD_COST && cur == PAGE_COST)
-                    || (kind == UD_RHYTHM && cur == PAGE_RHYTHM)
-                    || (kind == UD_NOW && cur == PAGE_NOW)
-                    || (kind == UD_PROJECTS && cur == PAGE_PROJECTS)
-                    || (kind == UD_CACHE && cur == PAGE_CACHE)
-                    || (kind == UD_TOOLS && cur == PAGE_TOOLS)
-                    || (kind == UD_THINKING && cur == PAGE_THINKING)
-                    || (kind == UD_WEEK && cur == PAGE_WEEK)
-                    || (kind == UD_RECORDS && cur == PAGE_RECORDS)
-                    || (kind == UD_RUNS && cur == PAGE_RUNS)
-                    || (kind == UD_TURNS && cur == PAGE_TURNS)
-                    || (kind == UD_STORY && cur == PAGE_STORY);
-        if (showing) s_drawn_page = PAGE_COUNT;
+        if (page_defs[s_pages.current].feeds & UD_FEED(kind)) s_drawn_page = PAGE_COUNT;
         if (kind == UD_NOW) s_busy_check_us = 0;      /* re-judge busy at once */
         return;
     }
@@ -243,21 +221,21 @@ void app_main(void)
         return;
     }
 
-    unsigned available = PAGE_BIT(PAGE_CLOCK) | PAGE_BIT(PAGE_MESSAGE);
-    bool touch = false;
+    bool touch = false, big = false;
 #ifdef CONFIG_SCREEN_BOARD_CROWPANEL_7
-    available |= PAGE_BIT(PAGE_STATS) | PAGE_BIT(PAGE_DAILY)
-               | PAGE_BIT(PAGE_TODAY) | PAGE_BIT(PAGE_MODELS)
-               | PAGE_BIT(PAGE_YEAR) | PAGE_BIT(PAGE_COST)
-               | PAGE_BIT(PAGE_RHYTHM) | PAGE_BIT(PAGE_NOW)
-               | PAGE_BIT(PAGE_PROJECTS) | PAGE_BIT(PAGE_CACHE)
-               | PAGE_BIT(PAGE_TOOLS) | PAGE_BIT(PAGE_THINKING)
-               | PAGE_BIT(PAGE_WEEK) | PAGE_BIT(PAGE_RECORDS)
-               | PAGE_BIT(PAGE_RUNS) | PAGE_BIT(PAGE_TURNS) | PAGE_BIT(PAGE_STORY);
+    big = true;
     touch = gt911_init() == ESP_OK;
-    /* Useless without a finger: both are driven by taps on their contents. */
-    if (touch) available |= PAGE_BIT(PAGE_SETTINGS) | PAGE_BIT(PAGE_MENU);
-
+#endif
+    /* Which pages this board offers: the data pages need the big panel, and
+       the menu and settings need a finger. */
+    unsigned available = 0;
+    for (int i = 0; i < PAGE_COUNT; i++) {
+        const page_def_t *pd = &page_defs[i];
+        if (!pd->everywhere && !big) continue;
+        if (pd->needs_touch && !touch) continue;
+        available |= PAGE_BIT(i);
+    }
+#ifdef CONFIG_SCREEN_BOARD_CROWPANEL_7
     /* The clock chip shares the touch bus. If it knows the time, start from
        it, so the display is right before any Mac has said anything. */
     s_rtc = ds3231_init() == ESP_OK;
@@ -395,74 +373,31 @@ void app_main(void)
         /* Once idle, cycle the pages so no image sits long enough to burn in. */
         pages_tick(&s_pages, now);
 
+        const page_def_t *pd = &page_defs[s_pages.current];
         if (s_pages.current != s_drawn_page) {
             s_drawn_page = s_pages.current;
             s_drawn_second = -1;
-            switch (s_pages.current) {
-            case PAGE_STATS:
-            case PAGE_DAILY:
-            case PAGE_MODELS:
-            case PAGE_COST:
-            case PAGE_PROJECTS:
-            case PAGE_CACHE:
-            case PAGE_TOOLS:
-            case PAGE_THINKING:
-            case PAGE_WEEK:
-            case PAGE_RUNS:
-            case PAGE_TURNS:
+            s_page_drawn_us = now;
+            if (pd->draw && pd->animated) {
                 s_anim_start = now;      /* drawn by the animation below */
-                break;
-            case PAGE_MESSAGE: draw_message(c); display_blit(); break;
-            case PAGE_TODAY:   views_today(c, &s_data); display_blit(); break;
-            case PAGE_YEAR:
+            } else if (pd->draw) {
                 usagedata_merge(&s_data, &v);
-                views_year(c, &v, now);
+                pd->draw(c, &v, 1.0f, now);
                 display_blit();
-                break;
-            case PAGE_SETTINGS:
-                views_settings(c, &s_settings);
-                display_blit();
-                break;
-            case PAGE_MENU:
-                views_menu(c, &s_pages);
-                display_blit();
-                break;
-            case PAGE_STORY:
-                usagedata_merge(&s_data, &v);
-                views_story(c, &v, now);
-                display_blit();
-                break;
-            case PAGE_RHYTHM:
-                usagedata_merge(&s_data, &v);
-                views_rhythm(c, &v, now);
-                display_blit();
-                break;
-            case PAGE_RECORDS:
-                usagedata_merge(&s_data, &v);
-                views_records(c, &v, now);
-                display_blit();
-                break;
-            case PAGE_NOW:
-                usagedata_merge(&s_data, &v);
-                views_now(c, &v, now);
-                display_blit();
-                s_now_drawn_us = now;
-                break;
-            default: break;
+            } else {
+                /* The few pages that draw from something other than the
+                   merged view. The clock draws itself below, every second. */
+                switch (s_pages.current) {
+                case PAGE_MESSAGE:  draw_message(c); display_blit(); break;
+                case PAGE_TODAY:    views_today(c, &s_data); display_blit(); break;
+                case PAGE_SETTINGS: views_settings(c, &s_settings); display_blit(); break;
+                case PAGE_MENU:     views_menu(c, &s_pages); display_blit(); break;
+                default: break;
+                }
             }
         }
         /* Grow the bars into place, then hold the finished chart. */
-        if (s_anim_start != 0
-            && (s_pages.current == PAGE_STATS || s_pages.current == PAGE_DAILY
-                || s_pages.current == PAGE_MODELS
-                || s_pages.current == PAGE_COST
-                || s_pages.current == PAGE_PROJECTS
-                || s_pages.current == PAGE_CACHE
-                || s_pages.current == PAGE_TOOLS
-                || s_pages.current == PAGE_THINKING
-                || s_pages.current == PAGE_WEEK
-                || s_pages.current == PAGE_RUNS
-                || s_pages.current == PAGE_TURNS)) {
+        if (s_anim_start != 0 && pd->draw && pd->animated) {
             int64_t elapsed = now - s_anim_start;
             float t = (float)elapsed / (float)ANIM_US;
             bool last = t >= 1.0f;
@@ -471,23 +406,13 @@ void app_main(void)
             t = 1.0f - (1.0f - t) * (1.0f - t);
 
             usagedata_merge(&s_data, &v);
-            if (s_pages.current == PAGE_STATS) views_stats(c, &v, t, now);
-            else if (s_pages.current == PAGE_MODELS) views_models(c, &v, t, now);
-            else if (s_pages.current == PAGE_COST) views_cost(c, &v, t, now);
-            else if (s_pages.current == PAGE_PROJECTS) views_projects(c, &v, t, now);
-            else if (s_pages.current == PAGE_CACHE) views_cache(c, &v, t, now);
-            else if (s_pages.current == PAGE_TOOLS) views_tools(c, &v, t, now);
-            else if (s_pages.current == PAGE_THINKING) views_thinking(c, &v, t, now);
-            else if (s_pages.current == PAGE_WEEK) views_week(c, &v, t, now);
-            else if (s_pages.current == PAGE_RUNS) views_runs(c, &v, t, now);
-            else if (s_pages.current == PAGE_TURNS) views_turns(c, &v, t, now);
-            else views_daily(c, &v, t, now);
+            pd->draw(c, &v, t, now);
             display_blit();
         }
 
         if (s_pages.current == PAGE_CLOCK) draw_clock(c, now);
-        /* The live page's "last message N ago" keeps counting between pushes. */
-        if (s_pages.current == PAGE_NOW && now - s_now_drawn_us > NOW_REDRAW_US)
+        /* Pages with ages on them redraw on their own so the ages keep counting. */
+        if (pd->refresh_us > 0 && now - s_page_drawn_us > pd->refresh_us)
             s_drawn_page = PAGE_COUNT;
 
         /* USB-Serial-JTAG drops output when no host is attached, so the boot

@@ -21,18 +21,18 @@ void views_daily(canvas_t *c, const ud_view_t *d, float t, int64_t now_us);
 void views_models(canvas_t *c, const ud_view_t *d, float t, int64_t now_us);
 
 /* The last twelve months as a heatmap, with the headline figures. */
-void views_year(canvas_t *c, const ud_view_t *d, int64_t now_us);
+void views_year(canvas_t *c, const ud_view_t *d, float t, int64_t now_us);
 
 /* What the usage would have cost on the API: totals, a bar per model, and
    a bar per day for the last two months. `t` grows the bars. */
 void views_cost(canvas_t *c, const ud_view_t *d, float t, int64_t now_us);
 
 /* When you work: messages by weekday and hour as a heatmap. */
-void views_rhythm(canvas_t *c, const ud_view_t *d, int64_t now_us);
+void views_rhythm(canvas_t *c, const ud_view_t *d, float t, int64_t now_us);
 
 /* Today, live: this day's figures and whether Claude is busy right now.
    Redraw it every few seconds; the "last message" age keeps counting. */
-void views_now(canvas_t *c, const ud_view_t *d, int64_t now_us);
+void views_now(canvas_t *c, const ud_view_t *d, float t, int64_t now_us);
 
 /* By project: a bar per repository with its tokens and cost. */
 void views_projects(canvas_t *c, const ud_view_t *d, float t, int64_t now_us);
@@ -51,7 +51,7 @@ void views_thinking(canvas_t *c, const ud_view_t *d, float t, int64_t now_us);
 void views_week(canvas_t *c, const ud_view_t *d, float t, int64_t now_us);
 
 /* Records: personal bests, each with the day it happened. */
-void views_records(canvas_t *c, const ud_view_t *d, int64_t now_us);
+void views_records(canvas_t *c, const ud_view_t *d, float t, int64_t now_us);
 
 /* What Claude runs: the programs behind the Bash calls, and how they split
    into git, build, test, files, scripts and other. */
@@ -68,7 +68,7 @@ void views_menu(canvas_t *c, const pages_t *p);
 bool views_menu_hit(canvas_t *c, const pages_t *p, int x, int y, page_t *page);
 
 /* Today's story: the recap as wrapped prose. */
-void views_story(canvas_t *c, const ud_view_t *d, int64_t now_us);
+void views_story(canvas_t *c, const ud_view_t *d, float t, int64_t now_us);
 
 /* The settings page: each setting as a row of buttons, the current choice
    lit. Touch only, so it is not offered on the Feather. */

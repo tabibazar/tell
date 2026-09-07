@@ -10,6 +10,7 @@
    the interesting failures are "nothing drawn" and "drawn in the wrong
    region", and those are what is asserted. */
 #include "canvas.h"
+#include "pagedefs.h"
 #include "pages.h"
 #include "palette.h"
 #include "settings.h"
@@ -239,13 +240,13 @@ int main(int argc, char **argv)
     /* Empty data must not crash and must say so. */
     ud_view_t empty;
     memset(&empty, 0, sizeof empty);
-    views_year(&cv, &empty, now);
+    views_year(&cv, &empty, 1.0f, now);
     expect("empty year page shows a message", lit_in(0, 48, W, 72) > 0);
     views_models(&cv, &empty, 1.0f, now);
     expect("empty models page shows a message", lit_in(0, 48, W, 72) > 0);
 
     /* The year page. */
-    views_year(&cv, &view, now);
+    views_year(&cv, &view, 1.0f, now);
     save(prefix, "year");
     expect("year page has data", view.year.present);
     expect("month labels drawn on row 1", lit_in(52, 24, W, 48) > 0);
@@ -287,7 +288,7 @@ int main(int argc, char **argv)
     expect("empty cost page shows a message", lit_in(0, 48, W, 72) > 0);
 
     /* When you work. */
-    views_rhythm(&cv, &view, now);
+    views_rhythm(&cv, &view, 1.0f, now);
     save(prefix, "rhythm");
     expect("rhythm page has data", view.rhythm.present);
     expect("hour labels drawn", lit_in(52, 24, W, 48) > 0);
@@ -298,11 +299,11 @@ int main(int argc, char **argv)
     /* The map itself runs to within 5px of the edge by design; the check is
        that nothing is clipped, so it looks at the last few pixels only. */
     expect("rhythm stays inside the panel", lit_in(W - 4, 24, W, H) == 0);
-    views_rhythm(&cv, &empty, now);
+    views_rhythm(&cv, &empty, 1.0f, now);
     expect("empty rhythm page shows a message", lit_in(0, 48, W, 72) > 0);
 
     /* Today, live: drawn as if pushed just now, then much later. */
-    views_now(&cv, &view, now);
+    views_now(&cv, &view, 1.0f, now);
     save(prefix, "now");
     expect("now page has data", view.now.present);
     expect("status line drawn", lit_in(12, 2 * 24, W, 3 * 24) > 100);
@@ -318,12 +319,12 @@ int main(int argc, char **argv)
         int amber_before = count_colour(pal_heat(4));
         bool was_busy = view.now.have_last
                      && view.now.last_secs + (now - view.now.last_sent_us) / 1000000 < UD_BUSY_SECS;
-        views_now(&cv, &view, now + 3600LL * 1000000LL);
+        views_now(&cv, &view, 1.0f, now + 3600LL * 1000000LL);
         int amber_after = count_colour(pal_heat(4));
         expect("idle later: no more amber than before",
                was_busy ? amber_after < amber_before : amber_after <= amber_before);
     }
-    views_now(&cv, &empty, now);
+    views_now(&cv, &empty, 1.0f, now);
     expect("empty now page shows a message", lit_in(0, 48, W, 72) > 0);
 
     /* By project. */
@@ -384,13 +385,13 @@ int main(int argc, char **argv)
     expect("empty week page shows a message", lit_in(0, 48, W, 72) > 0);
 
     /* Records. */
-    views_records(&cv, &view, now);
+    views_records(&cv, &view, 1.0f, now);
     save(prefix, "records");
     expect("records present", view.records.present && view.records.count == 9);
     expect("nine records drawn two rows apart", lit_in(0, 2 * 24, W, 19 * 24) > 2000);
     expect("record values in amber", count_colour(pal_heat(4)) > 300);
     expect("records text stops short of the right edge", lit_in(W - 12, 24, W, H) == 0);
-    views_records(&cv, &empty, now);
+    views_records(&cv, &empty, 1.0f, now);
     expect("empty records page shows a message", lit_in(0, 48, W, 72) > 0);
 
     /* What Claude runs. */
@@ -415,13 +416,35 @@ int main(int argc, char **argv)
     expect("empty turns page shows a message", lit_in(0, 48, W, 72) > 0);
 
     /* Today's story. */
-    views_story(&cv, &view, now);
+    views_story(&cv, &view, 1.0f, now);
     save(prefix, "story");
     expect("story present", view.story.present && view.story.prompts > 0);
     expect("story prose drawn over several lines", lit_in(24, 2 * 24, W, 10 * 24) > 2000);
     expect("story text stops short of the right edge", lit_in(W - 12, 24, W, H) == 0);
-    views_story(&cv, &empty, now);
+    views_story(&cv, &empty, 1.0f, now);
     expect("empty story page shows a message", lit_in(0, 48, W, 72) > 0);
+
+    /* The page table: every page named, every data page drawable, and the
+       kinds it is fed by real. */
+    {
+        int named = 0, fed = 0, bad_feed = 0;
+        for (int i = 0; i < PAGE_COUNT; i++) {
+            const page_def_t *pd = &page_defs[i];
+            if (pd->name && pd->name[0]) named++;
+            if (pd->feeds) fed++;
+            if (pd->feeds >> UD_KIND_COUNT) bad_feed++;
+            if (pd->animated && !pd->draw) bad_feed++;
+        }
+        expect("every page has a menu name", named == PAGE_COUNT);
+        expect("most pages are fed by a payload", fed >= PAGE_COUNT - 3);
+        expect("feeds name real payload kinds and animation needs a drawer", bad_feed == 0);
+        expect("the live page refreshes itself", page_defs[PAGE_NOW].refresh_us > 0);
+        expect("clock and message exist on every board",
+               page_defs[PAGE_CLOCK].everywhere && page_defs[PAGE_MESSAGE].everywhere);
+        expect("menu and settings need touch and stay out of the saver",
+               page_defs[PAGE_MENU].needs_touch && page_defs[PAGE_SETTINGS].needs_touch
+               && !page_defs[PAGE_MENU].in_saver && !page_defs[PAGE_SETTINGS].in_saver);
+    }
 
     /* The menu, and whether every tile can be hit. */
     {

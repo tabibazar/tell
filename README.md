@@ -178,11 +178,14 @@ alone:
 | `canvas`   | Framebuffer and glyph rendering. Panel independent, host tested |
 | `display_*`| Panel bring-up and blitting. One file per board |
 | `timecalc` | Seconds-since-midnight and days-since-epoch arithmetic. Also pure, also tested |
-| `usagedata` | Parses and merges the data payloads from several Macs. Pure, tested |
-| `views`    | Draws the usage pages onto a canvas. Rendered and inspected on the host |
+| `usagedata` + `ud_*` | Parses and merges the data payloads from several Macs: a small core and one file per payload, registered in `ud_sections.c`. Pure, tested |
+| `view_*`   | Draws the pages onto a canvas, one file per page over `view_common`. Rendered and inspected on the host |
+| `pagedefs` | The page table: name, which payload feeds it, how it is drawn. `main` reads it instead of listing pages |
 
 `main` wires them together. Nothing above `display` knows about SPI or pin
-numbers, and nothing above `ble_uart` knows about GATT.
+numbers, and nothing above `ble_uart` knows about GATT. Adding a page is a
+`view_*.c` file, a `ud_*.c` file if it needs a new payload, an enum entry,
+and one row in each of the two tables; see [docs/developing.md](docs/developing.md).
 
 Rendering goes to an off-screen framebuffer that is blitted in one operation.
 Drawing glyphs straight to the panel would make partial updates visible.

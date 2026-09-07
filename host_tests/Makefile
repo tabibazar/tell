@@ -1,5 +1,9 @@
 CFLAGS = -std=c11 -Wall -Wextra -Werror -g -I../main
 
+# Every page and every payload section is its own file; pick them all up.
+VIEW_SRCS = $(wildcard ../main/view_*.c)
+UD_SRCS = ../main/usagedata.c $(wildcard ../main/ud_*.c)
+
 all: test_textwrap test_font test_font_clock test_timecalc test_canvas test_usagedata test_pages test_views test_settings test_ds3231
 
 test_textwrap: test_textwrap.c ../main/textwrap.c
@@ -17,13 +21,13 @@ test_timecalc: test_timecalc.c ../main/timecalc.c
 test_canvas: test_canvas.c ../main/canvas.c ../main/textwrap.c
 	cc $(CFLAGS) -o $@ $^
 
-test_usagedata: test_usagedata.c ../main/usagedata.c
+test_usagedata: test_usagedata.c $(UD_SRCS)
 	cc $(CFLAGS) -o $@ $^
 
 test_pages: test_pages.c ../main/pages.c
 	cc $(CFLAGS) -o $@ $^
 
-test_views: test_views.c ../main/views.c ../main/canvas.c ../main/textwrap.c ../main/usagedata.c ../main/timecalc.c ../main/settings.c ../main/pages.c
+test_views: test_views.c $(VIEW_SRCS) ../main/pagedefs.c ../main/canvas.c ../main/textwrap.c $(UD_SRCS) ../main/timecalc.c ../main/settings.c ../main/pages.c
 	cc $(CFLAGS) -o $@ $^ -lm
 
 test_settings: test_settings.c ../main/settings.c

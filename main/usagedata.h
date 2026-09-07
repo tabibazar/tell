@@ -444,7 +444,8 @@ typedef struct {
 typedef enum {
     UD_NONE = 0, UD_STATS, UD_DAILY, UD_CLOCK, UD_TODAY, UD_YEAR, UD_COST,
     UD_RHYTHM, UD_NOW, UD_PROJECTS, UD_CACHE, UD_TOOLS, UD_THINKING,
-    UD_WEEK, UD_RECORDS, UD_RUNS, UD_TURNS, UD_STORY
+    UD_WEEK, UD_RECORDS, UD_RUNS, UD_TURNS, UD_STORY,
+    UD_KIND_COUNT
 } ud_kind_t;
 
 /* Parses one payload. "!stats" and "!daily" replace that section for the

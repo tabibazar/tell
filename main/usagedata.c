@@ -1,12 +1,14 @@
-#include "usagedata.h"
+#include "ud_internal.h"
 
 #include <limits.h>
 #include <stdlib.h>
 #include <string.h>
 
-const char *const usagedata_run_cats[UD_RUN_CATS] = {
-    "git", "build", "test", "files", "scripts", "infra", "other"
-};
+/*
+ * The core of the payload parser: the alphabet, the host slots, and the two
+ * dispatch loops. Everything a particular payload means lives in its own
+ * ud_*.c, registered in ud_sections.c.
+ */
 
 static const char GRID_ALPHABET[] =
     "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
@@ -23,9 +25,7 @@ uint64_t usagedata_grid_value(char c)
     return v;
 }
 
-/* Copies up to `max` chars of a whitespace-delimited token. Returns NULL when
-   there was no token, so a caller can abandon a short row. */
-static const char *token(const char *p, char *out, int max)
+const char *ud_token(const char *p, char *out, int max)
 {
     while (*p == ' ' || *p == '\t') p++;
     int n = 0;
@@ -48,9 +48,6 @@ static int starts_with(const char *s, const char *prefix)
     return strncmp(s, prefix, strlen(prefix)) == 0;
 }
 
-/* The slot for a machine, reusing its existing one so a re-push replaces
-   rather than accumulates. Falls back to the last slot when full, which is
-   better than dropping the newest machine silently. */
 static ud_host_t *host_slot(usagedata_t *d, const char *name)
 {
     for (int i = 0; i < UD_MAX_HOSTS; i++)
@@ -68,16 +65,14 @@ static ud_host_t *host_slot(usagedata_t *d, const char *name)
     return &d->hosts[UD_MAX_HOSTS - 1];
 }
 
-/* Scans the payload for its "host <name>" line before parsing rows, since it
-   decides which machine's data is being replaced. */
 static void find_host(const char *payload, char *out)
 {
     strcpy(out, "mac");
     for (const char *p = next_line(payload); *p; p = next_line(p)) {
         char tag[12];
-        const char *q = token(p, tag, 11);
+        const char *q = ud_token(p, tag, 11);
         if (q == NULL) continue;
-        if (strcmp(tag, "host") == 0 && token(q, out, UD_HOST_MAX) != NULL)
+        if (strcmp(tag, "host") == 0 && ud_token(q, out, UD_HOST_MAX) != NULL)
             return;
     }
 }
@@ -91,519 +86,21 @@ int usagedata_pct_value(char c)
     return (i * 100 + steps / 2) / steps;
 }
 
-ud_kind_t usagedata_parse(usagedata_t *d, const char *payload,
-                          int64_t now_us)
-{
-    if (d == NULL || payload == NULL) return UD_NONE;
-
-    ud_kind_t kind;
-    if (starts_with(payload, "!stats")) kind = UD_STATS;
-    else if (starts_with(payload, "!daily")) kind = UD_DAILY;
-    else if (starts_with(payload, "!clock")) kind = UD_CLOCK;
-    else if (starts_with(payload, "!today")) kind = UD_TODAY;
-    else if (starts_with(payload, "!year")) kind = UD_YEAR;
-    else if (starts_with(payload, "!cost")) kind = UD_COST;
-    else if (starts_with(payload, "!rhythm")) kind = UD_RHYTHM;
-    else if (starts_with(payload, "!now")) kind = UD_NOW;
-    else if (starts_with(payload, "!projects")) kind = UD_PROJECTS;
-    else if (starts_with(payload, "!cache")) kind = UD_CACHE;
-    else if (starts_with(payload, "!tools")) kind = UD_TOOLS;
-    else if (starts_with(payload, "!thinking")) kind = UD_THINKING;
-    else if (starts_with(payload, "!week")) kind = UD_WEEK;
-    else if (starts_with(payload, "!records")) kind = UD_RECORDS;
-    else if (starts_with(payload, "!runs")) kind = UD_RUNS;
-    else if (starts_with(payload, "!turns")) kind = UD_TURNS;
-    else if (starts_with(payload, "!story")) kind = UD_STORY;
-    else return UD_NONE;
-
-    if (kind == UD_CLOCK) {
-        d->date[0] = '\0';
-        d->weather[0] = '\0';
-    } else if (kind == UD_TODAY) {
-        d->moon_name[0] = d->sun[0] = d->dayinfo[0] = d->holiday[0] = '\0';
-        d->moon_phase = 0.0f;
-    }
-
-    ud_host_t *h = NULL;
-    if (kind == UD_STATS || kind == UD_DAILY || kind == UD_YEAR
-        || kind == UD_COST || kind == UD_RHYTHM || kind == UD_NOW
-        || kind == UD_PROJECTS || kind == UD_CACHE || kind == UD_TOOLS
-        || kind == UD_THINKING || kind == UD_WEEK || kind == UD_RECORDS
-        || kind == UD_RUNS || kind == UD_TURNS || kind == UD_STORY) {
-        char name[UD_HOST_MAX + 1];
-        find_host(payload, name);
-        h = host_slot(d, name);
-        h->updated_us = now_us;
-        /* A section replaces this machine's rows wholesale: no merge, so no
-           stale rows, and the other machine's data is untouched. */
-        if (kind == UD_STATS) { h->model_count = 0; h->mstart = h->mtoday = 0; }
-        else if (kind == UD_DAILY) h->day_count = 0;
-        else if (kind == UD_YEAR) memset(&h->year, 0, sizeof h->year);
-        else if (kind == UD_COST) memset(&h->cost, 0, sizeof h->cost);
-        else if (kind == UD_RHYTHM) memset(&h->rhythm, 0, sizeof h->rhythm);
-        else if (kind == UD_PROJECTS) memset(&h->projects, 0, sizeof h->projects);
-        else if (kind == UD_CACHE) memset(&h->cache, 0, sizeof h->cache);
-        else if (kind == UD_TOOLS) memset(&h->tools, 0, sizeof h->tools);
-        else if (kind == UD_THINKING) memset(&h->thinking, 0, sizeof h->thinking);
-        else if (kind == UD_WEEK) memset(&h->week, 0, sizeof h->week);
-        else if (kind == UD_RECORDS) memset(&h->records, 0, sizeof h->records);
-        else if (kind == UD_RUNS) memset(&h->runs, 0, sizeof h->runs);
-        else if (kind == UD_TURNS) memset(&h->turns, 0, sizeof h->turns);
-        else if (kind == UD_STORY) memset(&h->story, 0, sizeof h->story);
-        else { memset(&h->now, 0, sizeof h->now); h->now_sent_us = now_us; }
-    }
-
-    for (const char *p = next_line(payload); *p; p = next_line(p)) {
-        char tag[12];
-        const char *q = token(p, tag, 11);
-        if (q == NULL) continue;
-
-        if (kind == UD_STATS && (strcmp(tag, "start") == 0
-                                 || strcmp(tag, "today") == 0)) {
-            char num[24];
-            if (token(q, num, sizeof num - 1) == NULL) continue;
-            int32_t v = (int32_t)strtol(num, NULL, 10);
-            if (tag[0] == 's') h->mstart = v; else h->mtoday = v;
-        } else if (kind == UD_STATS && strcmp(tag, "m") == 0) {
-            if (h->model_count >= UD_MAX_MODELS) continue;
-            ud_model_t m;
-            memset(&m, 0, sizeof m);
-            char num[24];
-            q = token(q, m.name, UD_NAME_MAX);
-            if (q == NULL) continue;
-            q = token(q, num, sizeof num - 1);
-            if (q == NULL) continue;
-            m.out = strtoull(num, NULL, 10);
-            q = token(q, num, sizeof num - 1);
-            m.cread = (q == NULL) ? 0 : strtoull(num, NULL, 10);
-            /* The rest is optional, so a row from an older client still
-               counts; each field is only read if the one before it was. */
-            if (q && (q = token(q, num, sizeof num - 1)) != NULL)
-                m.in = strtoull(num, NULL, 10);
-            if (q && (q = token(q, num, sizeof num - 1)) != NULL)
-                m.cwrite = strtoull(num, NULL, 10);
-            if (q && (q = token(q, num, sizeof num - 1)) != NULL)
-                m.calls = (uint32_t)strtoul(num, NULL, 10);
-            if (q) token(q, m.grid, UD_MDAYS);
-            /* Incremented last, so an abandoned row leaves no trace. */
-            h->models[h->model_count++] = m;
-        } else if (kind == UD_DAILY && strcmp(tag, "d") == 0) {
-            if (h->day_count >= UD_MAX_DAYS) continue;
-            ud_day_t day;
-            char num[24];
-            q = token(q, day.label, UD_LABEL_MAX);
-            if (q == NULL) continue;
-            q = token(q, num, sizeof num - 1);
-            if (q == NULL) continue;
-            day.tokens = strtoull(num, NULL, 10);
-            /* Optional weekday, so the chart can colour by it. Older senders
-               omit it and the day simply has no weekday colour. */
-            day.dow = -1;
-            if (token(q, num, sizeof num - 1) != NULL) {
-                int v = atoi(num);
-                if (v >= 0 && v <= 6) day.dow = (int8_t)v;
-            }
-            h->days[h->day_count++] = day;
-        } else if (kind == UD_TODAY) {
-            char *dest = NULL;
-            if (strcmp(tag, "moon") == 0) {
-                /* "moon <phase> <name>": a number then free text. */
-                char num[16];
-                const char *r = token(q, num, sizeof num - 1);
-                if (r == NULL) continue;
-                d->moon_phase = (float)atof(num);
-                q = r;
-                dest = d->moon_name;
-            } else if (strcmp(tag, "sun") == 0) dest = d->sun;
-            else if (strcmp(tag, "day") == 0) dest = d->dayinfo;
-            else if (strcmp(tag, "hol") == 0) dest = d->holiday;
-            if (dest == NULL) continue;
-
-            while (*q == ' ' || *q == '\t') q++;
-            int n = 0;
-            while (q[n] && q[n] != '\n' && q[n] != '\r' && n < UD_TEXT_MAX) n++;
-            memcpy(dest, q, (size_t)n);
-            dest[n] = '\0';
-        } else if (kind == UD_YEAR) {
-            ud_year_t *y = &h->year;
-            char num[24];
-            if (strcmp(tag, "grid") == 0) {
-                token(q, y->grid, UD_YEAR_MAX);
-            } else if (strcmp(tag, "start") == 0 || strcmp(tag, "today") == 0
-                       || strcmp(tag, "first") == 0) {
-                if (token(q, num, sizeof num - 1) == NULL) continue;
-                int32_t v = (int32_t)strtol(num, NULL, 10);
-                if (tag[0] == 's') y->start = v;
-                else if (tag[0] == 't') y->today = v;
-                else y->first = v;
-            } else if (strcmp(tag, "sessions") == 0
-                       || strcmp(tag, "longest") == 0) {
-                if (token(q, num, sizeof num - 1) == NULL) continue;
-                uint32_t v = (uint32_t)strtoul(num, NULL, 10);
-                if (tag[0] == 's') y->sessions = v;
-                else y->longest_secs = v;
-            } else if (strcmp(tag, "fav") == 0) {
-                token(q, y->fav, UD_NAME_MAX);
-            } else if (strcmp(tag, "estimated") == 0) {
-                if (token(q, num, sizeof num - 1) != NULL) y->estimated = atoi(num);
-            } else if (strcmp(tag, "tok") == 0) {
-                for (int k = 0; k < 4; k++) {
-                    q = token(q, num, sizeof num - 1);
-                    if (q == NULL) break;
-                    y->tok[k] = strtoull(num, NULL, 10);
-                }
-            }
-        } else if (kind == UD_COST) {
-            ud_cost_t *k = &h->cost;
-            char num[24];
-            if (strcmp(tag, "grid") == 0) {
-                token(q, k->grid, UD_MDAYS);
-            } else if (strcmp(tag, "c") == 0) {
-                if (k->model_count >= UD_MAX_MODELS) continue;
-                ud_cost_model_t m;
-                q = token(q, m.name, UD_NAME_MAX);
-                if (q == NULL || token(q, num, sizeof num - 1) == NULL) continue;
-                m.cents = strtoull(num, NULL, 10);
-                k->models[k->model_count++] = m;
-            } else {
-                if (token(q, num, sizeof num - 1) == NULL) continue;
-                if (strcmp(tag, "start") == 0) k->start = (int32_t)strtol(num, NULL, 10);
-                else if (strcmp(tag, "today") == 0) k->today = (int32_t)strtol(num, NULL, 10);
-                else if (strcmp(tag, "total") == 0) k->total = strtoull(num, NULL, 10);
-                else if (strcmp(tag, "last30") == 0) k->last30 = strtoull(num, NULL, 10);
-                else if (strcmp(tag, "last7") == 0) k->last7 = strtoull(num, NULL, 10);
-                else if (strcmp(tag, "plan") == 0) k->plan = strtoull(num, NULL, 10);
-            }
-        } else if (kind == UD_RHYTHM) {
-            ud_rhythm_t *r = &h->rhythm;
-            char num[24];
-            if (strcmp(tag, "grid") == 0) {
-                token(q, r->grid, UD_RHYTHM_CELLS);
-            } else if (token(q, num, sizeof num - 1) != NULL) {
-                if (strcmp(tag, "days") == 0) r->days = atoi(num);
-                else if (strcmp(tag, "msgs") == 0) r->msgs = (uint32_t)strtoul(num, NULL, 10);
-            }
-        } else if (kind == UD_NOW) {
-            ud_now_t *n = &h->now;
-            char num[24];
-            if (strcmp(tag, "model") == 0) { token(q, n->model, UD_NAME_MAX); continue; }
-            if (strcmp(tag, "project") == 0) { token(q, n->project, UD_NAME_MAX); continue; }
-            if (token(q, num, sizeof num - 1) == NULL) continue;
-            uint64_t v = strtoull(num, NULL, 10);
-            if (strcmp(tag, "tokens") == 0) n->tokens = v;
-            else if (strcmp(tag, "avg") == 0) n->avg = v;
-            else if (strcmp(tag, "cost") == 0) n->cost = v;
-            else if (strcmp(tag, "msgs") == 0) n->msgs = (uint32_t)v;
-            else if (strcmp(tag, "sessions") == 0) n->sessions = (uint32_t)v;
-            else if (strcmp(tag, "session") == 0) n->session_secs = (uint32_t)v;
-            else if (strcmp(tag, "last") == 0) { n->last_secs = (uint32_t)v; n->have_last = true; }
-        } else if (kind == UD_PROJECTS) {
-            ud_projects_t *pj = &h->projects;
-            char num[24];
-            if (strcmp(tag, "days") == 0) {
-                if (token(q, num, sizeof num - 1) != NULL) pj->days = atoi(num);
-            } else if (strcmp(tag, "p") == 0) {
-                if (pj->count >= UD_MAX_MODELS) continue;
-                ud_project_t row;
-                memset(&row, 0, sizeof row);
-                q = token(q, row.name, UD_NAME_MAX);
-                if (q == NULL || (q = token(q, num, sizeof num - 1)) == NULL) continue;
-                row.tokens = strtoull(num, NULL, 10);
-                if (q && (q = token(q, num, sizeof num - 1)) != NULL) row.cents = strtoull(num, NULL, 10);
-                if (q && (q = token(q, num, sizeof num - 1)) != NULL) row.sessions = (uint32_t)strtoul(num, NULL, 10);
-                if (q && (q = token(q, num, sizeof num - 1)) != NULL) row.msgs = (uint32_t)strtoul(num, NULL, 10);
-                pj->rows[pj->count++] = row;
-            }
-        } else if (kind == UD_CACHE) {
-            ud_cache_t *k = &h->cache;
-            char num[24];
-            if (strcmp(tag, "grid") == 0) {
-                token(q, k->grid, UD_MDAYS);
-            } else if (strcmp(tag, "m") == 0) {
-                if (k->model_count >= UD_MAX_MODELS) continue;
-                ud_cache_model_t m;
-                memset(&m, 0, sizeof m);
-                q = token(q, m.name, UD_NAME_MAX);
-                if (q == NULL) continue;
-                uint64_t *fields[4] = { &m.in, &m.cread, &m.cwrite, &m.saved_cents };
-                int got = 0;
-                for (int f = 0; f < 4 && q; f++) {
-                    q = token(q, num, sizeof num - 1);
-                    if (q == NULL) break;
-                    *fields[f] = strtoull(num, NULL, 10);
-                    got++;
-                }
-                if (got < 3) continue;
-                k->models[k->model_count++] = m;
-            } else if (token(q, num, sizeof num - 1) != NULL) {
-                if (strcmp(tag, "start") == 0) k->start = (int32_t)strtol(num, NULL, 10);
-                else if (strcmp(tag, "today") == 0) k->today = (int32_t)strtol(num, NULL, 10);
-                else if (strcmp(tag, "saved") == 0) k->saved = strtoull(num, NULL, 10);
-                else if (strcmp(tag, "cost") == 0) k->cost = strtoull(num, NULL, 10);
-            }
-        } else if (kind == UD_TOOLS) {
-            ud_tools_t *tl = &h->tools;
-            char num[24];
-            if (strcmp(tag, "grid") == 0) {
-                token(q, tl->grid, UD_MDAYS);
-            } else if (strcmp(tag, "t") == 0) {
-                if (tl->count >= UD_MAX_MODELS) continue;
-                ud_tool_t row;
-                memset(&row, 0, sizeof row);
-                q = token(q, row.name, UD_NAME_MAX);
-                if (q == NULL || token(q, num, sizeof num - 1) == NULL) continue;
-                row.calls = (uint32_t)strtoul(num, NULL, 10);
-                tl->rows[tl->count++] = row;
-            } else if (token(q, num, sizeof num - 1) != NULL) {
-                if (strcmp(tag, "days") == 0) tl->days = atoi(num);
-                else if (strcmp(tag, "calls") == 0) tl->calls = (uint32_t)strtoul(num, NULL, 10);
-                else if (strcmp(tag, "msgs") == 0) tl->msgs = (uint32_t)strtoul(num, NULL, 10);
-                else if (strcmp(tag, "sessions") == 0) tl->sessions = (uint32_t)strtoul(num, NULL, 10);
-                else if (strcmp(tag, "start") == 0) tl->start = (int32_t)strtol(num, NULL, 10);
-                else if (strcmp(tag, "today") == 0) tl->today = (int32_t)strtol(num, NULL, 10);
-            }
-        } else if (kind == UD_THINKING) {
-            ud_thinking_t *th = &h->thinking;
-            char num[24];
-            if (strcmp(tag, "grid") == 0) {
-                token(q, th->grid, UD_MDAYS);
-            } else if (strcmp(tag, "m") == 0) {
-                if (th->model_count >= UD_MAX_MODELS) continue;
-                ud_think_model_t m;
-                memset(&m, 0, sizeof m);
-                q = token(q, m.name, UD_NAME_MAX);
-                if (q == NULL) continue;
-                uint64_t *fields[4] = { &m.thinking, &m.visible, &m.think_cents, &m.out_cents };
-                int got = 0;
-                for (int f = 0; f < 4 && q; f++) {
-                    q = token(q, num, sizeof num - 1);
-                    if (q == NULL) break;
-                    *fields[f] = strtoull(num, NULL, 10);
-                    got++;
-                }
-                if (got < 2) continue;
-                th->models[th->model_count++] = m;
-            } else if (token(q, num, sizeof num - 1) != NULL) {
-                if (strcmp(tag, "days") == 0) th->days = atoi(num);
-                else if (strcmp(tag, "start") == 0) th->start = (int32_t)strtol(num, NULL, 10);
-                else if (strcmp(tag, "today") == 0) th->today = (int32_t)strtol(num, NULL, 10);
-            }
-        } else if (kind == UD_WEEK) {
-            ud_week_t *w = &h->week;
-            char num[24], key[12];
-            if (strcmp(tag, "grid") == 0) {
-                token(q, w->grid, 14);
-            } else if (strcmp(tag, "today") == 0) {
-                if (token(q, num, sizeof num - 1) != NULL) w->today = (int32_t)strtol(num, NULL, 10);
-            } else if (strcmp(tag, "w") == 0) {
-                static const char *const keys[UD_WEEK_ROWS] = {
-                    "tokens", "cost", "msgs", "sessions", "tools", "days"
-                };
-                q = token(q, key, sizeof key - 1);
-                if (q == NULL) continue;
-                int row = -1;
-                for (int i = 0; i < UD_WEEK_ROWS; i++) if (strcmp(key, keys[i]) == 0) row = i;
-                if (row < 0) continue;
-                q = token(q, num, sizeof num - 1);
-                if (q == NULL) continue;
-                w->this_week[row] = strtoull(num, NULL, 10);
-                if (token(q, num, sizeof num - 1) != NULL) w->last_week[row] = strtoull(num, NULL, 10);
-                w->used = true;
-            }
-        } else if (kind == UD_RECORDS) {
-            ud_records_t *r = &h->records;
-            char num[24];
-            if (strcmp(tag, "since") == 0) {
-                if (token(q, num, sizeof num - 1) != NULL) r->since = (int32_t)strtol(num, NULL, 10);
-            } else if (strcmp(tag, "r") == 0) {
-                if (r->count >= UD_RECORD_MAX) continue;
-                ud_record_t row;
-                memset(&row, 0, sizeof row);
-                q = token(q, row.key, UD_RECORD_KEY);
-                if (q == NULL || (q = token(q, num, sizeof num - 1)) == NULL) continue;
-                row.value = strtoull(num, NULL, 10);
-                if (token(q, num, sizeof num - 1) != NULL) row.day = (int32_t)strtol(num, NULL, 10);
-                r->rows[r->count++] = row;
-                r->used = true;
-            }
-        } else if (kind == UD_RUNS) {
-            ud_runs_t *r = &h->runs;
-            char num[24], key[16];
-            if (strcmp(tag, "c") == 0) {
-                if (r->count >= UD_MAX_MODELS + 1) continue;
-                ud_tool_t row;
-                memset(&row, 0, sizeof row);
-                q = token(q, row.name, UD_NAME_MAX);
-                if (q == NULL || token(q, num, sizeof num - 1) == NULL) continue;
-                row.calls = (uint32_t)strtoul(num, NULL, 10);
-                r->rows[r->count++] = row;
-                r->used = true;
-            } else if (strcmp(tag, "k") == 0) {
-                q = token(q, key, sizeof key - 1);
-                if (q == NULL || token(q, num, sizeof num - 1) == NULL) continue;
-                for (int i = 0; i < UD_RUN_CATS; i++)
-                    if (strcmp(key, usagedata_run_cats[i]) == 0)
-                        r->cats[i] = (uint32_t)strtoul(num, NULL, 10);
-            } else if (token(q, num, sizeof num - 1) != NULL) {
-                if (strcmp(tag, "days") == 0) r->days = atoi(num);
-                else if (strcmp(tag, "calls") == 0) r->calls = (uint32_t)strtoul(num, NULL, 10);
-                else if (strcmp(tag, "commands") == 0) r->commands = (uint32_t)strtoul(num, NULL, 10);
-            }
-        } else if (kind == UD_TURNS) {
-            ud_turns_t *tn = &h->turns;
-            char num[24];
-            if (strcmp(tag, "grid") == 0) {
-                token(q, tn->grid, UD_MDAYS);
-                continue;
-            }
-            q = token(q, num, sizeof num - 1);
-            if (q == NULL) continue;
-            uint64_t a = strtoull(num, NULL, 10), b = 0;
-            if (token(q, num, sizeof num - 1) != NULL) b = strtoull(num, NULL, 10);
-            if (strcmp(tag, "days") == 0) tn->days = (int)a;
-            else if (strcmp(tag, "turns") == 0) { tn->turns = (uint32_t)a; tn->used = true; }
-            else if (strcmp(tag, "interrupted") == 0) tn->interrupted = (uint32_t)a;
-            else if (strcmp(tag, "first") == 0) { tn->first_med = (uint32_t)a; tn->first_p90 = (uint32_t)b; }
-            else if (strcmp(tag, "turn") == 0) { tn->turn_med = (uint32_t)a; tn->turn_p90 = (uint32_t)b; }
-            else if (strcmp(tag, "longest") == 0) { tn->longest = (uint32_t)a; tn->longest_day = (int32_t)b; }
-            else if (strcmp(tag, "start") == 0) tn->start = (int32_t)a;
-            else if (strcmp(tag, "today") == 0) tn->today = (int32_t)a;
-        } else if (kind == UD_STORY) {
-            ud_story_t *st = &h->story;
-            char num[24];
-            if (strcmp(tag, "text") == 0) {
-                /* Lines of the recap, joined with spaces, verbatim. */
-                while (*q == ' ' || *q == '\t') q++;
-                size_t have = strlen(st->text);
-                if (have > 0 && have < UD_STORY_MAX) st->text[have++] = ' ';
-                while (*q && *q != '\n' && *q != '\r' && have < UD_STORY_MAX)
-                    st->text[have++] = *q++;
-                st->text[have] = '\0';
-                st->used = true;
-            } else if (token(q, num, sizeof num - 1) != NULL) {
-                if (strcmp(tag, "date") == 0) st->day = (int32_t)strtol(num, NULL, 10);
-                else if (strcmp(tag, "prompts") == 0) st->prompts = (uint32_t)strtoul(num, NULL, 10);
-            }
-        } else if (kind == UD_CLOCK) {
-            /* The rest of the line is free text, so take it verbatim. */
-            char *dest = NULL;
-            if (strcmp(tag, "date") == 0) dest = d->date;
-            else if (strcmp(tag, "wx") == 0) dest = d->weather;
-            if (dest == NULL) continue;
-
-            while (*q == ' ' || *q == '\t') q++;
-            int n = 0;
-            while (q[n] && q[n] != '\n' && q[n] != '\r' && n < UD_TEXT_MAX) n++;
-            memcpy(dest, q, (size_t)n);
-            dest[n] = '\0';
-        }
-    }
-    if (kind == UD_YEAR) {
-        /* A grid that does not line up with its dates would be drawn in the
-           wrong place, so it is dropped rather than guessed at. */
-        ud_year_t *y = &h->year;
-        int32_t len = y->today - y->start + 1;
-        y->used = y->today > 0 && len >= 1 && len <= UD_YEAR_MAX;
-    }
-    if (kind == UD_COST) {
-        ud_cost_t *k = &h->cost;
-        int32_t len = k->today - k->start + 1;
-        k->used = k->today > 0 && len >= 1 && len <= UD_MDAYS;
-    }
-    if (kind == UD_RHYTHM) h->rhythm.used = h->rhythm.grid[0] != '\0';
-    if (kind == UD_NOW) h->now.used = true;
-    if (kind == UD_PROJECTS) h->projects.used = h->projects.count > 0;
-    if (kind == UD_TURNS) {
-        ud_turns_t *tn = &h->turns;
-        int32_t len = tn->today - tn->start + 1;
-        if (tn->today <= 0 || len < 1 || len > UD_MDAYS) { tn->today = 0; tn->grid[0] = '\0'; }
-    }
-    if (kind == UD_TOOLS) {
-        ud_tools_t *tl = &h->tools;
-        int32_t len = tl->today - tl->start + 1;
-        tl->used = tl->count > 0;
-        if (tl->today <= 0 || len < 1 || len > UD_MDAYS) { tl->today = 0; tl->grid[0] = '\0'; }
-    }
-    if (kind == UD_THINKING) {
-        ud_thinking_t *th = &h->thinking;
-        int32_t len = th->today - th->start + 1;
-        th->used = th->model_count > 0;
-        if (th->today <= 0 || len < 1 || len > UD_MDAYS) { th->today = 0; th->grid[0] = '\0'; }
-    }
-    if (kind == UD_CACHE) {
-        ud_cache_t *k = &h->cache;
-        int32_t len = k->today - k->start + 1;
-        k->used = k->model_count > 0
-               && (k->today <= 0 || (len >= 1 && len <= UD_MDAYS));
-        if (k->today <= 0) k->grid[0] = '\0';      /* no dates, no daily line */
-    }
-    return kind;
-}
-
-/* Adds one machine's row, keeping both the total and that machine's share,
-   and lines its days up on the view's window. `hstart` is the day of the
-   machine's first grid character; 0 when it sent no grids. */
-static void add_model(ud_view_t *v, const ud_model_t *m, int host,
-                      int32_t hstart)
-{
-    int i;
-    for (i = 0; i < v->model_count; i++)
-        if (strcmp(v->models[i].name, m->name) == 0) break;
-    if (i == v->model_count) {
-        if (v->model_count >= UD_MAX_MODELS) return;
-        v->model_count++;
-        v->models[i] = *m;
-        v->models[i].out = v->models[i].cread = v->models[i].in = 0;
-        v->models[i].cwrite = 0;
-        v->models[i].calls = 0;
-        v->models[i].grid[0] = '\0';
-    }
-    v->models[i].out += m->out;
-    v->models[i].cread += m->cread;
-    v->models[i].in += m->in;
-    v->models[i].cwrite += m->cwrite;
-    v->models[i].calls += m->calls;
-    v->model_by_host[i][host] += m->out + m->cread;
-
-    if (hstart <= 0 || v->mlen == 0) return;
-    for (int k = 0; m->grid[k] != '\0' && k < UD_MDAYS; k++) {
-        int32_t idx = hstart + k - v->mstart;
-        if (idx < 0 || idx >= v->mlen) continue;
-        v->model_day[i][idx] += usagedata_grid_value(m->grid[k]);
-    }
-}
-
-static void add_day(ud_view_t *v, const ud_day_t *day, int host)
-{
-    for (int i = 0; i < v->day_count; i++) {
-        if (strcmp(v->days[i].label, day->label) == 0) {
-            v->days[i].tokens += day->tokens;
-            v->day_by_host[i][host] += day->tokens;
-            return;
-        }
-    }
-    if (v->day_count >= UD_MAX_DAYS) return;
-    int i = v->day_count++;
-    v->days[i] = *day;
-    v->day_by_host[i][host] = day->tokens;
-}
-
 /* Only machines that have actually sent something are counted, so an empty
-   slot never appears in a legend. */
-static bool contributes(const ud_host_t *h)
+   slot never appears in a legend. Each section says whether it has. */
+bool ud_contributes(const ud_host_t *h)
 {
-    return h->used && (h->model_count || h->day_count || h->year.used
-                       || h->cost.used || h->rhythm.used || h->now.used
-                       || h->projects.used || h->cache.used || h->tools.used
-                       || h->thinking.used || h->week.used || h->records.used
-                       || h->runs.used || h->turns.used || h->story.used);
+    if (!h->used) return false;
+    for (int i = 0; i < ud_section_count; i++)
+        if (ud_sections[i]->used && ud_sections[i]->used(h)) return true;
+    return false;
 }
 
 int usagedata_hosts(const usagedata_t *d)
 {
     int n = 0;
     for (int i = 0; i < UD_MAX_HOSTS; i++)
-        if (contributes(&d->hosts[i])) n++;
+        if (ud_contributes(&d->hosts[i])) n++;
     return n;
 }
 
@@ -611,25 +108,20 @@ const char *usagedata_host_name(const usagedata_t *d, int which)
 {
     int n = 0;
     for (int i = 0; i < UD_MAX_HOSTS; i++) {
-        if (!contributes(&d->hosts[i])) continue;
+        if (!ud_contributes(&d->hosts[i])) continue;
         if (n == which) return d->hosts[i].host;
         n++;
     }
     return "";
 }
 
-static int cmp_u64(const void *a, const void *b)
+int ud_cmp_u64(const void *a, const void *b)
 {
     uint64_t x = *(const uint64_t *)a, y = *(const uint64_t *)b;
     return x < y ? -1 : x > y;
 }
 
-/* Quartiles of the non-zero values, GitHub's rule: a value at or above the
-   k-th quarter mark is level k+1, so the single busiest cell is always the
-   brightest and one lonely active cell is bright rather than faint. Zero
-   stays level 0. `scratch` must hold n values. Returns how many were
-   non-zero. */
-static int rank_levels(const uint64_t *vals, int n, uint8_t *level,
+int ud_rank_levels(const uint64_t *vals, int n, uint8_t *level,
                        uint64_t *scratch)
 {
     int m = 0;
@@ -638,7 +130,7 @@ static int rank_levels(const uint64_t *vals, int n, uint8_t *level,
         if (vals[i] > 0) scratch[m++] = vals[i];
     }
     if (m == 0) return 0;
-    qsort(scratch, (size_t)m, sizeof scratch[0], cmp_u64);
+    qsort(scratch, (size_t)m, sizeof scratch[0], ud_cmp_u64);
     /* Thresholds round up, so with fewer than four values the smallest is
        still level 1 and the largest still level 4. */
     uint64_t q[UD_HEAT_LEVELS - 1];
@@ -657,323 +149,7 @@ static int rank_levels(const uint64_t *vals, int n, uint8_t *level,
     return m;
 }
 
-/* Lines every machine's grid up by date on the window of whichever machine
-   sent most recently, sums the days, and ranks them. */
-static void merge_year(const usagedata_t *d, ud_year_view_t *y)
-{
-    /* Static, not on the stack: the main task's stack is small and a year of
-       64-bit totals is 3 KB. Only the main loop merges, so this is safe. */
-    static uint64_t tokens[UD_YEAR_MAX];
-    static uint64_t sorted[UD_YEAR_MAX];
-
-    memset(y, 0, sizeof *y);
-    y->peak_index = -1;
-
-    const ud_year_t *anchor = NULL;
-    for (int i = 0; i < UD_MAX_HOSTS; i++) {
-        const ud_host_t *h = &d->hosts[i];
-        if (!h->used || !h->year.used) continue;
-        if (anchor == NULL || h->year.today > anchor->today) anchor = &h->year;
-    }
-    if (anchor == NULL) return;
-
-    y->present = true;
-    y->start = anchor->start;
-    y->today = anchor->today;
-    y->len = (int)(anchor->today - anchor->start + 1);
-    memset(tokens, 0, sizeof tokens);
-
-    int32_t first = INT32_MAX;
-    uint64_t fav_tokens = 0;
-    bool have_fav = false;
-    for (int i = 0; i < UD_MAX_HOSTS; i++) {
-        const ud_host_t *h = &d->hosts[i];
-        if (!h->used || !h->year.used) continue;
-        const ud_year_t *s = &h->year;
-
-        uint64_t total = 0;
-        for (int k = 0; k < 4; k++) { y->tok[k] += s->tok[k]; total += s->tok[k]; }
-        y->sessions += s->sessions;
-        if (s->longest_secs > y->longest_secs) y->longest_secs = s->longest_secs;
-        if (s->first > 0 && s->first < first) first = s->first;
-        if (s->fav[0] && (!have_fav || total > fav_tokens)) {
-            strncpy(y->fav, s->fav, UD_NAME_MAX);
-            fav_tokens = total;
-            have_fav = true;
-        }
-        y->estimated += s->estimated;
-
-        for (int k = 0; s->grid[k] != '\0' && k < UD_YEAR_MAX; k++) {
-            int32_t idx = s->start + k - y->start;
-            if (idx < 0 || idx >= y->len) continue;
-            tokens[idx] += usagedata_grid_value(s->grid[k]);
-        }
-    }
-
-    y->active_days = rank_levels(tokens, y->len, y->level, sorted);
-
-    /* Streaks and the peak, from the merged days. */
-    int run = 0;
-    uint64_t peak = 0;
-    for (int i = 0; i < y->len; i++) {
-        if (tokens[i] > 0) {
-            run++;
-            if (run > y->longest_streak) y->longest_streak = run;
-            if (tokens[i] >= peak) { peak = tokens[i]; y->peak_index = i; }
-        } else run = 0;
-    }
-    /* The current streak survives a quiet today: it is still alive until
-       midnight passes without a session. */
-    int i = y->len - 1;
-    if (i >= 0 && tokens[i] == 0) i--;
-    while (i >= 0 && tokens[i] > 0) { y->current_streak++; i--; }
-
-    y->span_days = first == INT32_MAX ? y->len : (int)(y->today - first + 1);
-    if (y->span_days > y->len) y->span_days = y->len;
-    if (y->span_days < y->active_days) y->span_days = y->active_days;
-}
-
-/* Sums every machine's cost, lining the days up as merge_year does. */
-static void merge_cost(const usagedata_t *d, ud_cost_view_t *k)
-{
-    memset(k, 0, sizeof *k);
-
-    const ud_cost_t *anchor = NULL;
-    for (int i = 0; i < UD_MAX_HOSTS; i++) {
-        const ud_host_t *h = &d->hosts[i];
-        if (!h->used || !h->cost.used) continue;
-        if (anchor == NULL || h->cost.today > anchor->today) anchor = &h->cost;
-    }
-    if (anchor == NULL) return;
-
-    k->present = true;
-    k->start = anchor->start;
-    k->today = anchor->today;
-    k->len = (int)(anchor->today - anchor->start + 1);
-
-    for (int i = 0; i < UD_MAX_HOSTS; i++) {
-        const ud_host_t *h = &d->hosts[i];
-        if (!h->used || !h->cost.used) continue;
-        const ud_cost_t *s = &h->cost;
-        k->total += s->total;
-        k->last30 += s->last30;
-        k->last7 += s->last7;
-        /* Every machine is on the same subscription, so the plan is not
-           summed; the largest figure wins in case only one machine set it. */
-        if (s->plan > k->plan) k->plan = s->plan;
-
-        for (int m = 0; m < s->model_count; m++) {
-            int j;
-            for (j = 0; j < k->model_count; j++)
-                if (strcmp(k->models[j].name, s->models[m].name) == 0) break;
-            if (j == k->model_count) {
-                if (k->model_count >= UD_MAX_MODELS) continue;
-                k->models[k->model_count++] = s->models[m];
-            } else {
-                k->models[j].cents += s->models[m].cents;
-            }
-        }
-        for (int c = 0; s->grid[c] != '\0' && c < UD_MDAYS; c++) {
-            int32_t idx = s->start + c - k->start;
-            if (idx < 0 || idx >= k->len) continue;
-            k->day[idx] += usagedata_grid_value(s->grid[c]);
-        }
-    }
-
-    for (int i = 1; i < k->model_count; i++) {
-        ud_cost_model_t key = k->models[i];
-        int j = i - 1;
-        while (j >= 0 && k->models[j].cents < key.cents) {
-            k->models[j + 1] = k->models[j];
-            j--;
-        }
-        k->models[j + 1] = key;
-    }
-}
-
-/* Sums every machine's weekday-by-hour grid; the cells line up by
-   construction, so no window is needed. */
-static void merge_rhythm(const usagedata_t *d, ud_rhythm_view_t *r)
-{
-    static uint64_t vals[UD_RHYTHM_CELLS], scratch[UD_RHYTHM_CELLS];
-    memset(r, 0, sizeof *r);
-    memset(vals, 0, sizeof vals);
-
-    for (int i = 0; i < UD_MAX_HOSTS; i++) {
-        const ud_host_t *h = &d->hosts[i];
-        if (!h->used || !h->rhythm.used) continue;
-        r->present = true;
-        if (h->rhythm.days > r->days) r->days = h->rhythm.days;
-        r->msgs += h->rhythm.msgs;
-        for (int c = 0; h->rhythm.grid[c] != '\0' && c < UD_RHYTHM_CELLS; c++)
-            vals[c] += usagedata_grid_value(h->rhythm.grid[c]) / 1000;   /* a thousand is one message */
-    }
-    if (!r->present) return;
-
-    rank_levels(vals, UD_RHYTHM_CELLS, r->level, scratch);
-
-    uint64_t total = 0, night = 0, weekend = 0, peak = 0;
-    uint64_t by_dow[7] = {0}, by_hour[24] = {0};
-    for (int c = 0; c < UD_RHYTHM_CELLS; c++) {
-        int dow = c / 24, hour = c % 24;
-        uint64_t v = vals[c];
-        r->cell[c] = (uint32_t)v;
-        total += v;
-        by_dow[dow] += v;
-        by_hour[hour] += v;
-        if (hour >= 22 || hour < 6) night += v;
-        if (dow >= 5) weekend += v;
-        if (v > peak) { peak = v; r->peak_dow = dow; r->peak_hour = hour; }
-    }
-    for (int i = 1; i < 7; i++) if (by_dow[i] > by_dow[r->busiest_dow]) r->busiest_dow = i;
-    for (int i = 1; i < 24; i++) if (by_hour[i] > by_hour[r->busiest_hour]) r->busiest_hour = i;
-    if (total > 0) {
-        r->night_pct = (int)((night * 100 + total / 2) / total);
-        r->weekend_pct = (int)((weekend * 100 + total / 2) / total);
-    }
-    if (r->msgs == 0) r->msgs = total;
-}
-
-/* Sums today across machines; "last" comes from whichever machine's last
-   message is the more recent once each report is aged to the same moment. */
-static void merge_now(const usagedata_t *d, ud_now_view_t *n)
-{
-    memset(n, 0, sizeof *n);
-    int64_t best_when = INT64_MIN;
-    for (int i = 0; i < UD_MAX_HOSTS; i++) {
-        const ud_host_t *h = &d->hosts[i];
-        if (!h->used || !h->now.used) continue;
-        const ud_now_t *s = &h->now;
-        n->present = true;
-        n->tokens += s->tokens;
-        n->avg += s->avg;
-        n->cost += s->cost;
-        n->msgs += s->msgs;
-        n->sessions += s->sessions;
-        if (!s->have_last) continue;
-        /* When that last message happened, on the board's clock. */
-        int64_t when = h->now_sent_us - (int64_t)s->last_secs * 1000000LL;
-        if (when > best_when) {
-            best_when = when;
-            n->have_last = true;
-            n->last_secs = s->last_secs;
-            n->last_sent_us = h->now_sent_us;
-            n->session_secs = s->session_secs;
-            strncpy(n->model, s->model, UD_NAME_MAX);
-            strncpy(n->project, s->project, UD_NAME_MAX);
-        }
-    }
-}
-
-/* Projects merged by name across machines, largest first. */
-static void merge_projects(const usagedata_t *d, ud_projects_view_t *v)
-{
-    memset(v, 0, sizeof *v);
-    for (int i = 0; i < UD_MAX_HOSTS; i++) {
-        const ud_host_t *h = &d->hosts[i];
-        if (!h->used || !h->projects.used) continue;
-        v->present = true;
-        if (h->projects.days > v->days) v->days = h->projects.days;
-        for (int r = 0; r < h->projects.count; r++) {
-            const ud_project_t *row = &h->projects.rows[r];
-            int j;
-            for (j = 0; j < v->count; j++)
-                if (strcmp(v->rows[j].name, row->name) == 0) break;
-            if (j == v->count) {
-                if (v->count >= UD_MAX_MODELS) continue;
-                v->rows[v->count++] = *row;
-            } else {
-                v->rows[j].tokens += row->tokens;
-                v->rows[j].cents += row->cents;
-                v->rows[j].sessions += row->sessions;
-                v->rows[j].msgs += row->msgs;
-            }
-            v->total_tokens += row->tokens;
-        }
-    }
-    for (int i = 1; i < v->count; i++) {
-        ud_project_t key = v->rows[i];
-        int j = i - 1;
-        while (j >= 0 && v->rows[j].tokens < key.tokens) { v->rows[j + 1] = v->rows[j]; j--; }
-        v->rows[j + 1] = key;
-    }
-}
-
-/* Cache use: models merged by name; daily percentages averaged by date. */
-static void merge_cache(const usagedata_t *d, ud_cache_view_t *v)
-{
-    memset(v, 0, sizeof *v);
-    for (int i = 0; i < UD_MDAYS; i++) v->pct[i] = -1;
-
-    const ud_cache_t *anchor = NULL;
-    for (int i = 0; i < UD_MAX_HOSTS; i++) {
-        const ud_host_t *h = &d->hosts[i];
-        if (!h->used || !h->cache.used) continue;
-        v->present = true;
-        if (h->cache.today > 0 && (anchor == NULL || h->cache.today > anchor->today))
-            anchor = &h->cache;
-    }
-    if (!v->present) return;
-    if (anchor) {
-        v->start = anchor->start;
-        v->today = anchor->today;
-        v->len = (int)(anchor->today - anchor->start + 1);
-    }
-
-    int sum[UD_MDAYS] = {0}, n[UD_MDAYS] = {0};
-    uint64_t in = 0, cread = 0, cwrite = 0;
-    for (int i = 0; i < UD_MAX_HOSTS; i++) {
-        const ud_host_t *h = &d->hosts[i];
-        if (!h->used || !h->cache.used) continue;
-        const ud_cache_t *k = &h->cache;
-        v->saved += k->saved;
-        v->cost += k->cost;
-        for (int m = 0; m < k->model_count; m++) {
-            const ud_cache_model_t *cm = &k->models[m];
-            in += cm->in; cread += cm->cread; cwrite += cm->cwrite;
-            int j;
-            for (j = 0; j < v->model_count; j++)
-                if (strcmp(v->models[j].name, cm->name) == 0) break;
-            if (j == v->model_count) {
-                if (v->model_count >= UD_MAX_MODELS) continue;
-                v->models[v->model_count++] = *cm;
-            } else {
-                v->models[j].in += cm->in;
-                v->models[j].cread += cm->cread;
-                v->models[j].cwrite += cm->cwrite;
-                v->models[j].saved_cents += cm->saved_cents;
-            }
-        }
-        if (k->today <= 0 || v->len == 0) continue;
-        for (int c = 0; k->grid[c] != '\0' && c < UD_MDAYS; c++) {
-            int32_t idx = k->start + c - v->start;
-            int pct = usagedata_pct_value(k->grid[c]);
-            if (idx < 0 || idx >= v->len || pct < 0) continue;
-            sum[idx] += pct;
-            n[idx]++;
-        }
-    }
-    for (int i = 0; i < v->len; i++)
-        if (n[i] > 0) v->pct[i] = (int8_t)(sum[i] / n[i]);
-    uint64_t total = in + cread + cwrite;
-    v->hit_pct = total ? (int)((cread * 100 + total / 2) / total) : 0;
-
-    /* Largest input volume first. */
-    for (int i = 1; i < v->model_count; i++) {
-        ud_cache_model_t key = v->models[i];
-        uint64_t kt = key.in + key.cread + key.cwrite;
-        int j = i - 1;
-        while (j >= 0 && v->models[j].in + v->models[j].cread + v->models[j].cwrite < kt) {
-            v->models[j + 1] = v->models[j];
-            j--;
-        }
-        v->models[j + 1] = key;
-    }
-}
-
-/* The window of the most recently dated section among `n` candidates, as
-   (start, today, len); len 0 when none has dates. */
-static void pick_window(const int32_t *starts, const int32_t *todays, int n,
+void ud_pick_window(const int32_t *starts, const int32_t *todays, int n,
                         int32_t *start, int32_t *today, int *len)
 {
     *start = *today = 0;
@@ -988,358 +164,65 @@ static void pick_window(const int32_t *starts, const int32_t *todays, int n,
     }
 }
 
-static void merge_tools(const usagedata_t *d, ud_tools_view_t *v)
+int ud_host_order(const usagedata_t *d, const ud_host_t *hosts[UD_MAX_HOSTS])
 {
-    memset(v, 0, sizeof *v);
-    int32_t starts[UD_MAX_HOSTS] = {0}, todays[UD_MAX_HOSTS] = {0};
-    for (int i = 0; i < UD_MAX_HOSTS; i++) {
-        const ud_host_t *h = &d->hosts[i];
-        if (!h->used || !h->tools.used) continue;
-        starts[i] = h->tools.start;
-        todays[i] = h->tools.today;
-    }
-    pick_window(starts, todays, UD_MAX_HOSTS, &v->start, &v->today, &v->len);
-
-    for (int i = 0; i < UD_MAX_HOSTS; i++) {
-        const ud_host_t *h = &d->hosts[i];
-        if (!h->used || !h->tools.used) continue;
-        const ud_tools_t *tl = &h->tools;
-        v->present = true;
-        if (tl->days > v->days) v->days = tl->days;
-        v->calls += tl->calls;
-        v->msgs += tl->msgs;
-        v->sessions += tl->sessions;
-        for (int r = 0; r < tl->count; r++) {
-            int j;
-            for (j = 0; j < v->count; j++)
-                if (strcmp(v->rows[j].name, tl->rows[r].name) == 0) break;
-            if (j == v->count) {
-                if (v->count >= UD_MAX_MODELS) continue;
-                v->rows[v->count++] = tl->rows[r];
-            } else {
-                v->rows[j].calls += tl->rows[r].calls;
-            }
-        }
-        if (tl->today <= 0 || v->len == 0) continue;
-        for (int c = 0; tl->grid[c] != '\0' && c < UD_MDAYS; c++) {
-            int32_t idx = tl->start + c - v->start;
-            if (idx < 0 || idx >= v->len) continue;
-            v->day[idx] += usagedata_grid_value(tl->grid[c]) / 1000;
-        }
-    }
-    for (int i = 1; i < v->count; i++) {
-        ud_tool_t key = v->rows[i];
-        int j = i - 1;
-        while (j >= 0 && v->rows[j].calls < key.calls) { v->rows[j + 1] = v->rows[j]; j--; }
-        v->rows[j + 1] = key;
-    }
+    int n = 0;
+    for (int i = 0; i < UD_MAX_HOSTS; i++)
+        if (ud_contributes(&d->hosts[i])) hosts[n++] = &d->hosts[i];
+    return n;
 }
 
-static void merge_thinking(const usagedata_t *d, ud_thinking_view_t *v)
+void ud_text(const char *q, char *dest, int max)
 {
-    memset(v, 0, sizeof *v);
-    for (int i = 0; i < UD_MDAYS; i++) v->pct[i] = -1;
-    int32_t starts[UD_MAX_HOSTS] = {0}, todays[UD_MAX_HOSTS] = {0};
-    for (int i = 0; i < UD_MAX_HOSTS; i++) {
-        const ud_host_t *h = &d->hosts[i];
-        if (!h->used || !h->thinking.used) continue;
-        starts[i] = h->thinking.start;
-        todays[i] = h->thinking.today;
-    }
-    pick_window(starts, todays, UD_MAX_HOSTS, &v->start, &v->today, &v->len);
-
-    int sum[UD_MDAYS] = {0}, n[UD_MDAYS] = {0};
-    for (int i = 0; i < UD_MAX_HOSTS; i++) {
-        const ud_host_t *h = &d->hosts[i];
-        if (!h->used || !h->thinking.used) continue;
-        const ud_thinking_t *th = &h->thinking;
-        v->present = true;
-        if (th->days > v->days) v->days = th->days;
-        for (int m = 0; m < th->model_count; m++) {
-            const ud_think_model_t *tm = &th->models[m];
-            v->thinking += tm->thinking;
-            v->visible += tm->visible;
-            v->think_cents += tm->think_cents;
-            v->out_cents += tm->out_cents;
-            int j;
-            for (j = 0; j < v->model_count; j++)
-                if (strcmp(v->models[j].name, tm->name) == 0) break;
-            if (j == v->model_count) {
-                if (v->model_count >= UD_MAX_MODELS) continue;
-                v->models[v->model_count++] = *tm;
-            } else {
-                v->models[j].thinking += tm->thinking;
-                v->models[j].visible += tm->visible;
-                v->models[j].think_cents += tm->think_cents;
-                v->models[j].out_cents += tm->out_cents;
-            }
-        }
-        if (th->today <= 0 || v->len == 0) continue;
-        for (int c = 0; th->grid[c] != '\0' && c < UD_MDAYS; c++) {
-            int32_t idx = th->start + c - v->start;
-            int pct = usagedata_pct_value(th->grid[c]);
-            if (idx < 0 || idx >= v->len || pct < 0) continue;
-            sum[idx] += pct;
-            n[idx]++;
-        }
-    }
-    for (int i = 0; i < v->len; i++)
-        if (n[i] > 0) v->pct[i] = (int8_t)(sum[i] / n[i]);
-    uint64_t out = v->thinking + v->visible;
-    v->share_pct = out ? (int)((v->thinking * 100 + out / 2) / out) : 0;
-    for (int i = 1; i < v->model_count; i++) {
-        ud_think_model_t key = v->models[i];
-        uint64_t kt = key.thinking + key.visible;
-        int j = i - 1;
-        while (j >= 0 && v->models[j].thinking + v->models[j].visible < kt) {
-            v->models[j + 1] = v->models[j];
-            j--;
-        }
-        v->models[j + 1] = key;
-    }
+    while (*q == ' ' || *q == '\t') q++;
+    int n = 0;
+    while (q[n] && q[n] != '\n' && q[n] != '\r' && n < max) n++;
+    memcpy(dest, q, (size_t)n);
+    dest[n] = '\0';
 }
 
-static void merge_week(const usagedata_t *d, ud_week_view_t *v)
+ud_kind_t usagedata_parse(usagedata_t *d, const char *payload, int64_t now_us)
 {
-    memset(v, 0, sizeof *v);
-    for (int i = 0; i < UD_MAX_HOSTS; i++) {
-        const ud_host_t *h = &d->hosts[i];
-        if (!h->used || !h->week.used) continue;
-        v->present = true;
-        if (h->week.today > v->today) v->today = h->week.today;
-        for (int r = 0; r < UD_WEEK_ROWS; r++) {
-            v->this_week[r] += h->week.this_week[r];
-            v->last_week[r] += h->week.last_week[r];
-        }
-    }
-    /* Active days cannot exceed seven however many machines were busy. */
-    if (v->this_week[5] > 7) v->this_week[5] = 7;
-    if (v->last_week[5] > 7) v->last_week[5] = 7;
-    for (int i = 0; i < UD_MAX_HOSTS; i++) {
-        const ud_host_t *h = &d->hosts[i];
-        if (!h->used || !h->week.used || h->week.today <= 0) continue;
-        /* Line the fourteen days up on the newest today. */
-        int shift = (int)(v->today - h->week.today);
-        for (int c = 0; h->week.grid[c] != '\0' && c < 14; c++) {
-            int idx = c - shift;
-            if (idx >= 0 && idx < 14) v->day[idx] += usagedata_grid_value(h->week.grid[c]);
-        }
-    }
-}
+    if (d == NULL || payload == NULL) return UD_NONE;
 
-static void merge_records(const usagedata_t *d, ud_records_view_t *v)
-{
-    memset(v, 0, sizeof *v);
-    for (int i = 0; i < UD_MAX_HOSTS; i++) {
-        const ud_host_t *h = &d->hosts[i];
-        if (!h->used || !h->records.used) continue;
-        v->present = true;
-        if (h->records.since > 0 && (v->since == 0 || h->records.since < v->since))
-            v->since = h->records.since;
-        for (int r = 0; r < h->records.count; r++) {
-            const ud_record_t *row = &h->records.rows[r];
-            bool smaller_wins = strcmp(row->key, "early") == 0;
-            int j;
-            for (j = 0; j < v->count; j++)
-                if (strcmp(v->rows[j].key, row->key) == 0) break;
-            if (j == v->count) {
-                if (v->count >= UD_RECORD_MAX) continue;
-                v->rows[v->count++] = *row;
-            } else if (smaller_wins ? row->value < v->rows[j].value
-                                    : row->value > v->rows[j].value) {
-                v->rows[j] = *row;
-            }
-        }
-    }
-}
+    const ud_section_t *sec = NULL;
+    for (int i = 0; i < ud_section_count; i++)
+        if (starts_with(payload, ud_sections[i]->marker)) { sec = ud_sections[i]; break; }
+    if (sec == NULL) return UD_NONE;
 
-const ud_record_t *usagedata_record(const ud_records_view_t *r, const char *key)
-{
-    for (int i = 0; i < r->count; i++)
-        if (strcmp(r->rows[i].key, key) == 0) return &r->rows[i];
-    return NULL;
-}
+    ud_host_t *h = NULL;
+    if (sec->per_host) {
+        char name[UD_HOST_MAX + 1];
+        find_host(payload, name);
+        h = host_slot(d, name);
+        h->updated_us = now_us;
+    }
+    /* A section replaces this machine's rows wholesale: no merge, so no
+       stale rows, and the other machine's data is untouched. */
+    if (sec->begin) sec->begin(d, h, now_us);
 
-static void merge_runs(const usagedata_t *d, ud_runs_view_t *v)
-{
-    memset(v, 0, sizeof *v);
-    for (int i = 0; i < UD_MAX_HOSTS; i++) {
-        const ud_host_t *h = &d->hosts[i];
-        if (!h->used || !h->runs.used) continue;
-        const ud_runs_t *r = &h->runs;
-        v->present = true;
-        if (r->days > v->days) v->days = r->days;
-        v->calls += r->calls;
-        v->commands += r->commands;
-        for (int k = 0; k < UD_RUN_CATS; k++) v->cats[k] += r->cats[k];
-        for (int m = 0; m < r->count; m++) {
-            int j;
-            for (j = 0; j < v->count; j++)
-                if (strcmp(v->rows[j].name, r->rows[m].name) == 0) break;
-            if (j == v->count) {
-                if (v->count >= UD_MAX_MODELS + 1) continue;
-                v->rows[v->count++] = r->rows[m];
-            } else {
-                v->rows[j].calls += r->rows[m].calls;
-            }
-        }
+    for (const char *p = next_line(payload); *p; p = next_line(p)) {
+        char tag[12];
+        const char *q = ud_token(p, tag, 11);
+        if (q == NULL) continue;
+        sec->line(d, h, tag, q);
     }
-    /* Most run first, but "other" always last however big it is. */
-    for (int i = 1; i < v->count; i++) {
-        ud_tool_t key = v->rows[i];
-        int j = i - 1;
-        bool key_other = strcmp(key.name, "other") == 0;
-        while (j >= 0 && !key_other
-               && (strcmp(v->rows[j].name, "other") == 0 || v->rows[j].calls < key.calls)) {
-            v->rows[j + 1] = v->rows[j];
-            j--;
-        }
-        v->rows[j + 1] = key;
-    }
-}
-
-static void merge_turns(const usagedata_t *d, ud_turns_view_t *v)
-{
-    memset(v, 0, sizeof *v);
-    for (int i = 0; i < UD_MDAYS; i++) v->day[i] = -1;
-    int32_t starts[UD_MAX_HOSTS] = {0}, todays[UD_MAX_HOSTS] = {0};
-    for (int i = 0; i < UD_MAX_HOSTS; i++) {
-        const ud_host_t *h = &d->hosts[i];
-        if (!h->used || !h->turns.used) continue;
-        starts[i] = h->turns.start;
-        todays[i] = h->turns.today;
-    }
-    pick_window(starts, todays, UD_MAX_HOSTS, &v->start, &v->today, &v->len);
-
-    uint64_t w_first_med = 0, w_first_p90 = 0, w_turn_med = 0, w_turn_p90 = 0;
-    int64_t sum[UD_MDAYS] = {0};
-    int n[UD_MDAYS] = {0};
-    for (int i = 0; i < UD_MAX_HOSTS; i++) {
-        const ud_host_t *h = &d->hosts[i];
-        if (!h->used || !h->turns.used) continue;
-        const ud_turns_t *tn = &h->turns;
-        v->present = true;
-        if (tn->days > v->days) v->days = tn->days;
-        v->turns += tn->turns;
-        v->interrupted += tn->interrupted;
-        w_first_med += (uint64_t)tn->first_med * tn->turns;
-        w_first_p90 += (uint64_t)tn->first_p90 * tn->turns;
-        w_turn_med += (uint64_t)tn->turn_med * tn->turns;
-        w_turn_p90 += (uint64_t)tn->turn_p90 * tn->turns;
-        if (tn->longest > v->longest) { v->longest = tn->longest; v->longest_day = tn->longest_day; }
-        if (tn->today <= 0 || v->len == 0) continue;
-        for (int c = 0; tn->grid[c] != '\0' && c < UD_MDAYS; c++) {
-            int32_t idx = tn->start + c - v->start;
-            if (idx < 0 || idx >= v->len || tn->grid[c] == '.') continue;
-            sum[idx] += (int64_t)(usagedata_grid_value(tn->grid[c]) / 1000);
-            n[idx]++;
-        }
-    }
-    if (v->turns > 0) {
-        v->first_med = (uint32_t)(w_first_med / v->turns);
-        v->first_p90 = (uint32_t)(w_first_p90 / v->turns);
-        v->turn_med = (uint32_t)(w_turn_med / v->turns);
-        v->turn_p90 = (uint32_t)(w_turn_p90 / v->turns);
-    }
-    for (int i = 0; i < v->len; i++)
-        if (n[i] > 0) v->day[i] = sum[i] / n[i];
-}
-
-static void merge_story(const usagedata_t *d, ud_story_view_t *v)
-{
-    memset(v, 0, sizeof *v);
-    for (int i = 0; i < UD_MAX_HOSTS; i++) {
-        const ud_host_t *h = &d->hosts[i];
-        if (!h->used || !h->story.used) continue;
-        const ud_story_t *st = &h->story;
-        bool better = !v->present || st->day > v->day
-                   || (st->day == v->day && st->prompts > v->prompts);
-        if (!better) continue;
-        v->present = true;
-        v->day = st->day;
-        v->prompts = st->prompts;
-        strncpy(v->text, st->text, UD_STORY_MAX);
-    }
+    if (sec->end) sec->end(d, h);
+    return sec->kind;
 }
 
 void usagedata_merge(const usagedata_t *d, ud_view_t *out)
 {
     memset(out, 0, sizeof *out);
-    merge_story(d, &out->story);
-    merge_turns(d, &out->turns);
-    merge_runs(d, &out->runs);
-    merge_week(d, &out->week);
-    merge_records(d, &out->records);
-    merge_tools(d, &out->tools);
-    merge_thinking(d, &out->thinking);
-    merge_projects(d, &out->projects);
-    merge_cache(d, &out->cache);
-    merge_year(d, &out->year);
-    merge_cost(d, &out->cost);
-    merge_rhythm(d, &out->rhythm);
-    merge_now(d, &out->now);
 
-    /* The model grids' window: the most recently dated machine's, as long as
-       it is sane. Chosen before the rows are added so they can be placed. */
-    for (int i = 0; i < UD_MAX_HOSTS; i++) {
-        const ud_host_t *h = &d->hosts[i];
-        if (!contributes(h) || h->model_count == 0 || h->mtoday <= 0) continue;
-        int32_t len = h->mtoday - h->mstart + 1;
-        if (len < 1 || len > UD_MDAYS) continue;
-        if (h->mtoday > out->mtoday) {
-            out->mstart = h->mstart;
-            out->mtoday = h->mtoday;
-            out->mlen = (int)len;
-        }
+    /* Who contributes, in a fixed order, so per-machine shares line up. */
+    const ud_host_t *hosts[UD_MAX_HOSTS];
+    int n = ud_host_order(d, hosts);
+    for (int i = 0; i < n; i++) {
+        strncpy(out->host_names[out->host_count++], hosts[i]->host, UD_HOST_MAX);
+        if (hosts[i]->updated_us > out->updated_us) out->updated_us = hosts[i]->updated_us;
     }
 
-    for (int i = 0; i < UD_MAX_HOSTS; i++) {
-        const ud_host_t *h = &d->hosts[i];
-        if (!contributes(h)) continue;
-        int host = out->host_count++;
-        strncpy(out->host_names[host], h->host, UD_HOST_MAX);
-        if (h->updated_us > out->updated_us) out->updated_us = h->updated_us;
-
-        int32_t hstart = h->mtoday > 0 ? h->mstart : 0;
-        for (int m = 0; m < h->model_count; m++)
-            add_model(out, &h->models[m], host, hstart);
-        for (int k = 0; k < h->day_count; k++) add_day(out, &h->days[k], host);
-    }
-
-    /* Models largest first, so the bars rank sensibly after summing. The
-       per-host shares move with their row. */
-    for (int i = 1; i < out->model_count; i++) {
-        ud_model_t key = out->models[i];
-        uint64_t share[UD_MAX_HOSTS];
-        uint64_t days[UD_MDAYS];
-        memcpy(share, out->model_by_host[i], sizeof share);
-        memcpy(days, out->model_day[i], sizeof days);
-        uint64_t kt = key.out + key.cread;
-        int j = i - 1;
-        while (j >= 0 && out->models[j].out + out->models[j].cread < kt) {
-            out->models[j + 1] = out->models[j];
-            memcpy(out->model_by_host[j + 1], out->model_by_host[j],
-                   sizeof share);
-            memcpy(out->model_day[j + 1], out->model_day[j], sizeof days);
-            j--;
-        }
-        out->models[j + 1] = key;
-        memcpy(out->model_by_host[j + 1], share, sizeof share);
-        memcpy(out->model_day[j + 1], days, sizeof days);
-    }
-
-    /* Days oldest first: the labels are MM-DD, which sorts correctly. */
-    for (int i = 1; i < out->day_count; i++) {
-        ud_day_t key = out->days[i];
-        uint64_t share[UD_MAX_HOSTS];
-        memcpy(share, out->day_by_host[i], sizeof share);
-        int j = i - 1;
-        while (j >= 0 && strcmp(out->days[j].label, key.label) > 0) {
-            out->days[j + 1] = out->days[j];
-            memcpy(out->day_by_host[j + 1], out->day_by_host[j], sizeof share);
-            j--;
-        }
-        out->days[j + 1] = key;
-        memcpy(out->day_by_host[j + 1], share, sizeof share);
-    }
+    for (int i = 0; i < ud_section_count; i++)
+        if (ud_sections[i]->merge) ud_sections[i]->merge(d, out);
 }
