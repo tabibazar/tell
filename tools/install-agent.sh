@@ -1,6 +1,7 @@
 #!/bin/sh
 # Install the launchd agents that keep the board updated:
-#   tell-stats   pushes this machine's Claude usage every 60s
+#   tell-stats   pushes this machine's Claude usage every 5 min
+#   push-now     pushes just the "today, live" section every 60s
 #   push-clock   sends the date and weather every 5 min
 #   push-today   sends the almanac every 30 min
 #   push-story   has Claude write a recap of the day every 30 min
@@ -45,10 +46,11 @@ install_one() {         # name, script, interval
     echo "installed $label -> $ROOT/tools/$2 $DEVICE"
 }
 
-install_one tell-stats  push-stats.sh   60
+install_one tell-stats  push-stats.sh  300
+install_one push-now    push-now.sh     60
 install_one push-clock  push-clock.sh  300
 install_one push-today  push-today.sh 1800
 install_one push-story  push-story.sh 1800
 
-echo "logs: /tmp/tell-stats.log /tmp/push-clock.log /tmp/push-today.log /tmp/push-story.log (and .err)"
+echo "logs: /tmp/tell-stats.log /tmp/push-now.log /tmp/push-clock.log /tmp/push-today.log /tmp/push-story.log (and .err)"
 echo "remove: launchctl bootout gui/$(id -u)/com.tabibazar.<name>"

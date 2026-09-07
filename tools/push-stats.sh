@@ -1,6 +1,6 @@
 #!/bin/sh
-# Push the usage pages to a board. Fourteen messages, because each marker
-# replaces exactly one section: models (the bar and line pages), days, the
+# Push the usage pages to a board, every five minutes. Fourteen messages,
+# because each marker replaces exactly one section: models (the bar and line pages), days, the
 # year heatmap, the API-equivalent cost, the weekday-by-hour rhythm, today,
 # projects, cache use, tools, thinking, this week against last, records, the
 # programs behind the Bash calls, and turn timing. Data updates the board silently; it does not
@@ -9,7 +9,7 @@ set -e
 cd "$(dirname "$0")/.."
 DEVICE="${1:-big}"
 
-# Runs on a one-minute timer, so refuse to overlap a slow previous run.
+# Runs on a five-minute timer, so refuse to overlap a slow previous run.
 LOCK="/tmp/push-stats-$DEVICE.lock"
 if ! mkdir "$LOCK" 2>/dev/null; then
     echo "another push to $DEVICE is still running" >&2

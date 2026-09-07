@@ -126,6 +126,10 @@ Only a Mac that can see the board over Bluetooth can contribute, so this means
 machines in the same room. A machine that stops pushing keeps whatever it last
 sent until the board restarts.
 
+The usage pages are pushed every five minutes, and the live page's section
+on its own every minute so "busy" stays current; the clock, almanac and story
+agents run on their own timers.
+
 The board accepts one BLE connection at a time. Sends on the same machine take
 a shared lock; across machines the client simply retries, five times, ten
 seconds apart.
