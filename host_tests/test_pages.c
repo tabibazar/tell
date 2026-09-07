@@ -24,12 +24,12 @@ int main(void)
     pages_init(&p, ALL);
     expect("starts on the clock", p.current == PAGE_CLOCK);
     expect("advance goes to stats", pages_advance(&p, 1000) == PAGE_STATS);
-    expect("then daily", pages_advance(&p, 2000) == PAGE_DAILY);
-    expect("then message", pages_advance(&p, 3000) == PAGE_MESSAGE);
-    expect("then today", pages_advance(&p, 4000) == PAGE_TODAY);
-    expect("then models", pages_advance(&p, 4500) == PAGE_MODELS);
-    expect("then the year", pages_advance(&p, 4800) == PAGE_YEAR);
-    expect("then the cost", pages_advance(&p, 4900) == PAGE_COST);
+    expect("then today", pages_advance(&p, 2000) == PAGE_TODAY);
+    expect("then models", pages_advance(&p, 3000) == PAGE_MODELS);
+    expect("then the year", pages_advance(&p, 4000) == PAGE_YEAR);
+    expect("then the cost", pages_advance(&p, 4500) == PAGE_COST);
+    expect("then message", pages_advance(&p, 4800) == PAGE_MESSAGE);
+    expect("then daily, last before the clock", pages_advance(&p, 4900) == PAGE_DAILY);
     expect("then wraps to clock", pages_advance(&p, 5000) == PAGE_CLOCK);
 
     pages_init(&p, FEATHER);
