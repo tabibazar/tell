@@ -117,6 +117,39 @@ typedef struct {
     uint64_t saved, cost;    /* cents, all time */
 } ud_cache_t;
 
+/* Tool calls by tool name, one machine. */
+typedef struct {
+    char name[UD_NAME_MAX + 1];
+    uint32_t calls;
+} ud_tool_t;
+
+typedef struct {
+    bool used;
+    int days;
+    uint32_t calls, msgs, sessions;
+    int32_t start, today;
+    char grid[UD_MDAYS + 1];     /* calls per day, log-scale, a thousand = one */
+    ud_tool_t rows[UD_MAX_MODELS];
+    int count;
+} ud_tools_t;
+
+/* Thinking versus visible output per model, one machine, for the messages
+   that reported the split. */
+typedef struct {
+    char name[UD_NAME_MAX + 1];
+    uint64_t thinking, visible;
+    uint64_t think_cents, out_cents;   /* thinking, and all output, at output price */
+} ud_think_model_t;
+
+typedef struct {
+    bool used;
+    int days;
+    int32_t start, today;
+    char grid[UD_MDAYS + 1];     /* thinking share per day, linear percent chars */
+    ud_think_model_t models[UD_MAX_MODELS];
+    int model_count;
+} ud_thinking_t;
+
 /* One machine's contribution. Kept separately so a re-push from one Mac
    replaces only its own share instead of clobbering the other's. */
 typedef struct {
@@ -132,6 +165,8 @@ typedef struct {
     ud_now_t now;
     ud_projects_t projects;
     ud_cache_t cache;
+    ud_tools_t tools;
+    ud_thinking_t thinking;
     int64_t now_sent_us;     /* when the now section arrived, to age "last" */
     int64_t updated_us;      /* when this machine last sent anything */
     bool used;
@@ -230,6 +265,31 @@ typedef struct {
     int hit_pct;                      /* all time, all models */
 } ud_cache_view_t;
 
+/* Every machine's tool calls, by name, most called first. */
+typedef struct {
+    bool present;
+    int days;
+    uint32_t calls, msgs, sessions;
+    ud_tool_t rows[UD_MAX_MODELS];
+    int count;
+    int32_t start, today;
+    int len;
+    uint64_t day[UD_MDAYS];               /* calls per day */
+} ud_tools_view_t;
+
+/* Every machine's thinking share, by model, most output first. */
+typedef struct {
+    bool present;
+    int days;
+    ud_think_model_t models[UD_MAX_MODELS];
+    int model_count;
+    uint64_t thinking, visible, think_cents, out_cents;
+    int share_pct;                        /* all models */
+    int32_t start, today;
+    int len;
+    int8_t pct[UD_MDAYS];                 /* -1 when no machine reported that day */
+} ud_thinking_view_t;
+
 /* Every machine's data summed, which is what the charts draw. */
 typedef struct {
     ud_model_t models[UD_MAX_MODELS];
@@ -250,6 +310,8 @@ typedef struct {
     ud_now_view_t now;
     ud_projects_view_t projects;
     ud_cache_view_t cache;
+    ud_tools_view_t tools;
+    ud_thinking_view_t thinking;
 
     /* Each model's tokens per day, every machine summed, on the window of the
        machine that sent most recently. mlen is 0 when no machine sent grids. */
@@ -260,7 +322,7 @@ typedef struct {
 
 typedef enum {
     UD_NONE = 0, UD_STATS, UD_DAILY, UD_CLOCK, UD_TODAY, UD_YEAR, UD_COST,
-    UD_RHYTHM, UD_NOW, UD_PROJECTS, UD_CACHE
+    UD_RHYTHM, UD_NOW, UD_PROJECTS, UD_CACHE, UD_TOOLS, UD_THINKING
 } ud_kind_t;
 
 /* Parses one payload. "!stats" and "!daily" replace that section for the
@@ -268,7 +330,8 @@ typedef enum {
    "!clock" carries the date and weather; "!year" a machine's
    heatmap grid and headline figures; "!cost" what its usage would have cost
    on the API; "!rhythm" messages by weekday and hour; "!now" today so far;
-   "!projects" tokens by repository; "!cache" prompt-cache use. Anything else returns UD_NONE and
+   "!projects" tokens by repository; "!cache" prompt-cache use; "!tools"
+   tool calls; "!thinking" thinking versus visible output. Anything else returns UD_NONE and
    leaves `d` untouched, so the caller can treat it as a text message. */
 ud_kind_t usagedata_parse(usagedata_t *d, const char *payload, int64_t now_us);
 

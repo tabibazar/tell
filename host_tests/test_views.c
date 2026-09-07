@@ -172,6 +172,29 @@ static void synthetic(void)
         usagedata_parse(&data, cache, 1000000);
     }
 
+    {
+        char tools[512] = "!tools\nhost air\ndays 23\ncalls 11064\nmsgs 23245\nsessions 56\n"
+                          "start 20644\ntoday 20703\nt Bash 8791\nt Edit 522\nt WebFetch 394\n"
+                          "t Read 333\nt Write 321\nt Agent 93\nt AskUserQuestion 89\n"
+                          "t other 521\ngrid ";
+        size_t n = strlen(tools);
+        for (int i = 0; i < 60; i++) tools[n++] = (i % 7 == 6) ? '.' : (char)('C' + (i * 3) % 14);
+        tools[n++] = '\n';
+        tools[n] = '\0';
+        usagedata_parse(&data, tools, 1000000);
+
+        char think[512] = "!thinking\nhost air\ndays 23\nstart 20644\ntoday 20703\n"
+                          "m opus-5 5000000 9000000 12500 35000\n"
+                          "m fable-5.1 900000 700000 4500 8000\n"
+                          "m sonnet-5 600000 200000 600 800\n"
+                          "m haiku-4.5 20000 150000 10 85\ngrid ";
+        n = strlen(think);
+        for (int i = 0; i < 60; i++) think[n++] = (i % 9 == 8) ? '.' : (char)('K' + (i * 5) % 12);
+        think[n++] = '\n';
+        think[n] = '\0';
+        usagedata_parse(&data, think, 1000000);
+    }
+
     usagedata_parse(&data, "!now\nhost air\ntokens 85406000\ncost 8337\nmsgs 290\n"
                            "sessions 1\navg 306469905\nlast 5\nmodel fable-5.1\n"
                            "project tell\nsession 4883\n", 1000000);
@@ -295,6 +318,28 @@ int main(int argc, char **argv)
     expect("cache text stops short of the right edge", lit_in(W - 12, 24, W, H) == 0);
     views_cache(&cv, &empty, 1.0f, now);
     expect("empty cache page shows a message", lit_in(0, 48, W, 72) > 0);
+
+    /* Tools. */
+    views_tools(&cv, &view, 1.0f, now);
+    save(prefix, "tools");
+    expect("tools present", view.tools.present && view.tools.count == 8);
+    expect("tool bars drawn", lit_in(17 * 12, 2 * 24, 46 * 12, 10 * 24) > 500);
+    expect("tool summary drawn", lit_in(0, 11 * 24, W, 12 * 24) > 100);
+    expect("tool daily line drawn", count_colour(pal_heat(4)) > 300);
+    expect("tools text stops short of the right edge", lit_in(W - 12, 24, W, H) == 0);
+    views_tools(&cv, &empty, 1.0f, now);
+    expect("empty tools page shows a message", lit_in(0, 48, W, 72) > 0);
+
+    /* Thinking share. */
+    views_thinking(&cv, &view, 1.0f, now);
+    save(prefix, "thinking");
+    expect("thinking present", view.thinking.present && view.thinking.share_pct > 30);
+    expect("thinking headline drawn", lit_in(0, 2 * 24, W, 4 * 24) > 200);
+    expect("thinking bars drawn", lit_in(17 * 12, 6 * 24, 46 * 12, 10 * 24) > 500);
+    expect("thinking daily line drawn", lit_in(72, 13 * 24, W - 24, 18 * 24) > 200);
+    expect("thinking text stops short of the right edge", lit_in(W - 12, 24, W, H) == 0);
+    views_thinking(&cv, &empty, 1.0f, now);
+    expect("empty thinking page shows a message", lit_in(0, 48, W, 72) > 0);
 
     /* The settings page, and whether its buttons can be hit. */
     settings_t st;

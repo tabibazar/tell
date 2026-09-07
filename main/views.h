@@ -39,6 +39,12 @@ void views_projects(canvas_t *c, const ud_view_t *d, float t, int64_t now_us);
 /* Cache efficiency: hit rate per model and per day, and what caching saved. */
 void views_cache(canvas_t *c, const ud_view_t *d, float t, int64_t now_us);
 
+/* Tools: a bar per tool Claude called, and calls per day. */
+void views_tools(canvas_t *c, const ud_view_t *d, float t, int64_t now_us);
+
+/* Thinking share: how much of each model's output was thinking. */
+void views_thinking(canvas_t *c, const ud_view_t *d, float t, int64_t now_us);
+
 /* The settings page: each setting as a row of buttons, the current choice
    lit. Touch only, so it is not offered on the Feather. */
 void views_settings(canvas_t *c, const settings_t *s);

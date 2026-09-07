@@ -876,6 +876,197 @@ void views_cache(canvas_t *c, const ud_view_t *d, float t, int64_t now_us)
     footer(c, note);
 }
 
+/* A step line of `n` daily values on a plot, values below zero skipped. Axis
+   labels at 0, half and full of `top`; dates a fortnight apart beneath. */
+static void step_plot(canvas_t *c, const int64_t *vals, int n, int64_t lo,
+                      int64_t top, int32_t start_day, int plot_top_row,
+                      int date_row, uint16_t colour, float t,
+                      void (*label)(int64_t, char *, int))
+{
+    int gutter = 6 * c->cell_w;
+    int py0 = plot_top_row * c->cell_h + 4;
+    int bottom = date_row * c->cell_h - 4;
+    int plot_h = bottom - py0, plot_w = c->w - gutter - 2 * c->cell_w;
+    int64_t span = top - lo > 0 ? top - lo : 1;
+    for (int q = 0; q <= 2; q++) {
+        int yy = bottom - plot_h * q / 2;
+        canvas_fill_rect(c, gutter, yy, plot_w, 1, PAL_DIM);
+        char lab[16];
+        label(lo + span * q / 2, lab, sizeof lab);
+        right_text(c, yy / c->cell_h, gutter / c->cell_w - 1, lab, PAL_DIM);
+    }
+    if (n <= 0) {
+        canvas_puts(c, gutter / c->cell_w + 2, plot_top_row + 2, "no daily data", PAL_DIM);
+        return;
+    }
+    int prev_y = -1;
+    for (int i = 0; i < n; i++) {
+        int x0 = gutter + plot_w * i / n, x1 = gutter + plot_w * (i + 1) / n;
+        if (vals[i] < 0) { prev_y = -1; continue; }
+        int64_t above = vals[i] - lo;
+        if (above < 0) above = 0;
+        if (above > span) above = span;
+        int yy = bottom - (int)((double)plot_h * (double)above / (double)span * t);
+        if (prev_y >= 0 && prev_y != yy) {
+            int lo_y = prev_y < yy ? prev_y : yy;
+            canvas_fill_rect(c, x0, lo_y, 2, (prev_y > yy ? prev_y : yy) - lo_y + 2, colour);
+        }
+        canvas_fill_rect(c, x0, yy, x1 - x0, 2, colour);
+        prev_y = yy;
+    }
+    for (int i = 0; i < n; i += 14) {
+        char lab[16];
+        day_name(start_day + i, lab, sizeof lab);
+        int col = (gutter + plot_w * i / n) / c->cell_w;
+        if (col + (int)strlen(lab) <= c->cols) canvas_puts(c, col, date_row, lab, PAL_DIM);
+    }
+}
+
+static void label_count(int64_t v, char *out, int size) { human((uint64_t)v, out, size); }
+
+/* The next 1, 2 or 5 times a power of ten at or above v, so an axis ends on
+   a round number and its midpoint reads as one too. */
+static int64_t nice_top(int64_t v)
+{
+    if (v <= 0) return 1;
+    int64_t mag = 1;
+    while (mag * 10 <= v) mag *= 10;
+    if (v <= mag) return mag;
+    if (v <= 2 * mag) return 2 * mag;
+    if (v <= 5 * mag) return 5 * mag;
+    return 10 * mag;
+}
+static void label_pct(int64_t v, char *out, int size) { snprintf(out, size, "%lld%%", (long long)v); }
+
+void views_tools(canvas_t *c, const ud_view_t *d, float t, int64_t now_us)
+{
+    canvas_clear(c);
+    const ud_tools_view_t *tl = &d->tools;
+    char head[48], fresh[24];
+    freshness(d, now_us, fresh, sizeof fresh);
+    if (tl->present) snprintf(head, sizeof head, "%d days   %s", tl->days, fresh);
+    else snprintf(head, sizeof head, "%s", fresh);
+    title(c, "TOOLS", head);
+    if (!tl->present) {
+        canvas_puts(c, 1, 2, "no data yet -- run tools/push-stats.sh", PAL_DIM);
+        return;
+    }
+
+    canvas_puts(c, 1, 1, "tool", PAL_DIM);
+    canvas_puts(c, 17, 1, "share of calls", PAL_DIM);
+    right_text(c, 1, c->cols - 1, "calls", PAL_DIM);
+    int bar_x = 17 * c->cell_w, bar_max = (46 - 17) * c->cell_w;
+    uint32_t peak = 1;
+    for (int i = 0; i < tl->count; i++) if (tl->rows[i].calls > peak) peak = tl->rows[i].calls;
+    for (int i = 0; i < tl->count && i < 8; i++) {
+        const ud_tool_t *r = &tl->rows[i];
+        int row = 2 + i;
+        canvas_puts(c, 1, row, r->name, PAL_FG);
+        int width = (int)((double)r->calls / (double)peak * bar_max * t);
+        if (width < 2 && r->calls > 0 && t >= 1.0f) width = 2;
+        canvas_fill_rect(c, bar_x, row * c->cell_h + c->cell_h / 4, width, c->cell_h / 2,
+                         pal_accent(i));
+        char buf[24];
+        if (tl->calls > 0) {
+            snprintf(buf, sizeof buf, "%lu%%",
+                     (unsigned long)(((uint64_t)r->calls * 100 + tl->calls / 2) / tl->calls));
+            canvas_puts(c, 48, row, buf, PAL_DIM);
+        }
+        snprintf(buf, sizeof buf, "%lu", (unsigned long)r->calls);
+        right_text(c, row, c->cols - 1, buf, PAL_FG);
+    }
+
+    char line[128];
+    snprintf(line, sizeof line, "%lu calls   %.0f per session   %.2f per message",
+             (unsigned long)tl->calls,
+             tl->sessions ? (double)tl->calls / tl->sessions : 0.0,
+             tl->msgs ? (double)tl->calls / tl->msgs : 0.0);
+    footer_fit(c, line);
+    canvas_puts(c, 1, 11, line, PAL_DIM);
+
+    canvas_puts(c, 1, 12, "tool calls per day, last 60 days", PAL_DIM);
+    int64_t vals[UD_MDAYS];
+    int64_t top = 1;
+    for (int i = 0; i < tl->len; i++) {
+        vals[i] = (int64_t)tl->day[i];
+        if (vals[i] > top) top = vals[i];
+    }
+    step_plot(c, vals, tl->len, 0, nice_top(top), tl->start, 13, 18,
+              pal_heat(PAL_HEAT_STEPS), t, label_count);
+
+    snprintf(line, sizeof line,
+             "counts tool_use blocks; older days from Claude Code's own cache");
+    footer(c, line);
+}
+
+void views_thinking(canvas_t *c, const ud_view_t *d, float t, int64_t now_us)
+{
+    canvas_clear(c);
+    const ud_thinking_view_t *th = &d->thinking;
+    char head[48], fresh[24];
+    freshness(d, now_us, fresh, sizeof fresh);
+    if (th->present) snprintf(head, sizeof head, "%d days   %s", th->days, fresh);
+    else snprintf(head, sizeof head, "%s", fresh);
+    title(c, "THINKING SHARE", head);
+    if (!th->present) {
+        canvas_puts(c, 1, 2, "no data yet -- run tools/push-stats.sh", PAL_DIM);
+        return;
+    }
+
+    const uint16_t hi = pal_heat(PAL_HEAT_STEPS);
+    const int left = 1, right = c->cols / 2 + 1;
+    char buf[80], a[24], b[24];
+    snprintf(buf, sizeof buf, "%d%% of output tokens", th->share_pct);
+    labelled(c, left, 2, "Thinking: ", buf, hi);
+    money(th->think_cents, a, sizeof a);
+    labelled(c, right, 2, "Cost of thinking: ", a, hi);
+    human(th->thinking, a, sizeof a);
+    human(th->visible, b, sizeof b);
+    snprintf(buf, sizeof buf, "%s thinking . %s visible", a, b);
+    canvas_puts(c, left, 3, buf, PAL_DIM);
+    money(th->out_cents, a, sizeof a);
+    snprintf(buf, sizeof buf, "of %s spent on output", a);
+    canvas_puts(c, right, 3, buf, PAL_DIM);
+
+    canvas_puts(c, left, 5, "model", PAL_DIM);
+    canvas_puts(c, 17, 5, "share of output that is thinking", PAL_DIM);
+    right_text(c, 5, c->cols - 1, "thinking", PAL_DIM);
+    int bar_x = 17 * c->cell_w, bar_max = (46 - 17) * c->cell_w;
+    int shown = th->model_count < 6 ? th->model_count : 6;
+    for (int i = 0; i < shown; i++) {
+        const ud_think_model_t *m = &th->models[i];
+        int row = 6 + i;
+        uint64_t out = m->thinking + m->visible;
+        int pct = out ? (int)((m->thinking * 100 + out / 2) / out) : 0;
+        canvas_puts(c, left, row, m->name, PAL_FG);
+        canvas_fill_rect(c, bar_x, row * c->cell_h + c->cell_h / 4, bar_max, c->cell_h / 2, 0x2124);
+        canvas_fill_rect(c, bar_x, row * c->cell_h + c->cell_h / 4,
+                         (int)(bar_max * pct / 100 * t), c->cell_h / 2, pal_accent(i));
+        snprintf(buf, sizeof buf, "%d%%", pct);
+        canvas_puts(c, 48, row, buf, PAL_FG);
+        human(m->thinking, a, sizeof a);
+        right_text(c, row, c->cols - 1, a, PAL_FG);
+    }
+
+    canvas_puts(c, left, 12, "per day, share of output that is thinking", PAL_DIM);
+    int64_t vals[UD_MDAYS];
+    int64_t top = 0;
+    for (int i = 0; i < th->len; i++) {
+        vals[i] = th->pct[i];
+        if (vals[i] > top) top = vals[i];
+    }
+    /* Round the top up to a ten so the axis has headroom and round labels. */
+    top = ((top + 9) / 10) * 10;
+    if (top < 10) top = 10;
+    if (top > 100) top = 100;
+    step_plot(c, vals, th->len, 0, top, th->start, 13, 18, hi, t, label_pct);
+
+    char note[128];
+    snprintf(note, sizeof note,
+             "share = thinking / output tokens, where the transcript reports the split");
+    footer(c, note);
+}
+
 /* A filled marker beside a legend or card entry. */
 static void dot(canvas_t *c, int col, int row, uint16_t colour)
 {

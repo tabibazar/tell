@@ -17,7 +17,8 @@ static void expect(const char *what, int cond)
              | PAGE_BIT(PAGE_YEAR) | PAGE_BIT(PAGE_COST) \
              | PAGE_BIT(PAGE_SETTINGS) | PAGE_BIT(PAGE_NOW) \
              | PAGE_BIT(PAGE_RHYTHM) | PAGE_BIT(PAGE_PROJECTS) \
-             | PAGE_BIT(PAGE_CACHE))
+             | PAGE_BIT(PAGE_CACHE) | PAGE_BIT(PAGE_TOOLS) \
+             | PAGE_BIT(PAGE_THINKING))
 #define FEATHER (PAGE_BIT(PAGE_CLOCK) | PAGE_BIT(PAGE_MESSAGE))
 
 int main(void)
@@ -35,6 +36,8 @@ int main(void)
     expect("then the rhythm", pages_advance(&p, 4200) == PAGE_RHYTHM);
     expect("then the cost", pages_advance(&p, 4500) == PAGE_COST);
     expect("then the cache", pages_advance(&p, 4600) == PAGE_CACHE);
+    expect("then tools", pages_advance(&p, 4650) == PAGE_TOOLS);
+    expect("then thinking", pages_advance(&p, 4700) == PAGE_THINKING);
     expect("then message", pages_advance(&p, 4800) == PAGE_MESSAGE);
     expect("then daily", pages_advance(&p, 4900) == PAGE_DAILY);
     expect("then settings, last of all", pages_advance(&p, 4950) == PAGE_SETTINGS);
@@ -137,7 +140,7 @@ int main(void)
 
     /* Stepping, which the cycling saver uses: it moves without waking. */
     pages_init(&p, ALL);
-    pages_show(&p, PAGE_CACHE, 1000);
+    pages_show(&p, PAGE_THINKING, 1000);
     expect("step moves to the next page",
            pages_step(&p, 0) == PAGE_MESSAGE);
     expect("step is not activity", p.last_activity_us == 1000);

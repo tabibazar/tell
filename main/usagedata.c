@@ -103,6 +103,8 @@ ud_kind_t usagedata_parse(usagedata_t *d, const char *payload,
     else if (starts_with(payload, "!now")) kind = UD_NOW;
     else if (starts_with(payload, "!projects")) kind = UD_PROJECTS;
     else if (starts_with(payload, "!cache")) kind = UD_CACHE;
+    else if (starts_with(payload, "!tools")) kind = UD_TOOLS;
+    else if (starts_with(payload, "!thinking")) kind = UD_THINKING;
     else return UD_NONE;
 
     if (kind == UD_CLOCK) {
@@ -116,7 +118,8 @@ ud_kind_t usagedata_parse(usagedata_t *d, const char *payload,
     ud_host_t *h = NULL;
     if (kind == UD_STATS || kind == UD_DAILY || kind == UD_YEAR
         || kind == UD_COST || kind == UD_RHYTHM || kind == UD_NOW
-        || kind == UD_PROJECTS || kind == UD_CACHE) {
+        || kind == UD_PROJECTS || kind == UD_CACHE || kind == UD_TOOLS
+        || kind == UD_THINKING) {
         char name[UD_HOST_MAX + 1];
         find_host(payload, name);
         h = host_slot(d, name);
@@ -130,6 +133,8 @@ ud_kind_t usagedata_parse(usagedata_t *d, const char *payload,
         else if (kind == UD_RHYTHM) memset(&h->rhythm, 0, sizeof h->rhythm);
         else if (kind == UD_PROJECTS) memset(&h->projects, 0, sizeof h->projects);
         else if (kind == UD_CACHE) memset(&h->cache, 0, sizeof h->cache);
+        else if (kind == UD_TOOLS) memset(&h->tools, 0, sizeof h->tools);
+        else if (kind == UD_THINKING) memset(&h->thinking, 0, sizeof h->thinking);
         else { memset(&h->now, 0, sizeof h->now); h->now_sent_us = now_us; }
     }
 
@@ -321,6 +326,53 @@ ud_kind_t usagedata_parse(usagedata_t *d, const char *payload,
                 else if (strcmp(tag, "saved") == 0) k->saved = strtoull(num, NULL, 10);
                 else if (strcmp(tag, "cost") == 0) k->cost = strtoull(num, NULL, 10);
             }
+        } else if (kind == UD_TOOLS) {
+            ud_tools_t *tl = &h->tools;
+            char num[24];
+            if (strcmp(tag, "grid") == 0) {
+                token(q, tl->grid, UD_MDAYS);
+            } else if (strcmp(tag, "t") == 0) {
+                if (tl->count >= UD_MAX_MODELS) continue;
+                ud_tool_t row;
+                memset(&row, 0, sizeof row);
+                q = token(q, row.name, UD_NAME_MAX);
+                if (q == NULL || token(q, num, sizeof num - 1) == NULL) continue;
+                row.calls = (uint32_t)strtoul(num, NULL, 10);
+                tl->rows[tl->count++] = row;
+            } else if (token(q, num, sizeof num - 1) != NULL) {
+                if (strcmp(tag, "days") == 0) tl->days = atoi(num);
+                else if (strcmp(tag, "calls") == 0) tl->calls = (uint32_t)strtoul(num, NULL, 10);
+                else if (strcmp(tag, "msgs") == 0) tl->msgs = (uint32_t)strtoul(num, NULL, 10);
+                else if (strcmp(tag, "sessions") == 0) tl->sessions = (uint32_t)strtoul(num, NULL, 10);
+                else if (strcmp(tag, "start") == 0) tl->start = (int32_t)strtol(num, NULL, 10);
+                else if (strcmp(tag, "today") == 0) tl->today = (int32_t)strtol(num, NULL, 10);
+            }
+        } else if (kind == UD_THINKING) {
+            ud_thinking_t *th = &h->thinking;
+            char num[24];
+            if (strcmp(tag, "grid") == 0) {
+                token(q, th->grid, UD_MDAYS);
+            } else if (strcmp(tag, "m") == 0) {
+                if (th->model_count >= UD_MAX_MODELS) continue;
+                ud_think_model_t m;
+                memset(&m, 0, sizeof m);
+                q = token(q, m.name, UD_NAME_MAX);
+                if (q == NULL) continue;
+                uint64_t *fields[4] = { &m.thinking, &m.visible, &m.think_cents, &m.out_cents };
+                int got = 0;
+                for (int f = 0; f < 4 && q; f++) {
+                    q = token(q, num, sizeof num - 1);
+                    if (q == NULL) break;
+                    *fields[f] = strtoull(num, NULL, 10);
+                    got++;
+                }
+                if (got < 2) continue;
+                th->models[th->model_count++] = m;
+            } else if (token(q, num, sizeof num - 1) != NULL) {
+                if (strcmp(tag, "days") == 0) th->days = atoi(num);
+                else if (strcmp(tag, "start") == 0) th->start = (int32_t)strtol(num, NULL, 10);
+                else if (strcmp(tag, "today") == 0) th->today = (int32_t)strtol(num, NULL, 10);
+            }
         } else if (kind == UD_CLOCK) {
             /* The rest of the line is free text, so take it verbatim. */
             char *dest = NULL;
@@ -350,6 +402,18 @@ ud_kind_t usagedata_parse(usagedata_t *d, const char *payload,
     if (kind == UD_RHYTHM) h->rhythm.used = h->rhythm.grid[0] != '\0';
     if (kind == UD_NOW) h->now.used = true;
     if (kind == UD_PROJECTS) h->projects.used = h->projects.count > 0;
+    if (kind == UD_TOOLS) {
+        ud_tools_t *tl = &h->tools;
+        int32_t len = tl->today - tl->start + 1;
+        tl->used = tl->count > 0;
+        if (tl->today <= 0 || len < 1 || len > UD_MDAYS) { tl->today = 0; tl->grid[0] = '\0'; }
+    }
+    if (kind == UD_THINKING) {
+        ud_thinking_t *th = &h->thinking;
+        int32_t len = th->today - th->start + 1;
+        th->used = th->model_count > 0;
+        if (th->today <= 0 || len < 1 || len > UD_MDAYS) { th->today = 0; th->grid[0] = '\0'; }
+    }
     if (kind == UD_CACHE) {
         ud_cache_t *k = &h->cache;
         int32_t len = k->today - k->start + 1;
@@ -414,7 +478,8 @@ static bool contributes(const ud_host_t *h)
 {
     return h->used && (h->model_count || h->day_count || h->year.used
                        || h->cost.used || h->rhythm.used || h->now.used
-                       || h->projects.used || h->cache.used);
+                       || h->projects.used || h->cache.used || h->tools.used
+                       || h->thinking.used);
 }
 
 int usagedata_hosts(const usagedata_t *d)
@@ -789,9 +854,139 @@ static void merge_cache(const usagedata_t *d, ud_cache_view_t *v)
     }
 }
 
+/* The window of the most recently dated section among `n` candidates, as
+   (start, today, len); len 0 when none has dates. */
+static void pick_window(const int32_t *starts, const int32_t *todays, int n,
+                        int32_t *start, int32_t *today, int *len)
+{
+    *start = *today = 0;
+    *len = 0;
+    for (int i = 0; i < n; i++) {
+        if (todays[i] <= 0) continue;
+        if (*len == 0 || todays[i] > *today) {
+            *start = starts[i];
+            *today = todays[i];
+            *len = (int)(todays[i] - starts[i] + 1);
+        }
+    }
+}
+
+static void merge_tools(const usagedata_t *d, ud_tools_view_t *v)
+{
+    memset(v, 0, sizeof *v);
+    int32_t starts[UD_MAX_HOSTS] = {0}, todays[UD_MAX_HOSTS] = {0};
+    for (int i = 0; i < UD_MAX_HOSTS; i++) {
+        const ud_host_t *h = &d->hosts[i];
+        if (!h->used || !h->tools.used) continue;
+        starts[i] = h->tools.start;
+        todays[i] = h->tools.today;
+    }
+    pick_window(starts, todays, UD_MAX_HOSTS, &v->start, &v->today, &v->len);
+
+    for (int i = 0; i < UD_MAX_HOSTS; i++) {
+        const ud_host_t *h = &d->hosts[i];
+        if (!h->used || !h->tools.used) continue;
+        const ud_tools_t *tl = &h->tools;
+        v->present = true;
+        if (tl->days > v->days) v->days = tl->days;
+        v->calls += tl->calls;
+        v->msgs += tl->msgs;
+        v->sessions += tl->sessions;
+        for (int r = 0; r < tl->count; r++) {
+            int j;
+            for (j = 0; j < v->count; j++)
+                if (strcmp(v->rows[j].name, tl->rows[r].name) == 0) break;
+            if (j == v->count) {
+                if (v->count >= UD_MAX_MODELS) continue;
+                v->rows[v->count++] = tl->rows[r];
+            } else {
+                v->rows[j].calls += tl->rows[r].calls;
+            }
+        }
+        if (tl->today <= 0 || v->len == 0) continue;
+        for (int c = 0; tl->grid[c] != '\0' && c < UD_MDAYS; c++) {
+            int32_t idx = tl->start + c - v->start;
+            if (idx < 0 || idx >= v->len) continue;
+            v->day[idx] += usagedata_grid_value(tl->grid[c]) / 1000;
+        }
+    }
+    for (int i = 1; i < v->count; i++) {
+        ud_tool_t key = v->rows[i];
+        int j = i - 1;
+        while (j >= 0 && v->rows[j].calls < key.calls) { v->rows[j + 1] = v->rows[j]; j--; }
+        v->rows[j + 1] = key;
+    }
+}
+
+static void merge_thinking(const usagedata_t *d, ud_thinking_view_t *v)
+{
+    memset(v, 0, sizeof *v);
+    for (int i = 0; i < UD_MDAYS; i++) v->pct[i] = -1;
+    int32_t starts[UD_MAX_HOSTS] = {0}, todays[UD_MAX_HOSTS] = {0};
+    for (int i = 0; i < UD_MAX_HOSTS; i++) {
+        const ud_host_t *h = &d->hosts[i];
+        if (!h->used || !h->thinking.used) continue;
+        starts[i] = h->thinking.start;
+        todays[i] = h->thinking.today;
+    }
+    pick_window(starts, todays, UD_MAX_HOSTS, &v->start, &v->today, &v->len);
+
+    int sum[UD_MDAYS] = {0}, n[UD_MDAYS] = {0};
+    for (int i = 0; i < UD_MAX_HOSTS; i++) {
+        const ud_host_t *h = &d->hosts[i];
+        if (!h->used || !h->thinking.used) continue;
+        const ud_thinking_t *th = &h->thinking;
+        v->present = true;
+        if (th->days > v->days) v->days = th->days;
+        for (int m = 0; m < th->model_count; m++) {
+            const ud_think_model_t *tm = &th->models[m];
+            v->thinking += tm->thinking;
+            v->visible += tm->visible;
+            v->think_cents += tm->think_cents;
+            v->out_cents += tm->out_cents;
+            int j;
+            for (j = 0; j < v->model_count; j++)
+                if (strcmp(v->models[j].name, tm->name) == 0) break;
+            if (j == v->model_count) {
+                if (v->model_count >= UD_MAX_MODELS) continue;
+                v->models[v->model_count++] = *tm;
+            } else {
+                v->models[j].thinking += tm->thinking;
+                v->models[j].visible += tm->visible;
+                v->models[j].think_cents += tm->think_cents;
+                v->models[j].out_cents += tm->out_cents;
+            }
+        }
+        if (th->today <= 0 || v->len == 0) continue;
+        for (int c = 0; th->grid[c] != '\0' && c < UD_MDAYS; c++) {
+            int32_t idx = th->start + c - v->start;
+            int pct = usagedata_pct_value(th->grid[c]);
+            if (idx < 0 || idx >= v->len || pct < 0) continue;
+            sum[idx] += pct;
+            n[idx]++;
+        }
+    }
+    for (int i = 0; i < v->len; i++)
+        if (n[i] > 0) v->pct[i] = (int8_t)(sum[i] / n[i]);
+    uint64_t out = v->thinking + v->visible;
+    v->share_pct = out ? (int)((v->thinking * 100 + out / 2) / out) : 0;
+    for (int i = 1; i < v->model_count; i++) {
+        ud_think_model_t key = v->models[i];
+        uint64_t kt = key.thinking + key.visible;
+        int j = i - 1;
+        while (j >= 0 && v->models[j].thinking + v->models[j].visible < kt) {
+            v->models[j + 1] = v->models[j];
+            j--;
+        }
+        v->models[j + 1] = key;
+    }
+}
+
 void usagedata_merge(const usagedata_t *d, ud_view_t *out)
 {
     memset(out, 0, sizeof *out);
+    merge_tools(d, &out->tools);
+    merge_thinking(d, &out->thinking);
     merge_projects(d, &out->projects);
     merge_cache(d, &out->cache);
     merge_year(d, &out->year);

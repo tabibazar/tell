@@ -516,6 +516,53 @@ int main(void)
     parse("!cache\nhost air\nstart 1\ntoday 5\n");
     expect("cache without models is not drawn", !v.cache.present);
 
+    /* Tools. */
+    memset(&d, 0, sizeof d);
+    expect("tools marker recognised",
+           parse("!tools\nhost air\ndays 23\ncalls 100\nmsgs 500\nsessions 7\n"
+                 "start 100\ntoday 106\nt Bash 79\nt Edit 11\nt other 10\n"
+                 "grid 5..0..A\n") == UD_TOOLS);
+    expect("tools present and ranked",
+           v.tools.present && v.tools.count == 3 && strcmp(v.tools.rows[0].name, "Bash") == 0
+           && v.tools.calls == 100 && v.tools.msgs == 500 && v.tools.sessions == 7);
+    expect("tool calls per day decoded",
+           v.tools.len == 7 && v.tools.day[0] == 5 && v.tools.day[3] == 1
+           && v.tools.day[6] == 32 && v.tools.day[1] == 0);
+    parse("!tools\nhost studio\ndays 5\ncalls 20\nmsgs 50\nsessions 1\n"
+          "start 105\ntoday 106\nt Edit 15\nt Read 5\ngrid .5\n");
+    expect("tools merge by name and re-rank",
+           v.tools.count == 4 && strcmp(v.tools.rows[0].name, "Bash") == 0
+           && strcmp(v.tools.rows[1].name, "Edit") == 0 && v.tools.rows[1].calls == 26
+           && v.tools.calls == 120);
+    expect("tool days line up by date", v.tools.day[6] == 37);
+    memset(&d, 0, sizeof d);
+    parse("!tools\nhost air\ncalls 3\nt Bash 3\n");
+    expect("tools without dates still list", v.tools.present && v.tools.len == 0);
+    parse("!tools\nhost air\ncalls 0\n");
+    expect("tools without rows is not drawn", !v.tools.present);
+
+    /* Thinking share. */
+    memset(&d, 0, sizeof d);
+    expect("thinking marker recognised",
+           parse("!thinking\nhost air\ndays 23\nstart 100\ntoday 106\n"
+                 "m opus-5 350 650 1 2\nm haiku 0 10 0 0\ngrid zU.0zzz\n") == UD_THINKING);
+    expect("thinking present, ranked by output",
+           v.thinking.present && v.thinking.model_count == 2
+           && strcmp(v.thinking.models[0].name, "opus-5") == 0);
+    expect("thinking share overall", v.thinking.share_pct == 35);   /* 350 of 1010 */
+    expect("thinking totals",
+           v.thinking.thinking == 350 && v.thinking.visible == 660
+           && v.thinking.think_cents == 1 && v.thinking.out_cents == 2);
+    expect("thinking daily percentages",
+           v.thinking.pct[0] == 100 && v.thinking.pct[2] == -1 && v.thinking.pct[3] == 0);
+    parse("!thinking\nhost studio\nstart 103\ntoday 106\nm opus-5 100 100 1 1\ngrid 000z\n");
+    expect("thinking sums across machines",
+           v.thinking.models[0].thinking == 450 && v.thinking.pct[3] == 0
+           && v.thinking.pct[4] == 50 && v.thinking.pct[6] == 100);
+    memset(&d, 0, sizeof d);
+    parse("!thinking\nhost air\nstart 1\ntoday 3\n");
+    expect("thinking without models is not drawn", !v.thinking.present);
+
     if (failures == 0) { printf("all tests passed\n"); return 0; }
     printf("%d test(s) failed\n", failures);
     return 1;

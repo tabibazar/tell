@@ -17,6 +17,8 @@ typedef enum {
     PAGE_RHYTHM,     /* messages by weekday and hour */
     PAGE_COST,       /* what it would have cost on the API */
     PAGE_CACHE,      /* prompt-cache hit rate and savings */
+    PAGE_TOOLS,      /* which tools Claude calls */
+    PAGE_THINKING,   /* thinking versus visible output */
     PAGE_MESSAGE,
     PAGE_DAILY,      /* tokens per day as bars */
     PAGE_SETTINGS,   /* touch-only; last, so it is out of the way */

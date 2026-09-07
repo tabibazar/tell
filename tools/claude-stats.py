@@ -10,6 +10,8 @@
     tools/claude-stats.py --format data --section now    # today, live
     tools/claude-stats.py --format data --section projects  # tokens by repository
     tools/claude-stats.py --format data --section cache  # prompt-cache hit rate
+    tools/claude-stats.py --format data --section tools  # which tools Claude calls
+    tools/claude-stats.py --format data --section thinking  # thinking vs visible output
 
 Reads the session transcripts under ~/.claude/projects for recent, exact
 figures, and merges ~/.claude/stats-cache.json for the months before that:
@@ -132,6 +134,19 @@ def new_model():
     return {"in": 0, "out": 0, "cread": 0, "ccreate": 0, "calls": 0, "cost": 0.0}
 
 
+def short_tool(name):
+    """mcp__claude_ai_Datadog__search_datadog_logs -> mcp:Datadog. Built-in
+    tools keep their names; they are short already."""
+    if name.startswith("mcp__"):
+        parts = name.split("__")
+        server = parts[1] if len(parts) > 1 else "?"
+        for prefix in ("claude_ai_", "plugin_"):
+            if server.startswith(prefix):
+                server = server[len(prefix):]
+        return ("mcp:" + server.split("_")[0])[:15]
+    return name[:15]
+
+
 def project_name(path):
     """The repository a transcript belongs to, from its folder: the folder is
     the working directory with slashes turned to dashes, so the last piece is
@@ -157,6 +172,10 @@ def collect(pattern=TRANSCRIPTS, cache=None):
     projects = collections.defaultdict(
         lambda: {"tokens": 0, "cost": 0.0, "msgs": 0, "sessions": set()})
     daily_cache = collections.defaultdict(lambda: [0, 0, 0])   # in, cread, cwrite
+    tools = collections.Counter()
+    daily_tools = collections.Counter()
+    thinking = collections.defaultdict(lambda: [0, 0])         # model -> [thinking, output]
+    daily_thinking = collections.defaultdict(lambda: [0, 0])   # day -> [thinking, output]
     files = 0
     calls = 0
     first_day = last_day = None
@@ -191,6 +210,16 @@ def collect(pattern=TRANSCRIPTS, cache=None):
             m["cost"] += cost
             calls += 1
 
+            n_tools = 0
+            for block in msg.get("content") or []:
+                if isinstance(block, dict) and block.get("type") == "tool_use":
+                    tools[short_tool(block.get("name") or "?")] += 1
+                    n_tools += 1
+            # Only messages that report the split count towards the thinking
+            # share; older models report no details, and zero would be a lie.
+            details = u.get("output_tokens_details")
+            think = details.get("thinking_tokens") if isinstance(details, dict) else None
+
             ts = d.get("timestamp")
             when = None
             if isinstance(ts, str) and len(ts) >= 10:
@@ -220,6 +249,12 @@ def collect(pattern=TRANSCRIPTS, cache=None):
                 model_daily[model][day] += total
                 rhythm[(when.weekday(), when.hour)] += 1
                 rhythm_days.add(day)
+                daily_tools[day] += n_tools
+                if think is not None:
+                    thinking[model][0] += think or 0
+                    thinking[model][1] += u.get("output_tokens") or 0
+                    daily_thinking[day][0] += think or 0
+                    daily_thinking[day][1] += u.get("output_tokens") or 0
                 dc = daily_cache[day]
                 dc[0] += u.get("input_tokens") or 0
                 dc[1] += u.get("cache_read_input_tokens") or 0
@@ -254,7 +289,10 @@ def collect(pattern=TRANSCRIPTS, cache=None):
              "rhythm": rhythm, "rhythm_days": len(rhythm_days),
              "msgs_by_day": msgs_by_day, "sessions_by_day": sessions_by_day,
              "session_spans": sessions, "latest": latest,
-             "projects": projects, "daily_cache": daily_cache}
+             "projects": projects, "daily_cache": daily_cache,
+             "tools": tools, "daily_tools": daily_tools,
+             "tx_sessions": len(sessions), "tx_calls": calls,
+             "thinking": thinking, "daily_thinking": daily_thinking}
     if cache is None:
         cache = load_cache()
     elif isinstance(cache, str):
@@ -335,6 +373,15 @@ def merge_cache(stats, cache, sessions):
             daily[d] += t
             model_daily[name][d] += t
             daily_cost[d] += t * rate.get(name, 0.0)
+
+    daily_tools = stats.get("daily_tools")
+    if daily_tools is not None:
+        for d in [d for d in daily_tools if d <= cutoff]:
+            del daily_tools[d]
+        for r in cache.get("dailyActivity") or []:
+            d = r.get("date")
+            if isinstance(d, str) and d <= cutoff and r.get("toolCallCount"):
+                daily_tools[d] += int(r["toolCallCount"])
 
     # Older still, the cache knows only that there were messages. Estimate
     # tokens from the average message on the days where both are known, so
@@ -707,8 +754,60 @@ def render_cache(stats, today=None):
     return lines
 
 
+def render_tools(stats, today=None):
+    """The !tools payload: which tools Claude called, how often, and a daily
+    count of calls (the stats cache fills the pruned months)."""
+    today = today or dt.date.today()
+    tools = stats.get("tools", {})
+    ranked = sorted(tools.items(), key=lambda kv: -kv[1])
+    start = today - dt.timedelta(days=MODEL_DAYS - 1)
+    lines = ["!tools", "host %s" % host_name(),
+             "days %d" % stats.get("rhythm_days", 0),
+             "calls %d" % sum(tools.values()),
+             "msgs %d" % stats.get("tx_calls", 0),
+             "sessions %d" % stats.get("tx_sessions", 0),
+             "start %d" % day_number(start), "today %d" % day_number(today)]
+    shown, other = ranked[:7], ranked[7:]
+    for name, n in shown:
+        lines.append("t %s %d" % (name, n))
+    if other:
+        lines.append("t other %d" % sum(n for _, n in other))
+    daily = {d: n * 1000 for d, n in stats.get("daily_tools", {}).items()}
+    lines.append("grid %s" % day_grid(daily, start, today))
+    return lines
+
+
+def render_thinking(stats, today=None):
+    """The !thinking payload: thinking versus visible output per model, what
+    the thinking cost at output prices, and the daily share."""
+    today = today or dt.date.today()
+    thinking = stats.get("thinking", {})
+    start = today - dt.timedelta(days=MODEL_DAYS - 1)
+    lines = ["!thinking", "host %s" % host_name(),
+             "days %d" % stats.get("rhythm_days", 0),
+             "start %d" % day_number(start), "today %d" % day_number(today)]
+    ranked = sorted(thinking.items(), key=lambda kv: -kv[1][1])
+    for name, (think, out) in ranked[:8]:
+        pout = price_of(name)[1]
+        lines.append("m %s %d %d %d %d" % (name[:15], think, max(0, out - think),
+                                           cents(think * pout / 1e6),
+                                           cents(out * pout / 1e6)))
+    chars = []
+    day = start
+    while day <= today:
+        row = stats.get("daily_thinking", {}).get(day.isoformat())
+        chars.append(pct_char(100.0 * row[0] / row[1] if row and row[1] else None))
+        day += dt.timedelta(days=1)
+    lines.append("grid %s" % "".join(chars))
+    return lines
+
+
 def render_data(stats, section, today=None):
     """Marker-prefixed lines for the firmware to parse."""
+    if section == "tools":
+        return render_tools(stats, today)
+    if section == "thinking":
+        return render_thinking(stats, today)
     if section == "projects":
         return render_projects(stats)
     if section == "cache":
@@ -959,6 +1058,36 @@ def self_test():
         failures += 1
     print("ok   cache payload (%d bytes)" % len(payload))
 
+    if short_tool("mcp__claude_ai_Datadog__search_datadog_logs") != "mcp:Datadog" \
+            or short_tool("mcp__plugin_slack_slack__slack_send_message") != "mcp:slack" \
+            or short_tool("Bash") != "Bash":
+        print("FAIL tool names: %r %r" % (short_tool("mcp__claude_ai_Datadog__x"),
+                                          short_tool("mcp__plugin_slack_slack__y")))
+        failures += 1
+    print("ok   tool names")
+
+    fake["tools"] = collections.Counter({"t%d" % i: 100 - i for i in range(9)})
+    fake["daily_tools"] = collections.Counter({"2026-09-07": 42})
+    fake["tx_calls"], fake["tx_sessions"] = 500, 7
+    payload = "\n".join(render_tools(fake, dt.date(2026, 9, 7)))
+    rows = [l for l in payload.split("\n") if l.startswith("t ")]
+    grid = [l for l in payload.split("\n") if l.startswith("grid ")][0][5:]
+    if len(rows) != 8 or not rows[-1].startswith("t other ") or "calls 864" not in payload \
+            or len(grid) != MODEL_DAYS or grid_value(grid[-1]) < 38000 or grid[0] != ".":
+        print("FAIL tools payload:\n%s" % payload)
+        failures += 1
+    print("ok   tools payload (%d bytes)" % len(payload))
+
+    fake["thinking"] = {"opus-5": [350, 1000], "haiku-4.5": [0, 10]}
+    fake["daily_thinking"] = {"2026-09-07": [35, 100], "2026-09-06": [50, 100]}
+    payload = "\n".join(render_thinking(fake, dt.date(2026, 9, 7)))
+    grid = [l for l in payload.split("\n") if l.startswith("grid ")][0][5:]
+    if "m opus-5 350 650 1 2" not in payload or grid[-1] != pct_char(35) \
+            or grid[-2] != pct_char(50) or grid[0] != ".":
+        print("FAIL thinking payload:\n%s" % payload)
+        failures += 1
+    print("ok   thinking payload (%d bytes)" % len(payload))
+
     print("all tests passed" if not failures else "%d test(s) failed" % failures)
     return 1 if failures else 0
 
@@ -971,7 +1100,7 @@ def main():
     ap.add_argument("--format", choices=("ascii", "data"), default="ascii")
     ap.add_argument("--section",
                     choices=("stats", "daily", "year", "cost", "rhythm", "now",
-                             "projects", "cache"),
+                             "projects", "cache", "tools", "thinking"),
                     default="stats")
     ap.add_argument("--no-cache", action="store_true",
                     help="transcripts only; skip ~/.claude/stats-cache.json")
@@ -986,7 +1115,7 @@ def main():
     if a.all:
         os.makedirs(a.all, exist_ok=True)
         for section in ("stats", "daily", "year", "cost", "rhythm", "now",
-                        "projects", "cache"):
+                        "projects", "cache", "tools", "thinking"):
             with open(os.path.join(a.all, section + ".txt"), "w") as f:
                 f.write("\n".join(render_data(stats, section)) + "\n")
         return
