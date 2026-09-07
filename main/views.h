@@ -52,6 +52,10 @@ void views_week(canvas_t *c, const ud_view_t *d, float t, int64_t now_us);
 /* Records: personal bests, each with the day it happened. */
 void views_records(canvas_t *c, const ud_view_t *d, int64_t now_us);
 
+/* What Claude runs: the programs behind the Bash calls, and how they split
+   into git, build, test, files, scripts and other. */
+void views_runs(canvas_t *c, const ud_view_t *d, float t, int64_t now_us);
+
 /* The settings page: each setting as a row of buttons, the current choice
    lit. Touch only, so it is not offered on the Feather. */
 void views_settings(canvas_t *c, const settings_t *s);

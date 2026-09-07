@@ -12,9 +12,10 @@ typedef struct {
     int saver_min;       /* minutes idle before the screensaver; 0 = never */
     bool saver_cycle;    /* true: cycle the pages; false: drift the clock */
     int dwell_s;         /* seconds each page stays while cycling */
+    bool auto_now;       /* jump to the live page while Claude is busy */
 } settings_t;
 
-#define SETTINGS_ROWS 3
+#define SETTINGS_ROWS 4
 #define SETTINGS_MAX_CHOICES 7
 
 typedef struct {

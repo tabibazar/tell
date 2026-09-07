@@ -41,6 +41,20 @@ page_t pages_advance(pages_t *p, int64_t now_us)
     return p->current;
 }
 
+page_t pages_back(pages_t *p, int64_t now_us)
+{
+    for (int i = 1; i <= PAGE_COUNT; i++) {
+        page_t candidate = (page_t)(((int)p->current - i + PAGE_COUNT) % PAGE_COUNT);
+        if (p->available & PAGE_BIT(candidate)) {
+            p->current = candidate;
+            break;
+        }
+    }
+    p->last_activity_us = now_us;
+    p->last_rotate_us = now_us;
+    return p->current;
+}
+
 void pages_show(pages_t *p, page_t page, int64_t now_us)
 {
     if (!(p->available & PAGE_BIT(page))) return;

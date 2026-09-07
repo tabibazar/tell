@@ -19,6 +19,7 @@ typedef enum {
     PAGE_COST,       /* what it would have cost on the API */
     PAGE_CACHE,      /* prompt-cache hit rate and savings */
     PAGE_TOOLS,      /* which tools Claude calls */
+    PAGE_RUNS,       /* the programs behind the Bash calls */
     PAGE_THINKING,   /* thinking versus visible output */
     PAGE_RECORDS,    /* personal bests */
     PAGE_MESSAGE,
@@ -64,6 +65,10 @@ page_t pages_step(pages_t *p, unsigned skip);
 
 /* Moves to the next available page and returns it. */
 page_t pages_advance(pages_t *p, int64_t now_us);
+
+/* Moves to the previous available page and returns it. A tap on the left
+   half of the screen; the right half advances. */
+page_t pages_back(pages_t *p, int64_t now_us);
 
 /* Jumps to a page, ignored if that page is not available on this board. */
 void pages_show(pages_t *p, page_t page, int64_t now_us);

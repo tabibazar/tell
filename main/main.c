@@ -49,6 +49,21 @@ static int s_drawn_second = -1;
 #define NOW_REDRAW_US (10 * 1000000LL)
 static int64_t s_now_drawn_us = 0;
 
+/* Auto-jump: while Claude is busy the live page shows itself, and when the
+   work stops the clock comes back. Only from the clock or the saver, so a
+   page someone is reading is never taken away, and only until they tap. */
+static bool s_busy = false;
+static bool s_auto_jumped = false;
+static int64_t s_busy_check_us = 0;
+#define BUSY_CHECK_US (10 * 1000000LL)
+
+static bool claude_busy(const ud_view_t *v, int64_t now)
+{
+    if (!v->now.present || !v->now.have_last) return false;
+    int64_t since = v->now.last_secs + (now - v->now.last_sent_us) / 1000000;
+    return since < UD_BUSY_SECS;
+}
+
 /* Charts grow into place when a page appears; 0 means no animation running. */
 #define ANIM_US (600 * 1000LL)
 static int64_t s_anim_start = 0;
@@ -109,7 +124,8 @@ static void on_message(const char *text, size_t len)
     if (kind == UD_STATS || kind == UD_DAILY || kind == UD_YEAR
         || kind == UD_COST || kind == UD_RHYTHM || kind == UD_NOW
         || kind == UD_PROJECTS || kind == UD_CACHE || kind == UD_TOOLS
-        || kind == UD_THINKING || kind == UD_WEEK || kind == UD_RECORDS) {
+        || kind == UD_THINKING || kind == UD_WEEK || kind == UD_RECORDS
+        || kind == UD_RUNS) {
         /* Data arrives on a timer, so it must never steal the view: refresh
            the numbers, and redraw only if a page it feeds is showing. */
         page_t cur = s_pages.current;
@@ -124,8 +140,10 @@ static void on_message(const char *text, size_t len)
                     || (kind == UD_TOOLS && cur == PAGE_TOOLS)
                     || (kind == UD_THINKING && cur == PAGE_THINKING)
                     || (kind == UD_WEEK && cur == PAGE_WEEK)
-                    || (kind == UD_RECORDS && cur == PAGE_RECORDS);
+                    || (kind == UD_RECORDS && cur == PAGE_RECORDS)
+                    || (kind == UD_RUNS && cur == PAGE_RUNS);
         if (showing) s_drawn_page = PAGE_COUNT;
+        if (kind == UD_NOW) s_busy_check_us = 0;      /* re-judge busy at once */
         return;
     }
     if (len == 0) {
@@ -232,7 +250,8 @@ void app_main(void)
                | PAGE_BIT(PAGE_RHYTHM) | PAGE_BIT(PAGE_NOW)
                | PAGE_BIT(PAGE_PROJECTS) | PAGE_BIT(PAGE_CACHE)
                | PAGE_BIT(PAGE_TOOLS) | PAGE_BIT(PAGE_THINKING)
-               | PAGE_BIT(PAGE_WEEK) | PAGE_BIT(PAGE_RECORDS);
+               | PAGE_BIT(PAGE_WEEK) | PAGE_BIT(PAGE_RECORDS)
+               | PAGE_BIT(PAGE_RUNS);
     touch = gt911_init() == ESP_OK;
     if (touch) available |= PAGE_BIT(PAGE_SETTINGS);   /* useless without a finger */
 
@@ -305,10 +324,37 @@ void app_main(void)
                 s_pages.last_activity_us = now;
                 s_drawn_page = PAGE_COUNT;
                 ESP_LOGI(TAG, "tap at %d,%d -> setting %d = %d", tx, ty, row, choice);
+            } else if (tx < c->w / 2) {
+                /* The left half goes back, the right half forward. Buttons on
+                   the settings page were tested first, so they still win. */
+                page_t p = pages_back(&s_pages, now);
+                ESP_LOGI(TAG, "tap at %d,%d -> back to page %d", tx, ty, (int)p);
             } else {
                 page_t p = pages_advance(&s_pages, now);
                 ESP_LOGI(TAG, "tap at %d,%d -> page %d", tx, ty, (int)p);
             }
+            s_auto_jumped = false;          /* a tap means a person is choosing */
+        }
+
+        if (now - s_busy_check_us > BUSY_CHECK_US) {
+            s_busy_check_us = now;
+            usagedata_merge(&s_data, &v);
+            bool busy = claude_busy(&v, now);
+            if (busy && !s_busy && s_settings.auto_now
+                && (s_pages.current == PAGE_CLOCK || s_saver)
+                && (s_pages.available & PAGE_BIT(PAGE_NOW))) {
+                pages_show(&s_pages, PAGE_NOW, now);
+                s_auto_jumped = true;
+                ESP_LOGI(TAG, "busy -> live page");
+            } else if (!busy && s_busy && s_auto_jumped && s_pages.current == PAGE_NOW) {
+                pages_show(&s_pages, PAGE_CLOCK, now);
+                s_auto_jumped = false;
+                ESP_LOGI(TAG, "idle -> clock");
+            }
+            /* While busy on the live page, keep the saver away. */
+            if (busy && s_auto_jumped && s_pages.current == PAGE_NOW)
+                s_pages.last_activity_us = now;
+            s_busy = busy;
         }
 
         bool saver_now = s_synced && pages_saver_active(&s_pages, now);
@@ -353,6 +399,7 @@ void app_main(void)
             case PAGE_TOOLS:
             case PAGE_THINKING:
             case PAGE_WEEK:
+            case PAGE_RUNS:
                 s_anim_start = now;      /* drawn by the animation below */
                 break;
             case PAGE_MESSAGE: draw_message(c); display_blit(); break;
@@ -394,7 +441,8 @@ void app_main(void)
                 || s_pages.current == PAGE_CACHE
                 || s_pages.current == PAGE_TOOLS
                 || s_pages.current == PAGE_THINKING
-                || s_pages.current == PAGE_WEEK)) {
+                || s_pages.current == PAGE_WEEK
+                || s_pages.current == PAGE_RUNS)) {
             int64_t elapsed = now - s_anim_start;
             float t = (float)elapsed / (float)ANIM_US;
             bool last = t >= 1.0f;
@@ -411,6 +459,7 @@ void app_main(void)
             else if (s_pages.current == PAGE_TOOLS) views_tools(c, &v, t, now);
             else if (s_pages.current == PAGE_THINKING) views_thinking(c, &v, t, now);
             else if (s_pages.current == PAGE_WEEK) views_week(c, &v, t, now);
+            else if (s_pages.current == PAGE_RUNS) views_runs(c, &v, t, now);
             else views_daily(c, &v, t, now);
             display_blit();
         }

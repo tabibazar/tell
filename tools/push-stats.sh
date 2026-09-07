@@ -1,8 +1,9 @@
 #!/bin/sh
-# Push the usage pages to a board. Twelve messages, because each marker
+# Push the usage pages to a board. Thirteen messages, because each marker
 # replaces exactly one section: models (the bar and line pages), days, the
 # year heatmap, the API-equivalent cost, the weekday-by-hour rhythm, today,
-# projects, cache use, tools, thinking, this week against last, and records. Data updates the board silently; it does not
+# projects, cache use, tools, thinking, this week against last, records, and
+# the programs behind the Bash calls. Data updates the board silently; it does not
 # steal whatever page you are looking at.
 set -e
 cd "$(dirname "$0")/.."
@@ -20,7 +21,7 @@ trap 'rmdir "$LOCK"' EXIT
 OUT=$(mktemp -d /tmp/claude-stats.XXXXXX)
 trap 'rmdir "$LOCK"; rm -rf "$OUT"' EXIT
 ./tools/claude-stats.py --format data --all "$OUT"
-for section in stats daily year cost rhythm now projects cache tools thinking week records; do
+for section in stats daily year cost rhythm now projects cache tools thinking week records runs; do
     [ -s "$OUT/$section.txt" ] && ./tools/tell-locked.sh --device "$DEVICE" < "$OUT/$section.txt"
 done
-echo "pushed twelve sections to $DEVICE"
+echo "pushed thirteen sections to $DEVICE"

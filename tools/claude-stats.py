@@ -14,6 +14,7 @@
     tools/claude-stats.py --format data --section thinking  # thinking vs visible output
     tools/claude-stats.py --format data --section week   # last 7 days vs the 7 before
     tools/claude-stats.py --format data --section records  # personal bests
+    tools/claude-stats.py --format data --section runs   # programs behind the Bash calls
 
 Reads the session transcripts under ~/.claude/projects for recent, exact
 figures, and merges ~/.claude/stats-cache.json for the months before that:
@@ -149,6 +150,147 @@ def short_tool(name):
     return name[:15]
 
 
+SKIP_WORDS = {"sudo", "time", "nohup", "exec", "env", "command", "builtin", "nice"}
+TEST_PROGRAMS = {"pytest", "jest", "mocha", "vitest", "unittest", "tox", "rspec", "phpunit"}
+BUILD_PROGRAMS = {"make", "cmake", "ninja", "cc", "gcc", "g++", "clang", "clang++", "swiftc",
+                  "idf.py", "tsc", "webpack", "esbuild", "vite", "docker", "mvn", "gradle",
+                  "xcodebuild", "rustc", "zig", "meson", "bazel", "sips"}
+FILE_PROGRAMS = {"ls", "cat", "grep", "rg", "find", "sed", "awk", "head", "tail", "wc", "mkdir",
+                 "rm", "mv", "cp", "touch", "chmod", "chown", "tree", "diff", "sort", "uniq",
+                 "cut", "tr", "echo", "printf", "xargs", "which", "stat", "file", "du", "df",
+                 "ln", "tee", "less", "more", "basename", "dirname", "realpath", "pwd", "test",
+                 "true", "false", "sleep", "date", "wait", "read", "export", "set", "trap",
+                 "kill", "ps", "open", "pbcopy", "pbpaste", "column", "paste", "seq", "yes"}
+SCRIPT_PROGRAMS = {"python", "python3", "node", "ruby", "perl", "bash", "sh", "zsh", "deno",
+                   "bun", "php", "lua", "Rscript", "osascript", "uv", "uvx", "npx", "pipx"}
+INFRA_PROGRAMS = {"aws", "terraform", "tofu", "kubectl", "gcloud", "az", "helm", "ssh", "scp",
+                  "rsync", "curl", "wget", "dig", "nslookup", "host", "launchctl", "systemctl",
+                  "brew", "apt", "apt-get", "pip", "pip3", "esptool.py", "docker", "podman",
+                  "ansible", "vault", "gh", "op", "ping", "nc", "openssl", "pkill", "lsof",
+                  "netstat", "ifconfig", "ipconfig", "traceroute", "mtr"}
+
+
+# Words that make a whole segment shell plumbing rather than a program run,
+# and words that merely precede the program in the same segment.
+SEGMENT_WORDS = {"cd", ".", "source", "export", "for", "while", "until", "case", "esac", "in",
+                 "if", "elif", "select", "function", "local", "declare", "return", "exit",
+                 "break", "continue", "shift", "[", "[[", "]]", "test", "read", "wait", "set",
+                 "trap", "unset", "alias", "true", "false", ":"}
+PREFIX_WORDS = {"then", "do", "else", "fi", "done", "{", "}", "!", "(", ")"}
+SHELL_WORDS = SEGMENT_WORDS | PREFIX_WORDS
+
+
+def split_shell(command):
+    """Top-level segments of a shell command: split at newlines, pipes, ';',
+    '&&' and '||' that are outside quotes, with heredoc bodies removed. A
+    python -c '...' or node -e "..." body therefore stays one segment, whose
+    program is python or node, instead of scattering its keywords."""
+    segments, cur = [], []
+    quote = None
+    heredoc = None
+    i, n = 0, len(command)
+    while i < n:
+        ch = command[i]
+        if heredoc is not None:
+            # Inside a heredoc body: swallow lines until the terminator.
+            end = command.find("\n", i)
+            line = command[i:] if end < 0 else command[i:end]
+            i = n if end < 0 else end + 1
+            if line.strip() == heredoc:
+                heredoc = None
+            continue
+        if quote:
+            if ch == "\\" and quote == '"':
+                cur.append(command[i:i + 2]); i += 2; continue
+            if ch == quote:
+                quote = None
+            cur.append(ch); i += 1; continue
+        if ch in ("'", '"'):
+            quote = ch; cur.append(ch); i += 1; continue
+        if ch == "\\":
+            cur.append(command[i:i + 2]); i += 2; continue
+        if ch == "#" and (not cur or cur[-1].isspace()):
+            end = command.find("\n", i)              # a comment runs to end of line
+            i = n if end < 0 else end
+            continue
+        if command.startswith("<<", i):
+            import re
+            m = re.match(r"<<-?\s*['\"]?(\w+)['\"]?", command[i:])
+            if m:
+                heredoc = m.group(1)
+                end = command.find("\n", i)
+                i = n if end < 0 else end + 1
+                segments.append("".join(cur)); cur = []
+                continue
+        if command.startswith("&&", i) or command.startswith("||", i):
+            segments.append("".join(cur)); cur = []; i += 2; continue
+        if ch in ";|\n":
+            segments.append("".join(cur)); cur = []; i += 1; continue
+        if ch == "&":
+            # 2>&1, &>log and <&3 are redirections, not a background job.
+            prev = command[i - 1] if i > 0 else ""
+            nxt = command[i + 1] if i + 1 < n else ""
+            if prev in "<>" or nxt == ">":
+                cur.append(ch); i += 1; continue
+            segments.append("".join(cur)); cur = []; i += 1; continue
+        cur.append(ch); i += 1
+    segments.append("".join(cur))
+    return [seg.strip() for seg in segments if seg.strip()]
+
+
+def bash_programs(command):
+    """The programs a Bash tool call runs, one per top-level segment, with
+    leading assignments, sudo and shell keywords dropped, so
+    'cd x && FOO=1 sudo make -j' yields ['make']."""
+    import re
+    programs = []
+    for segment in split_shell(command):
+        words = segment.split()
+        while words and (re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", words[0])
+                         or words[0] in SKIP_WORDS or words[0] in PREFIX_WORDS):
+            words.pop(0)
+        if not words or words[0] in SEGMENT_WORDS:
+            continue
+        program = words[0].strip("()`$")
+        if program.endswith(")"):
+            program = program[:-1]
+        if not program or program in SHELL_WORDS or program.startswith("-") \
+                or not re.match(r"^[A-Za-z0-9_./+~-]+$", program):
+            continue
+        base = os.path.basename(program)
+        if base.startswith("test_") or base.startswith("./test"):
+            base = "test_*"
+        programs.append((base[:15], segment))
+    return programs
+
+
+def run_category(program, segment):
+    """git, build, test, files, scripts or other, in that order of precedence."""
+    words = segment.split()
+    if program in TEST_PROGRAMS or program == "test_*":
+        return "test"
+    if program in ("make", "npm", "pnpm", "yarn", "cargo", "go", "swift", "mix", "bundle", "rake") \
+            and "test" in words[1:3]:
+        return "test"
+    if program in ("git", "but"):
+        return "git"
+    if program == "docker" and any(w in ("build", "compose") for w in words[1:3]):
+        return "build"
+    if program in INFRA_PROGRAMS:
+        return "infra"
+    if program in BUILD_PROGRAMS or (program in ("npm", "pnpm", "yarn", "cargo", "go", "swift")
+                                     and any(w in ("build", "install", "compile", "run") for w in words[1:3])):
+        return "build"
+    if program in FILE_PROGRAMS or program == "jq":
+        return "files"
+    if program in SCRIPT_PROGRAMS or program.startswith("./") or program.endswith((".py", ".sh", ".js")):
+        return "scripts"
+    return "other"
+
+
+RUN_CATEGORIES = ("git", "build", "test", "files", "scripts", "infra", "other")
+
+
 def project_name(path):
     """The repository a transcript belongs to, from its folder: the folder is
     the working directory with slashes turned to dashes, so the last piece is
@@ -178,6 +320,9 @@ def collect(pattern=TRANSCRIPTS, cache=None):
     daily_tools = collections.Counter()
     thinking = collections.defaultdict(lambda: [0, 0])         # model -> [thinking, output]
     daily_thinking = collections.defaultdict(lambda: [0, 0])   # day -> [thinking, output]
+    runs = collections.Counter()                               # program -> commands
+    run_cats = collections.Counter()                           # category -> commands
+    bash_calls = 0
     session_tools = collections.Counter()                      # session id -> tool calls
     session_day = {}                                           # session id -> first day
     biggest_response = (0, None)                               # output tokens, day
@@ -221,6 +366,14 @@ def collect(pattern=TRANSCRIPTS, cache=None):
                 if isinstance(block, dict) and block.get("type") == "tool_use":
                     tools[short_tool(block.get("name") or "?")] += 1
                     n_tools += 1
+                    if block.get("name") == "Bash":
+                        bash_calls += 1
+                        inp = block.get("input")
+                        cmd = inp.get("command") if isinstance(inp, dict) else None
+                        if isinstance(cmd, str):
+                            for program, segment in bash_programs(cmd):
+                                runs[program] += 1
+                                run_cats[run_category(program, segment)] += 1
             # Only messages that report the split count towards the thinking
             # share; older models report no details, and zero would be a lie.
             details = u.get("output_tokens_details")
@@ -314,7 +467,8 @@ def collect(pattern=TRANSCRIPTS, cache=None):
              "thinking": thinking, "daily_thinking": daily_thinking,
              "session_tools": session_tools, "session_day": session_day,
              "biggest_response": biggest_response,
-             "earliest_minute": first_minute, "latest_minute": last_minute}
+             "earliest_minute": first_minute, "latest_minute": last_minute,
+             "runs": runs, "run_cats": run_cats, "bash_calls": bash_calls}
     if cache is None:
         cache = load_cache()
     elif isinstance(cache, str):
@@ -935,8 +1089,30 @@ def render_records(stats, cache=None):
     return lines
 
 
+def render_runs(stats):
+    """The !runs payload: the programs behind the Bash calls, and how they
+    split into git, build, test, files, scripts and other."""
+    runs = stats.get("runs", {})
+    cats = stats.get("run_cats", {})
+    ranked = sorted(runs.items(), key=lambda kv: -kv[1])
+    lines = ["!runs", "host %s" % host_name(),
+             "days %d" % stats.get("rhythm_days", 0),
+             "calls %d" % stats.get("bash_calls", 0),
+             "commands %d" % sum(runs.values())]
+    shown, other = ranked[:8], ranked[8:]
+    for name, n in shown:
+        lines.append("c %s %d" % (name, n))
+    if other:
+        lines.append("c other %d" % sum(n for _, n in other))
+    for cat in RUN_CATEGORIES:
+        lines.append("k %s %d" % (cat, cats.get(cat, 0)))
+    return lines
+
+
 def render_data(stats, section, today=None):
     """Marker-prefixed lines for the firmware to parse."""
+    if section == "runs":
+        return render_runs(stats)
     if section == "week":
         return render_week(stats, today)
     if section == "records":
@@ -1258,6 +1434,42 @@ def self_test():
         failures += 1
     print("ok   records payload (%d bytes)" % len(payload))
 
+    progs = bash_programs("cd /x && FOO=1 sudo make -j4 | tee log; git status\n"
+                          "cat > f <<'EOF'\nrm -rf /\nEOF\n./host_tests/test_views a b\n"
+                          "python3 tools/x.py || echo failed\n"
+                          "python3 -c 'import os; print(1) | x' # a comment; not a command\n"
+                          "node -e \"const a = 1; console.log(a)\"\n"
+                          "for f in *; do aws s3 ls; done\n"
+                          "[ -f x ] && curl -s http://a 2>&1 | jq .b\n"
+                          "export X=1; cd /tmp; make check &>log")
+    names = [p for p, _ in progs]
+    want = ["make", "tee", "git", "cat", "test_*", "python3", "echo", "python3", "node",
+            "aws", "curl", "jq", "make"]
+    if names != want:
+        print("FAIL bash programs: %r" % names)
+        failures += 1
+    cats = [run_category(p, seg) for p, seg in progs]
+    if cats != ["build", "files", "git", "files", "test", "scripts", "files", "scripts",
+                "scripts", "infra", "infra", "files", "build"]:
+        print("FAIL run categories: %r" % cats)
+        failures += 1
+    if run_category("npm", "npm test") != "test" or run_category("go", "go build ./...") != "build" \
+            or run_category("idf.py", "idf.py build") != "build" or run_category("frob", "frob") != "other":
+        print("FAIL run category edge cases")
+        failures += 1
+    print("ok   bash programs and categories")
+
+    fake["runs"] = collections.Counter({"p%d" % i: 20 - i for i in range(10)})
+    fake["run_cats"] = collections.Counter({"git": 50, "other": 105, "infra": 3})
+    fake["bash_calls"] = 120
+    payload = "\n".join(render_runs(fake))
+    rows = [l for l in payload.split("\n") if l.startswith("c ")]
+    if len(rows) != 9 or not rows[-1].startswith("c other ") or "commands 155" not in payload \
+            or "k git 50" not in payload or "k test 0" not in payload or "k infra 3" not in payload:
+        print("FAIL runs payload:\n%s" % payload)
+        failures += 1
+    print("ok   runs payload (%d bytes)" % len(payload))
+
     print("all tests passed" if not failures else "%d test(s) failed" % failures)
     return 1 if failures else 0
 
@@ -1271,7 +1483,7 @@ def main():
     ap.add_argument("--section",
                     choices=("stats", "daily", "year", "cost", "rhythm", "now",
                              "projects", "cache", "tools", "thinking", "week",
-                             "records"),
+                             "records", "runs"),
                     default="stats")
     ap.add_argument("--no-cache", action="store_true",
                     help="transcripts only; skip ~/.claude/stats-cache.json")
@@ -1286,7 +1498,8 @@ def main():
     if a.all:
         os.makedirs(a.all, exist_ok=True)
         for section in ("stats", "daily", "year", "cost", "rhythm", "now",
-                        "projects", "cache", "tools", "thinking", "week", "records"):
+                        "projects", "cache", "tools", "thinking", "week", "records",
+                        "runs"):
             with open(os.path.join(a.all, section + ".txt"), "w") as f:
                 f.write("\n".join(render_data(stats, section)) + "\n")
         return

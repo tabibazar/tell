@@ -19,7 +19,7 @@ static void expect(const char *what, int cond)
              | PAGE_BIT(PAGE_RHYTHM) | PAGE_BIT(PAGE_PROJECTS) \
              | PAGE_BIT(PAGE_CACHE) | PAGE_BIT(PAGE_TOOLS) \
              | PAGE_BIT(PAGE_THINKING) | PAGE_BIT(PAGE_WEEK) \
-             | PAGE_BIT(PAGE_RECORDS))
+             | PAGE_BIT(PAGE_RECORDS) | PAGE_BIT(PAGE_RUNS))
 #define FEATHER (PAGE_BIT(PAGE_CLOCK) | PAGE_BIT(PAGE_MESSAGE))
 
 int main(void)
@@ -39,12 +39,22 @@ int main(void)
     expect("then the cost", pages_advance(&p, 4500) == PAGE_COST);
     expect("then the cache", pages_advance(&p, 4600) == PAGE_CACHE);
     expect("then tools", pages_advance(&p, 4650) == PAGE_TOOLS);
+    expect("then what it runs", pages_advance(&p, 4680) == PAGE_RUNS);
     expect("then thinking", pages_advance(&p, 4700) == PAGE_THINKING);
     expect("then records", pages_advance(&p, 4750) == PAGE_RECORDS);
     expect("then message", pages_advance(&p, 4800) == PAGE_MESSAGE);
     expect("then daily", pages_advance(&p, 4900) == PAGE_DAILY);
     expect("then settings, last of all", pages_advance(&p, 4950) == PAGE_SETTINGS);
     expect("then wraps to clock", pages_advance(&p, 5000) == PAGE_CLOCK);
+
+    pages_init(&p, ALL);
+    expect("back from the clock wraps to the last page", pages_back(&p, 100) == PAGE_SETTINGS);
+    expect("back again", pages_back(&p, 200) == PAGE_DAILY);
+    expect("back is activity", p.last_activity_us == 200);
+    pages_show(&p, PAGE_STATS, 300);
+    expect("back from stats skips nothing", pages_back(&p, 400) == PAGE_WEEK);
+    pages_init(&p, FEATHER);
+    expect("feather back skips absent pages", pages_back(&p, 500) == PAGE_MESSAGE);
 
     pages_init(&p, FEATHER);
     expect("feather starts on the clock", p.current == PAGE_CLOCK);

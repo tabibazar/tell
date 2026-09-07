@@ -14,6 +14,8 @@
 #define UD_YEAR_MAX   371        /* 53 weeks of one character per day */
 #define UD_MDAYS      60         /* days of per-model history, one char each */
 #define UD_RHYTHM_CELLS 168      /* 7 weekdays x 24 hours */
+#define UD_RUN_CATS   7          /* git, build, test, files, scripts, infra, other */
+#define UD_BUSY_SECS  180        /* a message this recent means Claude is working */
 #define UD_HEAT_LEVELS 4
 
 typedef struct {
@@ -175,6 +177,16 @@ typedef struct {
     int32_t since;               /* first day with anything, 0 if not sent */
 } ud_records_t;
 
+/* The programs behind the Bash tool calls, one machine. */
+typedef struct {
+    bool used;
+    int days;
+    uint32_t calls, commands;
+    ud_tool_t rows[UD_MAX_MODELS + 1];   /* top programs, then "other" */
+    int count;
+    uint32_t cats[UD_RUN_CATS];          /* in usagedata_run_cats order */
+} ud_runs_t;
+
 /* One machine's contribution. Kept separately so a re-push from one Mac
    replaces only its own share instead of clobbering the other's. */
 typedef struct {
@@ -194,6 +206,7 @@ typedef struct {
     ud_thinking_t thinking;
     ud_week_t week;
     ud_records_t records;
+    ud_runs_t runs;
     int64_t now_sent_us;     /* when the now section arrived, to age "last" */
     int64_t updated_us;      /* when this machine last sent anything */
     bool used;
@@ -335,6 +348,16 @@ typedef struct {
     int32_t since;
 } ud_records_view_t;
 
+/* Every machine's Bash programs, most run first. */
+typedef struct {
+    bool present;
+    int days;
+    uint32_t calls, commands;
+    ud_tool_t rows[UD_MAX_MODELS + 1];
+    int count;
+    uint32_t cats[UD_RUN_CATS];
+} ud_runs_view_t;
+
 /* Every machine's data summed, which is what the charts draw. */
 typedef struct {
     ud_model_t models[UD_MAX_MODELS];
@@ -359,6 +382,7 @@ typedef struct {
     ud_thinking_view_t thinking;
     ud_week_view_t week;
     ud_records_view_t records;
+    ud_runs_view_t runs;
 
     /* Each model's tokens per day, every machine summed, on the window of the
        machine that sent most recently. mlen is 0 when no machine sent grids. */
@@ -370,7 +394,7 @@ typedef struct {
 typedef enum {
     UD_NONE = 0, UD_STATS, UD_DAILY, UD_CLOCK, UD_TODAY, UD_YEAR, UD_COST,
     UD_RHYTHM, UD_NOW, UD_PROJECTS, UD_CACHE, UD_TOOLS, UD_THINKING,
-    UD_WEEK, UD_RECORDS
+    UD_WEEK, UD_RECORDS, UD_RUNS
 } ud_kind_t;
 
 /* Parses one payload. "!stats" and "!daily" replace that section for the
@@ -394,6 +418,9 @@ uint64_t usagedata_grid_value(char c);
 /* A percentage from a linear grid character (the same alphabet, 0..100
    spread over its 62 steps); -1 for '.' or anything unknown. */
 int usagedata_pct_value(char c);
+
+/* The category names, in the order of ud_runs_t.cats. */
+extern const char *const usagedata_run_cats[UD_RUN_CATS];
 
 /* A record by key from the merged view, NULL if none. */
 const ud_record_t *usagedata_record(const ud_records_view_t *r, const char *key);

@@ -613,6 +613,25 @@ int main(void)
     expect("an empty records payload drops that machine's rows",
            usagedata_record(&v.records, "response") == NULL);
 
+    /* What Claude runs. */
+    memset(&d, 0, sizeof d);
+    expect("runs marker recognised",
+           parse("!runs\nhost air\ndays 23\ncalls 8810\ncommands 100\n"
+                 "c other 30\nc git 40\nc make 20\nk git 40\nk build 20\nk other 40\n") == UD_RUNS);
+    expect("runs present with totals",
+           v.runs.present && v.runs.calls == 8810 && v.runs.commands == 100 && v.runs.days == 23);
+    expect("programs ranked with other last",
+           v.runs.count == 3 && strcmp(v.runs.rows[0].name, "git") == 0
+           && strcmp(v.runs.rows[1].name, "make") == 0 && strcmp(v.runs.rows[2].name, "other") == 0);
+    expect("categories by name", v.runs.cats[0] == 40 && v.runs.cats[1] == 20 && v.runs.cats[6] == 40
+           && v.runs.cats[2] == 0 && v.runs.cats[5] == 0);
+    parse("!runs\nhost studio\ncalls 10\ncommands 30\nc make 30\nk build 30\n");
+    expect("runs sum and re-rank across machines",
+           strcmp(v.runs.rows[0].name, "make") == 0 && v.runs.rows[0].calls == 50
+           && v.runs.cats[1] == 50 && v.runs.commands == 130);
+    parse("!runs\nhost studio\n");
+    expect("an empty runs payload drops that machine", v.runs.rows[0].calls == 40);
+
     if (failures == 0) { printf("all tests passed\n"); return 0; }
     printf("%d test(s) failed\n", failures);
     return 1;

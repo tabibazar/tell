@@ -4,6 +4,10 @@
 #include <stdlib.h>
 #include <string.h>
 
+const char *const usagedata_run_cats[UD_RUN_CATS] = {
+    "git", "build", "test", "files", "scripts", "infra", "other"
+};
+
 static const char GRID_ALPHABET[] =
     "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
 
@@ -107,6 +111,7 @@ ud_kind_t usagedata_parse(usagedata_t *d, const char *payload,
     else if (starts_with(payload, "!thinking")) kind = UD_THINKING;
     else if (starts_with(payload, "!week")) kind = UD_WEEK;
     else if (starts_with(payload, "!records")) kind = UD_RECORDS;
+    else if (starts_with(payload, "!runs")) kind = UD_RUNS;
     else return UD_NONE;
 
     if (kind == UD_CLOCK) {
@@ -121,7 +126,8 @@ ud_kind_t usagedata_parse(usagedata_t *d, const char *payload,
     if (kind == UD_STATS || kind == UD_DAILY || kind == UD_YEAR
         || kind == UD_COST || kind == UD_RHYTHM || kind == UD_NOW
         || kind == UD_PROJECTS || kind == UD_CACHE || kind == UD_TOOLS
-        || kind == UD_THINKING || kind == UD_WEEK || kind == UD_RECORDS) {
+        || kind == UD_THINKING || kind == UD_WEEK || kind == UD_RECORDS
+        || kind == UD_RUNS) {
         char name[UD_HOST_MAX + 1];
         find_host(payload, name);
         h = host_slot(d, name);
@@ -139,6 +145,7 @@ ud_kind_t usagedata_parse(usagedata_t *d, const char *payload,
         else if (kind == UD_THINKING) memset(&h->thinking, 0, sizeof h->thinking);
         else if (kind == UD_WEEK) memset(&h->week, 0, sizeof h->week);
         else if (kind == UD_RECORDS) memset(&h->records, 0, sizeof h->records);
+        else if (kind == UD_RUNS) memset(&h->runs, 0, sizeof h->runs);
         else { memset(&h->now, 0, sizeof h->now); h->now_sent_us = now_us; }
     }
 
@@ -415,6 +422,29 @@ ud_kind_t usagedata_parse(usagedata_t *d, const char *payload,
                 r->rows[r->count++] = row;
                 r->used = true;
             }
+        } else if (kind == UD_RUNS) {
+            ud_runs_t *r = &h->runs;
+            char num[24], key[16];
+            if (strcmp(tag, "c") == 0) {
+                if (r->count >= UD_MAX_MODELS + 1) continue;
+                ud_tool_t row;
+                memset(&row, 0, sizeof row);
+                q = token(q, row.name, UD_NAME_MAX);
+                if (q == NULL || token(q, num, sizeof num - 1) == NULL) continue;
+                row.calls = (uint32_t)strtoul(num, NULL, 10);
+                r->rows[r->count++] = row;
+                r->used = true;
+            } else if (strcmp(tag, "k") == 0) {
+                q = token(q, key, sizeof key - 1);
+                if (q == NULL || token(q, num, sizeof num - 1) == NULL) continue;
+                for (int i = 0; i < UD_RUN_CATS; i++)
+                    if (strcmp(key, usagedata_run_cats[i]) == 0)
+                        r->cats[i] = (uint32_t)strtoul(num, NULL, 10);
+            } else if (token(q, num, sizeof num - 1) != NULL) {
+                if (strcmp(tag, "days") == 0) r->days = atoi(num);
+                else if (strcmp(tag, "calls") == 0) r->calls = (uint32_t)strtoul(num, NULL, 10);
+                else if (strcmp(tag, "commands") == 0) r->commands = (uint32_t)strtoul(num, NULL, 10);
+            }
         } else if (kind == UD_CLOCK) {
             /* The rest of the line is free text, so take it verbatim. */
             char *dest = NULL;
@@ -521,7 +551,8 @@ static bool contributes(const ud_host_t *h)
     return h->used && (h->model_count || h->day_count || h->year.used
                        || h->cost.used || h->rhythm.used || h->now.used
                        || h->projects.used || h->cache.used || h->tools.used
-                       || h->thinking.used || h->week.used || h->records.used);
+                       || h->thinking.used || h->week.used || h->records.used
+                       || h->runs.used);
 }
 
 int usagedata_hosts(const usagedata_t *d)
@@ -1085,9 +1116,48 @@ const ud_record_t *usagedata_record(const ud_records_view_t *r, const char *key)
     return NULL;
 }
 
+static void merge_runs(const usagedata_t *d, ud_runs_view_t *v)
+{
+    memset(v, 0, sizeof *v);
+    for (int i = 0; i < UD_MAX_HOSTS; i++) {
+        const ud_host_t *h = &d->hosts[i];
+        if (!h->used || !h->runs.used) continue;
+        const ud_runs_t *r = &h->runs;
+        v->present = true;
+        if (r->days > v->days) v->days = r->days;
+        v->calls += r->calls;
+        v->commands += r->commands;
+        for (int k = 0; k < UD_RUN_CATS; k++) v->cats[k] += r->cats[k];
+        for (int m = 0; m < r->count; m++) {
+            int j;
+            for (j = 0; j < v->count; j++)
+                if (strcmp(v->rows[j].name, r->rows[m].name) == 0) break;
+            if (j == v->count) {
+                if (v->count >= UD_MAX_MODELS + 1) continue;
+                v->rows[v->count++] = r->rows[m];
+            } else {
+                v->rows[j].calls += r->rows[m].calls;
+            }
+        }
+    }
+    /* Most run first, but "other" always last however big it is. */
+    for (int i = 1; i < v->count; i++) {
+        ud_tool_t key = v->rows[i];
+        int j = i - 1;
+        bool key_other = strcmp(key.name, "other") == 0;
+        while (j >= 0 && !key_other
+               && (strcmp(v->rows[j].name, "other") == 0 || v->rows[j].calls < key.calls)) {
+            v->rows[j + 1] = v->rows[j];
+            j--;
+        }
+        v->rows[j + 1] = key;
+    }
+}
+
 void usagedata_merge(const usagedata_t *d, ud_view_t *out)
 {
     memset(out, 0, sizeof *out);
+    merge_runs(d, &out->runs);
     merge_week(d, &out->week);
     merge_records(d, &out->records);
     merge_tools(d, &out->tools);

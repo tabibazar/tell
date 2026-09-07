@@ -203,6 +203,11 @@ static void synthetic(void)
                            "r session 1628367 20651\nr toolsess 1200 20690\n"
                            "r response 48000 20700\nr early 365 20698\nr late 1420 20700\n"
                            "since 20561\n", 1000000);
+    usagedata_parse(&data, "!runs\nhost air\ndays 23\ncalls 8810\ncommands 59785\n"
+                           "c echo 10385\nc grep 4300\nc head 3940\nc git 3565\nc tail 2423\n"
+                           "c cat 1784\nc sed 1739\nc python3 1601\nc other 30048\n"
+                           "k git 4784\nk build 338\nk test 345\nk files 30361\nk scripts 3172\n"
+                           "k infra 2500\nk other 18285\n", 1000000);
     usagedata_parse(&data, "!now\nhost air\ntokens 85406000\ncost 8337\nmsgs 290\n"
                            "sessions 1\navg 306469905\nlast 5\nmodel fable-5.1\n"
                            "project tell\nsession 4883\n", 1000000);
@@ -295,11 +300,16 @@ int main(int argc, char **argv)
     expect("comparison bar drawn", lit_in(12, 10 * 24, W - 12, 12 * 24) > 1000);
     expect("now text stops short of the right edge", lit_in(W - 12, 24, W, H) == 0);
     {
-        /* An hour later, with no new push, the age has grown past busy. */
-        int amber_busy = count_colour(pal_heat(4));
+        /* An hour later, with no new push, the age has grown past busy. With
+           a real payload that was already idle nothing changes; the check is
+           that amber never grows. */
+        int amber_before = count_colour(pal_heat(4));
+        bool was_busy = view.now.have_last
+                     && view.now.last_secs + (now - view.now.last_sent_us) / 1000000 < UD_BUSY_SECS;
         views_now(&cv, &view, now + 3600LL * 1000000LL);
-        expect("idle later: less amber than when busy",
-               count_colour(pal_heat(4)) < amber_busy);
+        int amber_after = count_colour(pal_heat(4));
+        expect("idle later: no more amber than before",
+               was_busy ? amber_after < amber_before : amber_after <= amber_before);
     }
     views_now(&cv, &empty, now);
     expect("empty now page shows a message", lit_in(0, 48, W, 72) > 0);
@@ -371,6 +381,17 @@ int main(int argc, char **argv)
     views_records(&cv, &empty, now);
     expect("empty records page shows a message", lit_in(0, 48, W, 72) > 0);
 
+    /* What Claude runs. */
+    views_runs(&cv, &view, 1.0f, now);
+    save(prefix, "runs");
+    expect("runs present", view.runs.present && view.runs.count == 9);
+    expect("program bars drawn", lit_in(17 * 12, 2 * 24, 46 * 12, 11 * 24) > 500);
+    expect("category bar drawn", lit_in(12, 14 * 24, W - 12, 15 * 24) > 1000);
+    expect("category legend drawn", lit_in(0, 15 * 24, W, 17 * 24) > 200);
+    expect("runs text stops short of the right edge", lit_in(W - 12, 24, W, H) == 0);
+    views_runs(&cv, &empty, 1.0f, now);
+    expect("empty runs page shows a message", lit_in(0, 48, W, 72) > 0);
+
     /* The settings page, and whether its buttons can be hit. */
     settings_t st;
     settings_defaults(&st);
@@ -386,6 +407,7 @@ int main(int argc, char **argv)
         const settings_row_t *row = settings_row(r);
         for (int i = 0; i < row->count; i++) {
             /* Find the button by scanning for its plate on its first row. */
+            if ((2 + r * 4 + 1) * 24 + 12 >= H) break;
             int y = (2 + r * 4 + 1) * 24 + 12;
             int x_start = -1, seen = 0;
             for (int x = 0; x < W; x++) {

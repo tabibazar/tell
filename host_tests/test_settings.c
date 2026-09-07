@@ -55,6 +55,10 @@ int main(void)
     expect("selecting sixty seconds a page",
            settings_select(&s, 2, 3) && s.dwell_s == 60 && settings_choice(&s, 2) == 3);
 
+    expect("default is to jump to the live page", s.auto_now && settings_choice(&s, 3) == 0);
+    expect("selecting stay put",
+           settings_select(&s, 3, 1) && !s.auto_now && settings_choice(&s, 3) == 1);
+
     settings_t before = s;
     expect("an out-of-range row is ignored", !settings_select(&s, 7, 0));
     expect("an out-of-range choice is ignored", !settings_select(&s, 0, 99));

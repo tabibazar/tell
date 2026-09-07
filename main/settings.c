@@ -12,6 +12,7 @@ static const settings_row_t ROWS[SETTINGS_ROWS] = {
     { "Screensaver after", { "1m", "2m", "5m", "10m", "15m", "30m", "never" }, 7 },
     { "Screensaver shows", { "cycling pages", "drifting clock" }, 2 },
     { "Seconds per page",  { "10", "20", "30", "60" }, 4 },
+    { "When Claude is busy", { "show today, live", "stay put" }, 2 },
 };
 
 void settings_defaults(settings_t *s)
@@ -19,6 +20,7 @@ void settings_defaults(settings_t *s)
     s->saver_min = 10;
     s->saver_cycle = true;
     s->dwell_s = 20;
+    s->auto_now = true;
 }
 
 const settings_row_t *settings_row(int row)
@@ -40,6 +42,7 @@ int settings_choice(const settings_t *s, int row)
     case 0: return index_of(SAVER_MIN, ROWS[0].count, s->saver_min);
     case 1: return s->saver_cycle ? 0 : 1;
     case 2: return index_of(DWELL_S, ROWS[2].count, s->dwell_s);
+    case 3: return s->auto_now ? 0 : 1;
     default: return 0;
     }
 }
@@ -53,6 +56,7 @@ bool settings_select(settings_t *s, int row, int choice)
     case 0: s->saver_min = SAVER_MIN[choice]; break;
     case 1: s->saver_cycle = choice == 0; break;
     case 2: s->dwell_s = DWELL_S[choice]; break;
+    case 3: s->auto_now = choice == 0; break;
     }
     return memcmp(&before, s, sizeof *s) != 0;
 }
@@ -83,6 +87,7 @@ void settings_load(settings_t *s)
         for (int i = 0; i < ROWS[2].count; i++)
             if (DWELL_S[i] == (int)v) s->dwell_s = (int)v;
     }
+    if (nvs_get_u8(h, "auto_now", &v) == ESP_OK) s->auto_now = v != 0;
     nvs_close(h);
     ESP_LOGI(TAG, "saver %dm, %s, %ds/page", s->saver_min,
              s->saver_cycle ? "cycle" : "drift", s->dwell_s);
@@ -98,6 +103,7 @@ bool settings_save(const settings_t *s)
     bool ok = nvs_set_u8(h, "saver_min", (uint8_t)s->saver_min) == ESP_OK
            && nvs_set_u8(h, "saver_cycle", s->saver_cycle ? 1 : 0) == ESP_OK
            && nvs_set_u8(h, "dwell_s", (uint8_t)s->dwell_s) == ESP_OK
+           && nvs_set_u8(h, "auto_now", s->auto_now ? 1 : 0) == ESP_OK
            && nvs_commit(h) == ESP_OK;
     nvs_close(h);
     if (!ok) ESP_LOGE(TAG, "nvs write failed; setting not kept");
