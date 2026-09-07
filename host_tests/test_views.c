@@ -10,6 +10,7 @@
    the interesting failures are "nothing drawn" and "drawn in the wrong
    region", and those are what is asserted. */
 #include "canvas.h"
+#include "pages.h"
 #include "palette.h"
 #include "settings.h"
 #include "usagedata.h"
@@ -208,6 +209,11 @@ static void synthetic(void)
                            "c cat 1784\nc sed 1739\nc python3 1601\nc other 30048\n"
                            "k git 4784\nk build 338\nk test 345\nk files 30361\nk scripts 3172\n"
                            "k infra 2500\nk other 18285\n", 1000000);
+    usagedata_parse(&data, "!turns\nhost air\ndays 23\nturns 1164\ninterrupted 16\n"
+                           "first 8 24\nturn 99 535\nstart 20644\ntoday 20703\n"
+                           "longest 46144 20696\n"
+                           "grid M...........................F...DEDF..DEDFF..ECBEE..CFCE...C\n",
+                    1000000);
     usagedata_parse(&data, "!now\nhost air\ntokens 85406000\ncost 8337\nmsgs 290\n"
                            "sessions 1\navg 306469905\nlast 5\nmodel fable-5.1\n"
                            "project tell\nsession 4883\n", 1000000);
@@ -391,6 +397,51 @@ int main(int argc, char **argv)
     expect("runs text stops short of the right edge", lit_in(W - 12, 24, W, H) == 0);
     views_runs(&cv, &empty, 1.0f, now);
     expect("empty runs page shows a message", lit_in(0, 48, W, 72) > 0);
+
+    /* Turns. */
+    views_turns(&cv, &view, 1.0f, now);
+    save(prefix, "turns");
+    expect("turns present", view.turns.present && view.turns.turns == 1164);
+    expect("turn headline drawn", lit_in(0, 2 * 24, W, 4 * 24) > 200);
+    expect("turn daily line drawn", lit_in(84, 12 * 24, W - 24, 18 * 24) > 100);
+    expect("turns text stops short of the right edge", lit_in(W - 12, 24, W, H) == 0);
+    views_turns(&cv, &empty, 1.0f, now);
+    expect("empty turns page shows a message", lit_in(0, 48, W, 72) > 0);
+
+    /* The menu, and whether every tile can be hit. */
+    {
+        pages_t pg;
+        unsigned all = 0;
+        for (int i = 0; i < PAGE_COUNT; i++) all |= PAGE_BIT(i);
+        pages_init(&pg, all);
+        pages_show(&pg, PAGE_MENU, 1000);
+        views_menu(&cv, &pg);
+        save(prefix, "menu");
+        expect("menu draws tiles", lit_in(0, 30, W, H) > 5000);
+        expect("menu stays inside the panel", lit_in(W - 4, 24, W, H) == 0);
+        int hits = 0, misses = 0, wrong = 0, tiles = 0;
+        for (int i = 0; i < PAGE_COUNT; i++) {
+            if (i == PAGE_MENU) continue;
+            tiles++;
+            /* Find the tile by walking the same order the menu uses. */
+            int n = 0;
+            for (int j = 0; j < i; j++) if (j != PAGE_MENU) n++;
+            int x = (n % 4) * (W / 4) + W / 8, y = 30 + (n / 4) * 88 + 40;
+            page_t got;
+            if (views_menu_hit(&cv, &pg, x, y, &got)) { hits++; if (got != (page_t)i) wrong++; }
+            else misses++;
+        }
+        expect("every tile can be hit at its centre", hits == tiles && misses == 0);
+        expect("and each names its page", wrong == 0);
+        page_t got;
+        expect("the title bar is not a tile", !views_menu_hit(&cv, &pg, 400, 10, &got));
+        pages_init(&pg, PAGE_BIT(PAGE_CLOCK) | PAGE_BIT(PAGE_MENU) | PAGE_BIT(PAGE_MESSAGE));
+        views_menu(&cv, &pg);
+        expect("a board with two pages shows two tiles",
+               views_menu_hit(&cv, &pg, W / 8, 70, &got) && got == PAGE_CLOCK
+               && views_menu_hit(&cv, &pg, W / 4 + W / 8, 70, &got) && got == PAGE_MESSAGE
+               && !views_menu_hit(&cv, &pg, W / 2 + W / 8, 70, &got));
+    }
 
     /* The settings page, and whether its buttons can be hit. */
     settings_t st;

@@ -2,6 +2,7 @@
 #define VIEWS_H
 
 #include "canvas.h"
+#include "pages.h"
 #include "settings.h"
 #include "usagedata.h"
 
@@ -55,6 +56,16 @@ void views_records(canvas_t *c, const ud_view_t *d, int64_t now_us);
 /* What Claude runs: the programs behind the Bash calls, and how they split
    into git, build, test, files, scripts and other. */
 void views_runs(canvas_t *c, const ud_view_t *d, float t, int64_t now_us);
+
+/* Turns: how long Claude takes to reply and to finish, with a daily median. */
+void views_turns(canvas_t *c, const ud_view_t *d, float t, int64_t now_us);
+
+/* The menu: a tile per available page. Tap one to go there. */
+void views_menu(canvas_t *c, const pages_t *p);
+
+/* True when a tap at display pixel (x, y) landed on a menu tile, with the
+   page it stands for. */
+bool views_menu_hit(canvas_t *c, const pages_t *p, int x, int y, page_t *page);
 
 /* The settings page: each setting as a row of buttons, the current choice
    lit. Touch only, so it is not offered on the Feather. */

@@ -15,6 +15,7 @@
     tools/claude-stats.py --format data --section week   # last 7 days vs the 7 before
     tools/claude-stats.py --format data --section records  # personal bests
     tools/claude-stats.py --format data --section runs   # programs behind the Bash calls
+    tools/claude-stats.py --format data --section turns  # how long Claude takes
 
 Reads the session transcripts under ~/.claude/projects for recent, exact
 figures, and merges ~/.claude/stats-cache.json for the months before that:
@@ -320,6 +321,8 @@ def collect(pattern=TRANSCRIPTS, cache=None):
     daily_tools = collections.Counter()
     thinking = collections.defaultdict(lambda: [0, 0])         # model -> [thinking, output]
     daily_thinking = collections.defaultdict(lambda: [0, 0])   # day -> [thinking, output]
+    events = collections.defaultdict(list)                     # session -> [(epoch, kind)]
+    interrupted = 0
     runs = collections.Counter()                               # program -> commands
     run_cats = collections.Counter()                           # category -> commands
     bash_calls = 0
@@ -337,6 +340,28 @@ def collect(pattern=TRANSCRIPTS, cache=None):
         project = project_name(path)
         for line in open(path, errors="ignore"):
             if '"usage"' not in line:
+                # A human prompt, as opposed to a tool result the harness sent
+                # back on the user's behalf: text content, no tool_result.
+                if '"type":"user"' in line and '"tool_result"' not in line:
+                    try:
+                        d = json.loads(line)
+                    except ValueError:
+                        continue
+                    msg = d.get("message")
+                    if not isinstance(msg, dict) or msg.get("role") != "user":
+                        continue
+                    content = msg.get("content")
+                    text = content if isinstance(content, str) else " ".join(
+                        b.get("text", "") for b in content if isinstance(b, dict)) \
+                        if isinstance(content, list) else ""
+                    if not text.strip():
+                        continue
+                    if "[Request interrupted by user" in text:
+                        interrupted += 1
+                        continue
+                    when = local_stamp(d.get("timestamp") or "")
+                    if when is not None and d.get("sessionId"):
+                        events[d["sessionId"]].append((when.timestamp(), "u"))
                 continue
             try:
                 d = json.loads(line)
@@ -392,6 +417,7 @@ def collect(pattern=TRANSCRIPTS, cache=None):
             if d.get("sessionId"):
                 span = sessions.setdefault(d["sessionId"], [None, None])
                 if when is not None:
+                    events[d["sessionId"]].append((when.timestamp(), "a"))
                     t = when.timestamp()
                     if span[0] is None or t < span[0]:
                         span[0] = t
@@ -468,7 +494,8 @@ def collect(pattern=TRANSCRIPTS, cache=None):
              "session_tools": session_tools, "session_day": session_day,
              "biggest_response": biggest_response,
              "earliest_minute": first_minute, "latest_minute": last_minute,
-             "runs": runs, "run_cats": run_cats, "bash_calls": bash_calls}
+             "runs": runs, "run_cats": run_cats, "bash_calls": bash_calls,
+             "turns": measure_turns(events), "interrupted": interrupted}
     if cache is None:
         cache = load_cache()
     elif isinstance(cache, str):
@@ -1109,8 +1136,68 @@ def render_runs(stats):
     return lines
 
 
+def measure_turns(events):
+    """Turns from each session's timeline. A turn runs from a human prompt to
+    the last assistant message before the next prompt; the first reply is the
+    first assistant message after the prompt. Returns a list of
+    (prompt_epoch, first_reply_secs, turn_secs)."""
+    turns = []
+    for timeline in events.values():
+        timeline.sort()
+        prompt = first = last = None
+        for t, kind in timeline:
+            if kind == "u":
+                if prompt is not None and last is not None:
+                    turns.append((prompt, first - prompt, last - prompt))
+                prompt, first, last = t, None, None
+            elif prompt is not None:
+                if first is None:
+                    first = t
+                last = t
+        if prompt is not None and last is not None:
+            turns.append((prompt, first - prompt, last - prompt))
+    return turns
+
+
+def percentile(values, pct):
+    if not values:
+        return 0
+    values = sorted(values)
+    i = min(len(values) - 1, int(round((len(values) - 1) * pct)))
+    return values[i]
+
+
+def render_turns(stats, today=None):
+    """The !turns payload: how long Claude takes, and a daily median."""
+    today = today or dt.date.today()
+    turns = stats.get("turns", [])
+    firsts = [f for _, f, _ in turns]
+    lengths = [l for _, _, l in turns]
+    start = today - dt.timedelta(days=MODEL_DAYS - 1)
+    lines = ["!turns", "host %s" % host_name(),
+             "days %d" % stats.get("rhythm_days", 0),
+             "turns %d" % len(turns),
+             "interrupted %d" % stats.get("interrupted", 0),
+             "first %d %d" % (int(percentile(firsts, 0.5)), int(percentile(firsts, 0.9))),
+             "turn %d %d" % (int(percentile(lengths, 0.5)), int(percentile(lengths, 0.9))),
+             "start %d" % day_number(start), "today %d" % day_number(today)]
+    if turns:
+        prompt, _, longest = max(turns, key=lambda x: x[2])
+        day = dt.datetime.fromtimestamp(prompt).date()
+        lines.append("longest %d %d" % (int(longest), day_number(day)))
+    by_day = collections.defaultdict(list)
+    for prompt, _, length in turns:
+        by_day[dt.datetime.fromtimestamp(prompt).date().isoformat()].append(length)
+    # Median turn per day in seconds, a thousand on the grid being one second.
+    daily = {d: int(percentile(v, 0.5)) * 1000 for d, v in by_day.items()}
+    lines.append("grid %s" % day_grid(daily, start, today))
+    return lines
+
+
 def render_data(stats, section, today=None):
     """Marker-prefixed lines for the firmware to parse."""
+    if section == "turns":
+        return render_turns(stats, today)
     if section == "runs":
         return render_runs(stats)
     if section == "week":
@@ -1470,6 +1557,31 @@ def self_test():
         failures += 1
     print("ok   runs payload (%d bytes)" % len(payload))
 
+    ev = {"s": [(100, "u"), (112, "a"), (130, "a"), (200, "u"), (205, "a"),
+                (300, "u")],                                   # last prompt unanswered
+          "t": [(50, "a"), (60, "u"), (61, "a")]}              # a reply before any prompt
+    tt = measure_turns(ev)
+    if sorted(tt) != [(60, 1, 1), (100, 12, 30), (200, 5, 5)]:
+        print("FAIL turns: %r" % tt)
+        failures += 1
+    if percentile([1, 2, 3, 4, 5], 0.5) != 3 or percentile([], 0.9) != 0:
+        print("FAIL percentile")
+        failures += 1
+    print("ok   turn measurement")
+
+    fake["turns"] = [(dt.datetime(2026, 9, 7, 10).timestamp(), 10, 60),
+                     (dt.datetime(2026, 9, 7, 11).timestamp(), 20, 600),
+                     (dt.datetime(2026, 9, 6, 11).timestamp(), 5, 30)]
+    fake["interrupted"] = 4
+    payload = "\n".join(render_turns(fake, dt.date(2026, 9, 7)))
+    grid = [l for l in payload.split("\n") if l.startswith("grid ")][0][5:]
+    if "turns 3" not in payload or "interrupted 4" not in payload or "first 10 20" not in payload \
+            or "turn 60 600" not in payload or "longest 600 20703" not in payload \
+            or len(grid) != MODEL_DAYS or grid[-1] == "." or grid[0] != ".":
+        print("FAIL turns payload:\n%s" % payload)
+        failures += 1
+    print("ok   turns payload (%d bytes)" % len(payload))
+
     print("all tests passed" if not failures else "%d test(s) failed" % failures)
     return 1 if failures else 0
 
@@ -1483,7 +1595,7 @@ def main():
     ap.add_argument("--section",
                     choices=("stats", "daily", "year", "cost", "rhythm", "now",
                              "projects", "cache", "tools", "thinking", "week",
-                             "records", "runs"),
+                             "records", "runs", "turns"),
                     default="stats")
     ap.add_argument("--no-cache", action="store_true",
                     help="transcripts only; skip ~/.claude/stats-cache.json")
@@ -1499,7 +1611,7 @@ def main():
         os.makedirs(a.all, exist_ok=True)
         for section in ("stats", "daily", "year", "cost", "rhythm", "now",
                         "projects", "cache", "tools", "thinking", "week", "records",
-                        "runs"):
+                        "runs", "turns"):
             with open(os.path.join(a.all, section + ".txt"), "w") as f:
                 f.write("\n".join(render_data(stats, section)) + "\n")
         return

@@ -1310,6 +1310,173 @@ void views_runs(canvas_t *c, const ud_view_t *d, float t, int64_t now_us)
     footer(c, line);
 }
 
+static void label_secs(int64_t v, char *out, int size)
+{
+    if (v >= 3600) snprintf(out, size, "%lldh", (long long)(v / 3600));
+    else if (v >= 60) snprintf(out, size, "%lldm", (long long)(v / 60));
+    else snprintf(out, size, "%llds", (long long)v);
+}
+
+void views_turns(canvas_t *c, const ud_view_t *d, float t, int64_t now_us)
+{
+    canvas_clear(c);
+    const ud_turns_view_t *tn = &d->turns;
+    char head[72], fresh[24];
+    freshness(d, now_us, fresh, sizeof fresh);
+    if (tn->present) snprintf(head, sizeof head, "%d days   %s", tn->days, fresh);
+    else snprintf(head, sizeof head, "%s", fresh);
+    title(c, "TURNS", head);
+    if (!tn->present) {
+        canvas_puts(c, 1, 2, "no data yet -- run tools/push-stats.sh", PAL_DIM);
+        return;
+    }
+
+    const uint16_t hi = pal_heat(PAL_HEAT_STEPS);
+    const int left = 1, right = c->cols / 2 + 1;
+    char a[24], buf[64];
+    age(tn->first_med, a, sizeof a);
+    labelled(c, left, 2, "First reply, typically: ", a, hi);
+    age(tn->turn_med, a, sizeof a);
+    labelled(c, right, 2, "A turn, typically: ", a, hi);
+    age(tn->first_p90, a, sizeof a);
+    labelled(c, left, 3, "9 in 10 replies within: ", a, PAL_FG);
+    age(tn->turn_p90, a, sizeof a);
+    labelled(c, right, 3, "9 in 10 turns within: ", a, PAL_FG);
+
+    age(tn->longest, a, sizeof a);
+    labelled(c, left, 5, "Longest turn: ", a, hi);
+    if (tn->longest_day > 0) {
+        char when[24];
+        full_date(tn->longest_day, when, sizeof when);
+        snprintf(buf, sizeof buf, "on %s", when);
+        canvas_puts(c, left + 14 + (int)strlen(a) + 1, 5, buf, PAL_DIM);
+    }
+    if (tn->turns > 0) {
+        snprintf(buf, sizeof buf, "%lu turns, %lu interrupted by you (%lu%%)",
+                 (unsigned long)tn->turns, (unsigned long)tn->interrupted,
+                 (unsigned long)(((uint64_t)tn->interrupted * 100 + tn->turns / 2) / tn->turns));
+        canvas_puts(c, left, 6, buf, PAL_FG);
+    }
+
+    /* A turn starts at your prompt and ends at Claude's last message before
+       your next one, so it counts the tool calls in between. */
+    canvas_puts(c, left, 8, "a turn runs from your prompt to Claude's last message", PAL_DIM);
+    canvas_puts(c, left, 9, "before your next one, tool calls included", PAL_DIM);
+
+    canvas_puts(c, left, 11, "typical turn per day, last 60 days", PAL_DIM);
+    /* The axis follows the days in general, not one freak day: if the largest
+       is more than three times the next, the next sets the scale and the
+       freak is clipped at the top. */
+    int64_t top = 0, second = 0;
+    for (int i = 0; i < tn->len; i++) {
+        if (tn->day[i] > top) { second = top; top = tn->day[i]; }
+        else if (tn->day[i] > second) second = tn->day[i];
+    }
+    if (second > 0 && top > 3 * second) top = second;
+    /* A round axis in seconds: the next 30s, minute, 2, 5, 10, 30 or 60 minutes. */
+    static const int64_t steps[] = { 30, 60, 120, 300, 600, 1800, 3600, 7200, 14400, 43200, 86400 };
+    int64_t nice = steps[sizeof steps / sizeof steps[0] - 1];
+    for (size_t i = 0; i < sizeof steps / sizeof steps[0]; i++)
+        if (steps[i] >= top) { nice = steps[i]; break; }
+    step_plot(c, tn->day, tn->len, 0, nice, tn->start, 12, 18, hi, t, label_secs);
+
+    char note[96];
+    snprintf(note, sizeof note, "typical = median; from the transcripts on this Mac");
+    footer(c, note);
+}
+
+/* The menu: tiles four across, five down, one per available page, in tap
+   order. Each is a raised plate the size of a fingertip several times over. */
+#define MENU_COLS   4
+#define MENU_TOP    30
+#define MENU_PITCH  88
+#define MENU_TILE_H 80
+
+static const struct { page_t page; const char *name; } MENU_NAMES[] = {
+    { PAGE_CLOCK,    "Clock" },
+    { PAGE_NOW,      "Today, live" },
+    { PAGE_WEEK,     "Week vs last" },
+    { PAGE_STATS,    "By model" },
+    { PAGE_TODAY,    "Almanac" },
+    { PAGE_MODELS,   "Models per day" },
+    { PAGE_PROJECTS, "By project" },
+    { PAGE_YEAR,     "Last 12 months" },
+    { PAGE_RHYTHM,   "When you work" },
+    { PAGE_COST,     "API cost" },
+    { PAGE_CACHE,    "Cache" },
+    { PAGE_TOOLS,    "Tools" },
+    { PAGE_RUNS,     "What it runs" },
+    { PAGE_THINKING, "Thinking" },
+    { PAGE_RECORDS,  "Records" },
+    { PAGE_TURNS,    "Turns" },
+    { PAGE_MESSAGE,  "Message" },
+    { PAGE_DAILY,    "Tokens per day" },
+    { PAGE_SETTINGS, "Settings" },
+};
+
+static const char *menu_name(page_t page)
+{
+    for (size_t i = 0; i < sizeof MENU_NAMES / sizeof MENU_NAMES[0]; i++)
+        if (MENU_NAMES[i].page == page) return MENU_NAMES[i].name;
+    return "?";
+}
+
+/* The nth tile's page, walking the available pages in order, skipping the
+   menu itself. PAGE_COUNT when there is no nth tile. */
+static page_t menu_tile_page(const pages_t *p, int n)
+{
+    int seen = 0;
+    for (int i = 0; i < PAGE_COUNT; i++) {
+        if (i == PAGE_MENU || !(p->available & PAGE_BIT(i))) continue;
+        if (seen++ == n) return (page_t)i;
+    }
+    return PAGE_COUNT;
+}
+
+static void menu_tile_rect(canvas_t *c, int n, int *x, int *y, int *w, int *h)
+{
+    int tile_w = c->w / MENU_COLS;
+    *x = (n % MENU_COLS) * tile_w + 4;
+    *y = MENU_TOP + (n / MENU_COLS) * MENU_PITCH;
+    *w = tile_w - 8;
+    *h = MENU_TILE_H;
+}
+
+void views_menu(canvas_t *c, const pages_t *p)
+{
+    canvas_clear(c);
+    title(c, "MENU", "tap a page");
+    for (int n = 0; ; n++) {
+        page_t page = menu_tile_page(p, n);
+        if (page == PAGE_COUNT) break;
+        int x, y, w, h;
+        menu_tile_rect(c, n, &x, &y, &w, &h);
+        if (y + h > c->h) break;
+        canvas_fill_rect(c, x, y, w, h, 0x2124);
+        canvas_fill_rect(c, x, y, w, 3, 0x4208);
+        canvas_fill_rect(c, x, y + h, w, 2, 0x18C3);
+        const char *name = menu_name(page);
+        int tw = (int)strlen(name) * c->cell_w;
+        canvas_puts_px(c, x + (w - tw) / 2, y + (h - c->cell_h) / 2, name,
+                       page == p->current ? pal_heat(PAL_HEAT_STEPS) : PAL_FG);
+    }
+}
+
+bool views_menu_hit(canvas_t *c, const pages_t *p, int px, int py, page_t *page)
+{
+    for (int n = 0; ; n++) {
+        page_t candidate = menu_tile_page(p, n);
+        if (candidate == PAGE_COUNT) return false;
+        int x, y, w, h;
+        menu_tile_rect(c, n, &x, &y, &w, &h);
+        /* The gaps count too: a finger between two tiles meant one of them. */
+        if (px >= x - 4 && px < x + w + 4 && py >= y - 4 && py < y + MENU_PITCH - 4) {
+            *page = candidate;
+            return true;
+        }
+    }
+}
+
 /* A filled marker beside a legend or card entry. */
 static void dot(canvas_t *c, int col, int row, uint16_t colour)
 {

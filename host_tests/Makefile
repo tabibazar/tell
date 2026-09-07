@@ -23,7 +23,7 @@ test_usagedata: test_usagedata.c ../main/usagedata.c
 test_pages: test_pages.c ../main/pages.c
 	cc $(CFLAGS) -o $@ $^
 
-test_views: test_views.c ../main/views.c ../main/canvas.c ../main/textwrap.c ../main/usagedata.c ../main/timecalc.c ../main/settings.c
+test_views: test_views.c ../main/views.c ../main/canvas.c ../main/textwrap.c ../main/usagedata.c ../main/timecalc.c ../main/settings.c ../main/pages.c
 	cc $(CFLAGS) -o $@ $^ -lm
 
 test_settings: test_settings.c ../main/settings.c

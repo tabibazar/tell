@@ -8,6 +8,7 @@ typedef enum {
     /* Tap order. The clock is home; the pages you glance at most come first,
        and the two text-heavy ones sit last, just before the clock returns. */
     PAGE_CLOCK = 0,
+    PAGE_MENU,       /* a tile per page; first tap from the clock opens it */
     PAGE_NOW,        /* today so far, and whether Claude is busy */
     PAGE_WEEK,       /* the last seven days against the seven before */
     PAGE_STATS,
@@ -22,6 +23,7 @@ typedef enum {
     PAGE_RUNS,       /* the programs behind the Bash calls */
     PAGE_THINKING,   /* thinking versus visible output */
     PAGE_RECORDS,    /* personal bests */
+    PAGE_TURNS,      /* how long Claude takes */
     PAGE_MESSAGE,
     PAGE_DAILY,      /* tokens per day as bars */
     PAGE_SETTINGS,   /* touch-only; last, so it is out of the way */

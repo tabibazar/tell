@@ -21,7 +21,8 @@ page. While Claude is busy the board shows the live page on its own and
 returns to the clock when the work stops; Settings can turn that off.
 
 On the touch panel a tap on the right half of the screen goes to the next
-page and one on the left half to the previous. After ten minutes with no tap
+page and one on the left half to the previous; the first page after the clock
+is a menu with a tile per page, so any page is two taps away. After ten minutes with no tap
 and no message the screensaver cycles through the pages, twenty seconds each,
 so nothing sits still long enough to burn in; a tap brings back whatever page
 is showing. The Settings page (last in the
@@ -195,11 +196,11 @@ firmware bugs apart from client bugs.
 
 **Data payloads.** A text message that starts with `!stats`, `!daily`,
 `!year`, `!cost`, `!rhythm`, `!now`, `!projects`, `!cache`, `!tools`,
-`!thinking`, `!week`, `!records`, `!runs`, `!clock` or `!today` is data for a
-page rather than a
+`!thinking`, `!week`, `!records`, `!runs`, `!turns`, `!clock` or `!today` is
+data for a page rather than a
 message to show, and replaces that section for the sending machine (named on
 a `host` line) without changing what is on screen. `tools/claude-stats.py
---format data --section <name>` produces each of the first thirteen (or `--all
+--format data --section <name>` produces each of the first fourteen (or `--all
 DIR` writes them all from one pass); the almanac and weather scripts produce
 the other two.
 

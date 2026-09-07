@@ -632,6 +632,29 @@ int main(void)
     parse("!runs\nhost studio\n");
     expect("an empty runs payload drops that machine", v.runs.rows[0].calls == 40);
 
+    /* Turns. */
+    memset(&d, 0, sizeof d);
+    expect("turns marker recognised",
+           parse("!turns\nhost air\ndays 23\nturns 100\ninterrupted 4\nfirst 8 24\n"
+                 "turn 99 535\nstart 100\ntoday 106\nlongest 46144 105\ngrid 5...A.0\n") == UD_TURNS);
+    expect("turn figures kept",
+           v.turns.present && v.turns.turns == 100 && v.turns.interrupted == 4
+           && v.turns.first_med == 8 && v.turns.first_p90 == 24
+           && v.turns.turn_med == 99 && v.turns.turn_p90 == 535
+           && v.turns.longest == 46144 && v.turns.longest_day == 105);
+    expect("turn days decoded, empty days marked",
+           v.turns.len == 7 && v.turns.day[0] == 5 && v.turns.day[1] == -1
+           && v.turns.day[4] == 32 && v.turns.day[6] == 1);
+    parse("!turns\nhost studio\nturns 300\nfirst 4 10\nturn 19 100\nlongest 50 1\n"
+          "start 103\ntoday 106\ngrid ...5\n");
+    expect("medians average weighted by turns",
+           v.turns.turns == 400 && v.turns.first_med == 5 && v.turns.turn_med == 39);
+    expect("longest is the longest anywhere", v.turns.longest == 46144);
+    expect("turn days average where both report", v.turns.day[6] == 3);
+    memset(&d, 0, sizeof d);
+    parse("!turns\nhost air\ndays 3\n");
+    expect("turns without a count is not drawn", !v.turns.present);
+
     if (failures == 0) { printf("all tests passed\n"); return 0; }
     printf("%d test(s) failed\n", failures);
     return 1;

@@ -87,7 +87,7 @@ static void apply_settings(void)
    has been sent, because "nothing sent yet" is not worth twenty seconds. */
 static unsigned cycle_skip(void)
 {
-    unsigned skip = PAGE_BIT(PAGE_SETTINGS);
+    unsigned skip = PAGE_BIT(PAGE_SETTINGS) | PAGE_BIT(PAGE_MENU);
     if (s_message[0] == '\0') skip |= PAGE_BIT(PAGE_MESSAGE);
     return skip;
 }
@@ -125,7 +125,7 @@ static void on_message(const char *text, size_t len)
         || kind == UD_COST || kind == UD_RHYTHM || kind == UD_NOW
         || kind == UD_PROJECTS || kind == UD_CACHE || kind == UD_TOOLS
         || kind == UD_THINKING || kind == UD_WEEK || kind == UD_RECORDS
-        || kind == UD_RUNS) {
+        || kind == UD_RUNS || kind == UD_TURNS) {
         /* Data arrives on a timer, so it must never steal the view: refresh
            the numbers, and redraw only if a page it feeds is showing. */
         page_t cur = s_pages.current;
@@ -141,7 +141,8 @@ static void on_message(const char *text, size_t len)
                     || (kind == UD_THINKING && cur == PAGE_THINKING)
                     || (kind == UD_WEEK && cur == PAGE_WEEK)
                     || (kind == UD_RECORDS && cur == PAGE_RECORDS)
-                    || (kind == UD_RUNS && cur == PAGE_RUNS);
+                    || (kind == UD_RUNS && cur == PAGE_RUNS)
+                    || (kind == UD_TURNS && cur == PAGE_TURNS);
         if (showing) s_drawn_page = PAGE_COUNT;
         if (kind == UD_NOW) s_busy_check_us = 0;      /* re-judge busy at once */
         return;
@@ -251,9 +252,10 @@ void app_main(void)
                | PAGE_BIT(PAGE_PROJECTS) | PAGE_BIT(PAGE_CACHE)
                | PAGE_BIT(PAGE_TOOLS) | PAGE_BIT(PAGE_THINKING)
                | PAGE_BIT(PAGE_WEEK) | PAGE_BIT(PAGE_RECORDS)
-               | PAGE_BIT(PAGE_RUNS);
+               | PAGE_BIT(PAGE_RUNS) | PAGE_BIT(PAGE_TURNS);
     touch = gt911_init() == ESP_OK;
-    if (touch) available |= PAGE_BIT(PAGE_SETTINGS);   /* useless without a finger */
+    /* Useless without a finger: both are driven by taps on their contents. */
+    if (touch) available |= PAGE_BIT(PAGE_SETTINGS) | PAGE_BIT(PAGE_MENU);
 
     /* The clock chip shares the touch bus. If it knows the time, start from
        it, so the display is right before any Mac has said anything. */
@@ -309,12 +311,18 @@ void app_main(void)
 
         if (touch && gt911_tapped()) {
             int tx, ty, row, choice;
+            page_t target;
             gt911_point(&tx, &ty);
             if (s_saver) {
                 /* The first tap dismisses the saver rather than also changing
                    the page, which would be a surprise. */
                 s_pages.last_activity_us = now;
                 ESP_LOGI(TAG, "tap at %d,%d -> wake", tx, ty);
+            } else if (s_pages.current == PAGE_MENU
+                       && views_menu_hit(c, &s_pages, tx, ty, &target)) {
+                pages_show(&s_pages, target, now);
+                s_drawn_page = PAGE_COUNT;
+                ESP_LOGI(TAG, "tap at %d,%d -> menu -> page %d", tx, ty, (int)target);
             } else if (s_pages.current == PAGE_SETTINGS
                        && views_settings_hit(c, tx, ty, &row, &choice)) {
                 if (settings_select(&s_settings, row, choice)) {
@@ -400,6 +408,7 @@ void app_main(void)
             case PAGE_THINKING:
             case PAGE_WEEK:
             case PAGE_RUNS:
+            case PAGE_TURNS:
                 s_anim_start = now;      /* drawn by the animation below */
                 break;
             case PAGE_MESSAGE: draw_message(c); display_blit(); break;
@@ -411,6 +420,10 @@ void app_main(void)
                 break;
             case PAGE_SETTINGS:
                 views_settings(c, &s_settings);
+                display_blit();
+                break;
+            case PAGE_MENU:
+                views_menu(c, &s_pages);
                 display_blit();
                 break;
             case PAGE_RHYTHM:
@@ -442,7 +455,8 @@ void app_main(void)
                 || s_pages.current == PAGE_TOOLS
                 || s_pages.current == PAGE_THINKING
                 || s_pages.current == PAGE_WEEK
-                || s_pages.current == PAGE_RUNS)) {
+                || s_pages.current == PAGE_RUNS
+                || s_pages.current == PAGE_TURNS)) {
             int64_t elapsed = now - s_anim_start;
             float t = (float)elapsed / (float)ANIM_US;
             bool last = t >= 1.0f;
@@ -460,6 +474,7 @@ void app_main(void)
             else if (s_pages.current == PAGE_THINKING) views_thinking(c, &v, t, now);
             else if (s_pages.current == PAGE_WEEK) views_week(c, &v, t, now);
             else if (s_pages.current == PAGE_RUNS) views_runs(c, &v, t, now);
+            else if (s_pages.current == PAGE_TURNS) views_turns(c, &v, t, now);
             else views_daily(c, &v, t, now);
             display_blit();
         }

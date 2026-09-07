@@ -187,6 +187,20 @@ typedef struct {
     uint32_t cats[UD_RUN_CATS];          /* in usagedata_run_cats order */
 } ud_runs_t;
 
+/* How long Claude takes, one machine: medians and 90th percentiles in
+   seconds, the longest turn, and a median per day. */
+typedef struct {
+    bool used;
+    int days;
+    uint32_t turns, interrupted;
+    uint32_t first_med, first_p90;   /* prompt to first reply */
+    uint32_t turn_med, turn_p90;     /* prompt to last message of the turn */
+    uint32_t longest;
+    int32_t longest_day;
+    int32_t start, today;
+    char grid[UD_MDAYS + 1];         /* median turn per day, seconds x1000 on the log scale */
+} ud_turns_t;
+
 /* One machine's contribution. Kept separately so a re-push from one Mac
    replaces only its own share instead of clobbering the other's. */
 typedef struct {
@@ -207,6 +221,7 @@ typedef struct {
     ud_week_t week;
     ud_records_t records;
     ud_runs_t runs;
+    ud_turns_t turns;
     int64_t now_sent_us;     /* when the now section arrived, to age "last" */
     int64_t updated_us;      /* when this machine last sent anything */
     bool used;
@@ -358,6 +373,20 @@ typedef struct {
     uint32_t cats[UD_RUN_CATS];
 } ud_runs_view_t;
 
+/* Every machine's turns. Medians cannot be merged exactly, so they are
+   averaged weighted by turn count; the longest is the longest anywhere. */
+typedef struct {
+    bool present;
+    int days;
+    uint32_t turns, interrupted;
+    uint32_t first_med, first_p90, turn_med, turn_p90;
+    uint32_t longest;
+    int32_t longest_day;
+    int32_t start, today;
+    int len;
+    int64_t day[UD_MDAYS];           /* median turn seconds per day, -1 none */
+} ud_turns_view_t;
+
 /* Every machine's data summed, which is what the charts draw. */
 typedef struct {
     ud_model_t models[UD_MAX_MODELS];
@@ -383,6 +412,7 @@ typedef struct {
     ud_week_view_t week;
     ud_records_view_t records;
     ud_runs_view_t runs;
+    ud_turns_view_t turns;
 
     /* Each model's tokens per day, every machine summed, on the window of the
        machine that sent most recently. mlen is 0 when no machine sent grids. */
@@ -394,7 +424,7 @@ typedef struct {
 typedef enum {
     UD_NONE = 0, UD_STATS, UD_DAILY, UD_CLOCK, UD_TODAY, UD_YEAR, UD_COST,
     UD_RHYTHM, UD_NOW, UD_PROJECTS, UD_CACHE, UD_TOOLS, UD_THINKING,
-    UD_WEEK, UD_RECORDS, UD_RUNS
+    UD_WEEK, UD_RECORDS, UD_RUNS, UD_TURNS
 } ud_kind_t;
 
 /* Parses one payload. "!stats" and "!daily" replace that section for the

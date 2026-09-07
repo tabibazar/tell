@@ -112,6 +112,7 @@ ud_kind_t usagedata_parse(usagedata_t *d, const char *payload,
     else if (starts_with(payload, "!week")) kind = UD_WEEK;
     else if (starts_with(payload, "!records")) kind = UD_RECORDS;
     else if (starts_with(payload, "!runs")) kind = UD_RUNS;
+    else if (starts_with(payload, "!turns")) kind = UD_TURNS;
     else return UD_NONE;
 
     if (kind == UD_CLOCK) {
@@ -127,7 +128,7 @@ ud_kind_t usagedata_parse(usagedata_t *d, const char *payload,
         || kind == UD_COST || kind == UD_RHYTHM || kind == UD_NOW
         || kind == UD_PROJECTS || kind == UD_CACHE || kind == UD_TOOLS
         || kind == UD_THINKING || kind == UD_WEEK || kind == UD_RECORDS
-        || kind == UD_RUNS) {
+        || kind == UD_RUNS || kind == UD_TURNS) {
         char name[UD_HOST_MAX + 1];
         find_host(payload, name);
         h = host_slot(d, name);
@@ -146,6 +147,7 @@ ud_kind_t usagedata_parse(usagedata_t *d, const char *payload,
         else if (kind == UD_WEEK) memset(&h->week, 0, sizeof h->week);
         else if (kind == UD_RECORDS) memset(&h->records, 0, sizeof h->records);
         else if (kind == UD_RUNS) memset(&h->runs, 0, sizeof h->runs);
+        else if (kind == UD_TURNS) memset(&h->turns, 0, sizeof h->turns);
         else { memset(&h->now, 0, sizeof h->now); h->now_sent_us = now_us; }
     }
 
@@ -445,6 +447,25 @@ ud_kind_t usagedata_parse(usagedata_t *d, const char *payload,
                 else if (strcmp(tag, "calls") == 0) r->calls = (uint32_t)strtoul(num, NULL, 10);
                 else if (strcmp(tag, "commands") == 0) r->commands = (uint32_t)strtoul(num, NULL, 10);
             }
+        } else if (kind == UD_TURNS) {
+            ud_turns_t *tn = &h->turns;
+            char num[24];
+            if (strcmp(tag, "grid") == 0) {
+                token(q, tn->grid, UD_MDAYS);
+                continue;
+            }
+            q = token(q, num, sizeof num - 1);
+            if (q == NULL) continue;
+            uint64_t a = strtoull(num, NULL, 10), b = 0;
+            if (token(q, num, sizeof num - 1) != NULL) b = strtoull(num, NULL, 10);
+            if (strcmp(tag, "days") == 0) tn->days = (int)a;
+            else if (strcmp(tag, "turns") == 0) { tn->turns = (uint32_t)a; tn->used = true; }
+            else if (strcmp(tag, "interrupted") == 0) tn->interrupted = (uint32_t)a;
+            else if (strcmp(tag, "first") == 0) { tn->first_med = (uint32_t)a; tn->first_p90 = (uint32_t)b; }
+            else if (strcmp(tag, "turn") == 0) { tn->turn_med = (uint32_t)a; tn->turn_p90 = (uint32_t)b; }
+            else if (strcmp(tag, "longest") == 0) { tn->longest = (uint32_t)a; tn->longest_day = (int32_t)b; }
+            else if (strcmp(tag, "start") == 0) tn->start = (int32_t)a;
+            else if (strcmp(tag, "today") == 0) tn->today = (int32_t)a;
         } else if (kind == UD_CLOCK) {
             /* The rest of the line is free text, so take it verbatim. */
             char *dest = NULL;
@@ -474,6 +495,11 @@ ud_kind_t usagedata_parse(usagedata_t *d, const char *payload,
     if (kind == UD_RHYTHM) h->rhythm.used = h->rhythm.grid[0] != '\0';
     if (kind == UD_NOW) h->now.used = true;
     if (kind == UD_PROJECTS) h->projects.used = h->projects.count > 0;
+    if (kind == UD_TURNS) {
+        ud_turns_t *tn = &h->turns;
+        int32_t len = tn->today - tn->start + 1;
+        if (tn->today <= 0 || len < 1 || len > UD_MDAYS) { tn->today = 0; tn->grid[0] = '\0'; }
+    }
     if (kind == UD_TOOLS) {
         ud_tools_t *tl = &h->tools;
         int32_t len = tl->today - tl->start + 1;
@@ -552,7 +578,7 @@ static bool contributes(const ud_host_t *h)
                        || h->cost.used || h->rhythm.used || h->now.used
                        || h->projects.used || h->cache.used || h->tools.used
                        || h->thinking.used || h->week.used || h->records.used
-                       || h->runs.used);
+                       || h->runs.used || h->turns.used);
 }
 
 int usagedata_hosts(const usagedata_t *d)
@@ -1154,9 +1180,57 @@ static void merge_runs(const usagedata_t *d, ud_runs_view_t *v)
     }
 }
 
+static void merge_turns(const usagedata_t *d, ud_turns_view_t *v)
+{
+    memset(v, 0, sizeof *v);
+    for (int i = 0; i < UD_MDAYS; i++) v->day[i] = -1;
+    int32_t starts[UD_MAX_HOSTS] = {0}, todays[UD_MAX_HOSTS] = {0};
+    for (int i = 0; i < UD_MAX_HOSTS; i++) {
+        const ud_host_t *h = &d->hosts[i];
+        if (!h->used || !h->turns.used) continue;
+        starts[i] = h->turns.start;
+        todays[i] = h->turns.today;
+    }
+    pick_window(starts, todays, UD_MAX_HOSTS, &v->start, &v->today, &v->len);
+
+    uint64_t w_first_med = 0, w_first_p90 = 0, w_turn_med = 0, w_turn_p90 = 0;
+    int64_t sum[UD_MDAYS] = {0};
+    int n[UD_MDAYS] = {0};
+    for (int i = 0; i < UD_MAX_HOSTS; i++) {
+        const ud_host_t *h = &d->hosts[i];
+        if (!h->used || !h->turns.used) continue;
+        const ud_turns_t *tn = &h->turns;
+        v->present = true;
+        if (tn->days > v->days) v->days = tn->days;
+        v->turns += tn->turns;
+        v->interrupted += tn->interrupted;
+        w_first_med += (uint64_t)tn->first_med * tn->turns;
+        w_first_p90 += (uint64_t)tn->first_p90 * tn->turns;
+        w_turn_med += (uint64_t)tn->turn_med * tn->turns;
+        w_turn_p90 += (uint64_t)tn->turn_p90 * tn->turns;
+        if (tn->longest > v->longest) { v->longest = tn->longest; v->longest_day = tn->longest_day; }
+        if (tn->today <= 0 || v->len == 0) continue;
+        for (int c = 0; tn->grid[c] != '\0' && c < UD_MDAYS; c++) {
+            int32_t idx = tn->start + c - v->start;
+            if (idx < 0 || idx >= v->len || tn->grid[c] == '.') continue;
+            sum[idx] += (int64_t)(usagedata_grid_value(tn->grid[c]) / 1000);
+            n[idx]++;
+        }
+    }
+    if (v->turns > 0) {
+        v->first_med = (uint32_t)(w_first_med / v->turns);
+        v->first_p90 = (uint32_t)(w_first_p90 / v->turns);
+        v->turn_med = (uint32_t)(w_turn_med / v->turns);
+        v->turn_p90 = (uint32_t)(w_turn_p90 / v->turns);
+    }
+    for (int i = 0; i < v->len; i++)
+        if (n[i] > 0) v->day[i] = sum[i] / n[i];
+}
+
 void usagedata_merge(const usagedata_t *d, ud_view_t *out)
 {
     memset(out, 0, sizeof *out);
+    merge_turns(d, &out->turns);
     merge_runs(d, &out->runs);
     merge_week(d, &out->week);
     merge_records(d, &out->records);
