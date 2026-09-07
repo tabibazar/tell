@@ -45,14 +45,18 @@ static void on_message(const char *text, size_t len)
     int64_t now = esp_timer_get_time();
 
     ud_kind_t kind = usagedata_parse(&s_data, text);
-    if (kind == UD_STATS) {
-        pages_show(&s_pages, PAGE_STATS, now);
-    } else if (kind == UD_DAILY) {
-        pages_show(&s_pages, PAGE_DAILY, now);
-    } else if (len == 0) {
+    if (kind == UD_STATS || kind == UD_DAILY) {
+        /* Data arrives on a timer, so it must never steal the view: refresh
+           the numbers, and redraw only if that page is already showing. */
+        page_t target = (kind == UD_STATS) ? PAGE_STATS : PAGE_DAILY;
+        if (s_pages.current == target) s_drawn_page = PAGE_COUNT;
+        return;
+    }
+    if (len == 0) {
         s_message[0] = '\0';
         pages_show(&s_pages, PAGE_CLOCK, now);
     } else {
+        /* A message is someone talking to you, so it does take the view. */
         size_t n = len < MESSAGE_MAX ? len : MESSAGE_MAX;
         memcpy(s_message, text, n);
         s_message[n] = '\0';
