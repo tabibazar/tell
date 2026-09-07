@@ -18,14 +18,25 @@ static void title(canvas_t *c, const char *left, const char *right)
 {
     canvas_fill_rect(c, 0, 0, c->w, c->cell_h, PAL_TITLE_BG);
     canvas_puts(c, 1, 0, left, PAL_FG);
-    if (right)
-        canvas_puts(c, c->cols - 1 - (int)strlen(right), 0, right, PAL_FG);
+    if (right == NULL) return;
+
+    /* Drop the right-hand note rather than let it overlap the heading. */
+    int col = c->cols - 1 - (int)strlen(right);
+    if (col > (int)strlen(left) + 2)
+        canvas_puts(c, col, 0, right, PAL_FG);
+}
+
+/* Warns in the build if a footer could ever be clipped at the right edge. */
+static void footer_fit(canvas_t *c, char *text)
+{
+    if ((int)strlen(text) > c->cols - 1) text[c->cols - 1] = '\0';
 }
 
 /* A footnote explaining what was actually measured. Without it a bar chart is
    decoration: the reader cannot tell tokens from calls, or which window. */
-static void footer(canvas_t *c, const char *text)
+static void footer(canvas_t *c, char *text)
 {
+    footer_fit(c, text);
     canvas_puts(c, 1, c->rows - 1, text, PAL_DIM);
 }
 
@@ -38,7 +49,13 @@ static void right_text(canvas_t *c, int row, int right_col, const char *s,
 void views_stats(canvas_t *c, const ud_view_t *d, float t)
 {
     canvas_clear(c);
-    title(c, "USAGE BY MODEL", "tokens");
+    char head[24];
+    if (d->host_count > 1)
+        snprintf(head, sizeof head, "%d machines", d->host_count);
+    else
+        snprintf(head, sizeof head, "tokens");
+    canvas_clear(c);
+    title(c, "USAGE BY MODEL", head);
 
     if (d->model_count == 0) {
         canvas_puts(c, 1, 2, "no data yet -- run tools/push-stats.sh", PAL_DIM);
@@ -87,14 +104,9 @@ void views_stats(canvas_t *c, const ud_view_t *d, float t)
 
     char note[128], total[16];
     human(grand, total, sizeof total);
-    if (d->host_count > 1)
-        snprintf(note, sizeof note,
-                 "bar = output + cache-read tokens   %d models   %s total"
-                 "   %d machines", d->model_count, total, d->host_count);
-    else
-        snprintf(note, sizeof note,
-                 "bar = output + cache-read tokens   %d models   %s total",
-                 d->model_count, total);
+    snprintf(note, sizeof note,
+             "bar = output + cache-read tokens   %d models   %s total",
+             d->model_count, total);
     footer(c, note);
 }
 
@@ -108,9 +120,14 @@ void views_daily(canvas_t *c, const ud_view_t *d, float t)
         return;
     }
 
-    char range[24];
-    snprintf(range, sizeof range, "%s to %s",
-             d->days[0].label, d->days[d->day_count - 1].label);
+    char range[48];
+    if (d->host_count > 1)
+        snprintf(range, sizeof range, "%s to %s   %d machines",
+                 d->days[0].label, d->days[d->day_count - 1].label,
+                 d->host_count);
+    else
+        snprintf(range, sizeof range, "%s to %s",
+                 d->days[0].label, d->days[d->day_count - 1].label);
     title(c, "TOKENS PER DAY", range);
 
     uint64_t peak = 1, grand = 0;
@@ -202,14 +219,8 @@ void views_daily(canvas_t *c, const ud_view_t *d, float t)
     canvas_puts(c, 41, row, "bar = in+out+cache", PAL_DIM);
 
     char note[128];
-    if (d->host_count > 1)
-        snprintf(note, sizeof note,
-                 "peak %s on %s   avg %s/day   %s over %d days   %d machines",
-                 peak_lab, d->days[peak_i].label, avg, total, d->day_count,
-                 d->host_count);
-    else
-        snprintf(note, sizeof note,
-                 "peak %s on %s   avg %s/day   %s over %d days",
-                 peak_lab, d->days[peak_i].label, avg, total, d->day_count);
+    snprintf(note, sizeof note,
+             "peak %s on %s   avg %s/day   %s over %d days",
+             peak_lab, d->days[peak_i].label, avg, total, d->day_count);
     footer(c, note);
 }
