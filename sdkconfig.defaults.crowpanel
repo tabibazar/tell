@@ -6,6 +6,12 @@ CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions-crowpanel.csv"
 CONFIG_ESP_CONSOLE_UART_DEFAULT=y
 CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=n
 
+# The secondary USB console must be off too. On the ESP32-S3 it owns GPIO19 and
+# GPIO20 (USB D- and D+), and Elecrow wired the touch I2C to exactly those
+# pins. With it enabled the GT911 ACKs its address but every register read
+# fails with ESP_ERR_INVALID_STATE.
+CONFIG_ESP_CONSOLE_SECONDARY_NONE=y
+
 # ESP32-S3-WROOM-1-N4R8: 8 MB octal PSRAM. The 750 KB framebuffer needs it.
 CONFIG_SPIRAM=y
 CONFIG_SPIRAM_MODE_OCT=y
