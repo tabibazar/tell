@@ -37,6 +37,11 @@ bool pages_idle_expired(const pages_t *p, int64_t now_us)
     return now_us - p->last_activity_us > PAGES_IDLE_US;
 }
 
+bool pages_saver_active(const pages_t *p, int64_t now_us)
+{
+    return now_us - p->last_activity_us > PAGES_SAVER_US;
+}
+
 bool pages_tick(pages_t *p, int64_t now_us)
 {
     if (PAGES_ROTATE_US <= 0) return false;    /* rotation disabled */

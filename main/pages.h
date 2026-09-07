@@ -23,6 +23,10 @@ typedef enum {
    unchanged for hours. */
 #define PAGES_ROTATE_US 0
 
+/* After this long with no touch and no message, the screensaver takes over:
+   a drifting clock, so nothing sits still long enough to burn in. */
+#define PAGES_SAVER_US (60 * 1000000LL)
+
 typedef struct {
     unsigned available;      /* bitmask of PAGE_BIT(...) */
     page_t current;
@@ -40,6 +44,9 @@ void pages_show(pages_t *p, page_t page, int64_t now_us);
 
 /* True when the page was pinned by a touch or message and that has expired. */
 bool pages_idle_expired(const pages_t *p, int64_t now_us);
+
+/* True when the screensaver should be showing. */
+bool pages_saver_active(const pages_t *p, int64_t now_us);
 
 /* Call every loop. Once nothing has been pinned for PAGES_IDLE_US, advances
    to the next page every PAGES_ROTATE_US. Returns true if the page changed. */

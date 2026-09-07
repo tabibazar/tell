@@ -32,6 +32,13 @@ void canvas_text(canvas_t *c, const char *utf8);
 /* A single short line, centred, at the largest whole scale that fits. */
 void canvas_big(canvas_t *c, const char *text);
 
+/* The pixel size canvas_big would use for this text. */
+void canvas_big_size(canvas_t *c, const char *text, int *w, int *h);
+
+/* As canvas_big, but at a given top-left corner. Used by the screensaver to
+   move the clock around so no pixel stays lit. */
+void canvas_big_at(canvas_t *c, const char *text, int ox, int oy);
+
 /* Filled rectangle in framebuffer pixels. Clipped to the panel. */
 void canvas_fill_rect(canvas_t *c, int x, int y, int w, int h, uint16_t colour);
 

@@ -35,6 +35,12 @@ static int s_log_cols = LOG_MAX_COLS;
 static page_t s_drawn_page = PAGE_COUNT;
 static int s_drawn_second = -1;
 
+/* Screensaver: the clock drifts to a new spot each minute, so no pixel stays
+   lit. Position is derived from the minute, so it is stable within one. */
+static bool s_saver = false;
+static int s_saver_minute = -1;
+static int s_saver_x, s_saver_y;
+
 static void on_time(uint32_t secs)
 {
     s_base_secs = secs;
@@ -107,6 +113,31 @@ static void draw_clock_extras(canvas_t *c)
     }
 }
 
+/* Draws the clock somewhere new each minute. Deliberately not random per
+   frame: it must hold still while you read it. */
+static void draw_saver(canvas_t *c, uint32_t secs)
+{
+    char buf[9];
+    timecalc_format_hms(secs, buf);
+
+    int tw, th;
+    canvas_big_size(c, buf, &tw, &th);
+
+    int minute = (int)(secs / 60);
+    if (minute != s_saver_minute) {
+        s_saver_minute = minute;
+        unsigned seed = (unsigned)minute * 1103515245u + 12345u;
+        int spare_x = c->w - tw;
+        int spare_y = c->h - th;
+        s_saver_x = spare_x > 0 ? (int)((seed >> 16) % (unsigned)(spare_x + 1)) : 0;
+        seed = seed * 1103515245u + 12345u;
+        s_saver_y = spare_y > 0 ? (int)((seed >> 16) % (unsigned)(spare_y + 1)) : 0;
+    }
+
+    canvas_big_at(c, buf, s_saver_x, s_saver_y);
+    display_blit();
+}
+
 static void draw_clock(canvas_t *c, int64_t now)
 {
     if (!s_synced) {
@@ -162,8 +193,32 @@ void app_main(void)
         int64_t now = esp_timer_get_time();
 
         if (touch && gt911_tapped()) {
-            page_t p = pages_advance(&s_pages, now);
-            ESP_LOGI(TAG, "tap -> page %d", (int)p);
+            if (s_saver) {
+                /* The first tap dismisses the saver rather than also changing
+                   the page, which would be a surprise. */
+                s_pages.last_activity_us = now;
+                ESP_LOGI(TAG, "tap -> wake");
+            } else {
+                page_t p = pages_advance(&s_pages, now);
+                ESP_LOGI(TAG, "tap -> page %d", (int)p);
+            }
+        }
+
+        bool saver_now = s_synced && pages_saver_active(&s_pages, now);
+        if (saver_now != s_saver) {
+            s_saver = saver_now;
+            s_drawn_page = PAGE_COUNT;      /* force a full redraw either way */
+            s_drawn_second = -1;
+            s_saver_minute = -1;
+        }
+        if (s_saver) {
+            uint32_t secs = timecalc_advance(s_base_secs,
+                                             (uint64_t)(now - s_base_us));
+            if ((int)secs != s_drawn_second) {
+                draw_saver(c, secs);
+                s_drawn_second = (int)secs;
+            }
+            continue;
         }
 
         /* Once idle, cycle the pages so no image sits long enough to burn in. */

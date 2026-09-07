@@ -100,33 +100,63 @@ static int clock_font_suits(canvas_t *c, const char *text, int len)
 }
 #endif
 
-void canvas_big(canvas_t *c, const char *text)
+/* Chooses the rendering for a short line: the dedicated clock table when the
+   text fits it, otherwise the body font magnified. */
+static void big_metrics(canvas_t *c, const char *text, int *len_out,
+                        int *scale_out, int *w_out, int *h_out)
 {
-    canvas_clear(c);
-    if (text == NULL) return;
-
     int len = 0;
     while (text[len] != '\0') len++;
-    if (len == 0) return;
+    *len_out = len;
 
 #ifdef HAVE_CLOCK_FONT
     if (clock_font_suits(c, text, len)) {
-        int ox = (c->w - len * CLOCK_W) / 2;
-        int oy = (c->h - CLOCK_H) / 2;
+        *scale_out = 0;                 /* 0 marks the clock table */
+        *w_out = len * CLOCK_W;
+        *h_out = CLOCK_H;
+        return;
+    }
+#endif
+    int scale = 1;
+    while ((scale + 1) * FONT_W * len <= c->w && (scale + 1) * FONT_H <= c->h)
+        scale++;
+    *scale_out = scale;
+    *w_out = len * FONT_W * scale;
+    *h_out = FONT_H * scale;
+}
+
+void canvas_big_size(canvas_t *c, const char *text, int *w, int *h)
+{
+    if (text == NULL || *text == '\0') { *w = 0; *h = 0; return; }
+    int len, scale;
+    big_metrics(c, text, &len, &scale, w, h);
+}
+
+void canvas_big_at(canvas_t *c, const char *text, int ox, int oy)
+{
+    canvas_clear(c);
+    if (text == NULL || *text == '\0') return;
+
+    int len, scale, tw, th;
+    big_metrics(c, text, &len, &scale, &tw, &th);
+
+#ifdef HAVE_CLOCK_FONT
+    if (scale == 0) {
         for (int i = 0; i < len; i++)
             clock_glyph(c, text[i], ox + i * CLOCK_W, oy, CANVAS_FG);
         return;
     }
 #endif
-
-    int scale = 1;
-    while ((scale + 1) * FONT_W * len <= c->w && (scale + 1) * FONT_H <= c->h)
-        scale++;
-
-    int ox = (c->w - len * FONT_W * scale) / 2;
-    int oy = (c->h - FONT_H * scale) / 2;
     for (int i = 0; i < len; i++)
         glyph(c, text[i], ox + i * FONT_W * scale, oy, scale, CANVAS_FG);
+}
+
+void canvas_big(canvas_t *c, const char *text)
+{
+    if (text == NULL || *text == '\0') { canvas_clear(c); return; }
+    int w, h;
+    canvas_big_size(c, text, &w, &h);
+    canvas_big_at(c, text, (c->w - w) / 2, (c->h - h) / 2);
 }
 
 void canvas_fill_rect(canvas_t *c, int x, int y, int w, int h, uint16_t colour)
@@ -146,11 +176,9 @@ void canvas_fill_rect(canvas_t *c, int x, int y, int w, int h, uint16_t colour)
 void canvas_puts(canvas_t *c, int col, int row, const char *s, uint16_t colour)
 {
     if (s == NULL) return;
-    int cell_w = FONT_W * c->scale;
-    int cell_h = FONT_H * c->scale;
     for (int i = 0; s[i] != '\0'; i++) {
-        int x = (col + i) * cell_w;
+        int x = (col + i) * c->cell_w;
         if (x >= c->w) return;
-        glyph(c, s[i], x, row * cell_h, c->scale, colour);
+        glyph(c, s[i], x, row * c->cell_h, c->scale, colour);
     }
 }
