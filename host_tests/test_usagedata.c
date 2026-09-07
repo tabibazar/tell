@@ -215,6 +215,188 @@ int main(void)
     parse("!daily\nhost air\nd 09-07 100 9\n");
     expect("an out-of-range weekday is rejected", v.days[0].dow == -1);
 
+    /* The year page. Grid characters decode on a half-octave log scale. */
+    expect("dot is no tokens", usagedata_grid_value('.') == 0);
+    expect("zero char is a thousand", usagedata_grid_value('0') == 1000);
+    expect("two steps double", usagedata_grid_value('2') == 2000);
+    expect("odd step is root two",
+           usagedata_grid_value('1') >= 1400 && usagedata_grid_value('1') <= 1415);
+    expect("letters continue the scale", usagedata_grid_value('A') == 32000);
+    expect("lower case continues too",
+           usagedata_grid_value('a') == 1000ULL << 18);
+    expect("unknown char is nothing", usagedata_grid_value('?') == 0);
+
+    memset(&d, 0, sizeof d);
+    expect("year marker recognised",
+           parse("!year\nhost air\nstart 20338\ntoday 20344\nfirst 20300\n"
+                 "grid 5...5.5\nsessions 12\nlongest 3600\nfav opus-5\n"
+                 "tok 1 2 3 4\n") == UD_YEAR);
+    expect("year present", v.year.present);
+    expect("window is the sender's", v.year.start == 20338 && v.year.len == 7);
+    expect("active days counted", v.year.active_days == 3);
+    expect("headline figures kept",
+           v.year.sessions == 12 && v.year.longest_secs == 3600
+           && strcmp(v.year.fav, "opus-5") == 0
+           && v.year.tok[0] == 1 && v.year.tok[3] == 4);
+    expect("span is capped at the window", v.year.span_days == 7);
+    expect("equal days share the top level",
+           v.year.level[0] == 4 && v.year.level[4] == 4 && v.year.level[6] == 4);
+    expect("empty days are level zero", v.year.level[1] == 0);
+    expect("longest streak", v.year.longest_streak == 1);
+    expect("current streak ends today", v.year.current_streak == 1);
+    expect("peak is the latest of equals", v.year.peak_index == 6);
+    expect("a year payload counts as a machine", v.host_count == 1);
+    expect("and leaves the models alone", v.model_count == 0);
+
+    /* Four distinct days rank into four levels. */
+    memset(&d, 0, sizeof d);
+    parse("!year\nstart 0\ntoday 6\ngrid 0.2.4.6\n");
+    expect("quartiles give four levels",
+           v.year.level[0] == 1 && v.year.level[2] == 2
+           && v.year.level[4] == 3 && v.year.level[6] == 4);
+
+    /* Eight days: two per level. */
+    memset(&d, 0, sizeof d);
+    parse("!year\nstart 0\ntoday 7\ngrid 01234567\n");
+    expect("eight days split two per level",
+           v.year.level[0] == 1 && v.year.level[1] == 1
+           && v.year.level[2] == 2 && v.year.level[3] == 2
+           && v.year.level[4] == 3 && v.year.level[5] == 3
+           && v.year.level[6] == 4 && v.year.level[7] == 4);
+
+    /* Streaks. */
+    memset(&d, 0, sizeof d);
+    parse("!year\nstart 0\ntoday 6\ngrid 11.111.\n");
+    expect("longest streak spans the run", v.year.longest_streak == 3);
+    expect("a quiet today does not end the current streak",
+           v.year.current_streak == 3);
+    parse("!year\nstart 0\ntoday 6\ngrid 111....\n");
+    expect("two quiet days end it", v.year.current_streak == 0);
+
+    /* Two machines with windows sent on different days line up by date. */
+    memset(&d, 0, sizeof d);
+    parse("!year\nhost air\nstart 0\ntoday 13\nfirst 3\n"
+          "grid 5.............\nsessions 2\nlongest 10\nfav opus-5\n"
+          "tok 10 10 10 10\n");
+    parse("!year\nhost studio\nstart 7\ntoday 13\nfirst 9\n"
+          "grid .....5.\nsessions 3\nlongest 20\nfav haiku\ntok 1 1 1 1\n");
+    expect("window is the anchor's", v.year.start == 0 && v.year.len == 14);
+    expect("the other machine's day lands on its date",
+           v.year.level[12] > 0 && v.year.level[0] > 0 && v.year.active_days == 2);
+    expect("sessions sum", v.year.sessions == 5);
+    expect("longest session is the max", v.year.longest_secs == 20);
+    expect("tokens sum", v.year.tok[2] == 11);
+    expect("favourite comes from the bigger machine",
+           strcmp(v.year.fav, "opus-5") == 0);
+    expect("span runs from the earliest first day", v.year.span_days == 11);
+
+    /* The newer window wins; days before it fall off. */
+    memset(&d, 0, sizeof d);
+    parse("!year\nhost air\nstart 0\ntoday 6\ngrid 5......\n");
+    parse("!year\nhost studio\nstart 7\ntoday 13\ngrid ......5\n");
+    expect("newest today sets the window", v.year.start == 7);
+    expect("days before the window are dropped", v.year.active_days == 1);
+
+    /* Robustness. */
+    memset(&d, 0, sizeof d);
+    parse("!year\nstart 10\ntoday 5\ngrid 5\n");
+    expect("a backwards window is rejected", !v.year.present);
+    parse("!year\nstart 0\ntoday 1000\ngrid 5\n");
+    expect("an oversized window is rejected", !v.year.present);
+    parse("!year\nstart 0\ntoday 6\ngrid 5\n");
+    expect("a short grid is padded with nothing",
+           v.year.present && v.year.active_days == 1);
+    parse("!year\nstart 0\ntoday 2\ngrid 5555555555\n");
+    expect("a long grid is clipped to the window",
+           v.year.present && v.year.active_days == 3);
+    parse("!year\n");
+    expect("an empty year payload is not drawn", !v.year.present);
+
+    memset(&d, 0, sizeof d);
+    parse("!stats\nhost air\nm opus-5 1 2\n");
+    parse("!year\nhost air\nstart 1\ntoday 1\ngrid 5\n");
+    expect("a year payload leaves the same machine's models alone",
+           v.model_count == 1 && v.year.present);
+    expect("and does not double count the machine", v.host_count == 1);
+
+    /* Model rows with the optional tail: input, cache write, calls, days. */
+    memset(&d, 0, sizeof d);
+    parse("!stats\nhost air\nstart 100\ntoday 106\n"
+          "m opus-5 10 20 30 40 50 5.5....\n"
+          "m haiku 1 2\n");
+    expect("extended model fields parsed",
+           v.models[0].in == 30 && v.models[0].cwrite == 40
+           && v.models[0].calls == 50);
+    expect("a short row still parses, with zeros",
+           v.model_count == 2 && v.models[1].in == 0 && v.models[1].calls == 0);
+    expect("model window taken from the payload",
+           v.mstart == 100 && v.mtoday == 106 && v.mlen == 7);
+    expect("model days decoded onto the window",
+           v.model_day[0][0] > 5000 && v.model_day[0][1] == 0
+           && v.model_day[0][2] > 5000 && v.model_day[0][3] == 0);
+    expect("a model without a grid has empty days", v.model_day[1][0] == 0);
+
+    /* Two machines: rows sum, and days line up by date. */
+    parse("!stats\nhost studio\nstart 103\ntoday 106\n"
+          "m opus-5 1 1 1 1 1 ...5\n");
+    expect("extended fields sum across machines",
+           v.models[0].in == 31 && v.models[0].calls == 51);
+    expect("the other machine's day lands on its date",
+           v.model_day[0][6] > 5000 && v.model_day[0][3] == 0);
+    expect("window stays the newest", v.mstart == 100 && v.mlen == 7);
+
+    /* Sorting moves the days with their model. */
+    memset(&d, 0, sizeof d);
+    parse("!stats\nstart 100\ntoday 101\n"
+          "m small 1 1 0 0 0 5.\n"
+          "m big 100 100 0 0 0 .5\n");
+    expect("models are ranked largest first",
+           strcmp(v.models[0].name, "big") == 0);
+    expect("days travel with their model when ranked",
+           v.model_day[0][1] > 5000 && v.model_day[0][0] == 0
+           && v.model_day[1][0] > 5000);
+
+    /* An old client sends no window: totals still work, no lines. */
+    memset(&d, 0, sizeof d);
+    parse("!stats\nm opus-5 10 20\n");
+    expect("no window means no model days", v.mlen == 0 && v.model_count == 1);
+
+    parse("!stats\nstart 100\ntoday 1000\nm opus-5 10 20 1 1 1 5\n");
+    expect("an oversized model window is ignored", v.mlen == 0);
+
+    /* The cost page. */
+    memset(&d, 0, sizeof d);
+    expect("cost marker recognised",
+           parse("!cost\nhost air\nstart 100\ntoday 106\ntotal 93767\n"
+                 "last30 39847\nlast7 6280\nc opus-5 37639\nc haiku 182\n"
+                 "grid 5.5....\nplan 20000\n") == UD_COST);
+    expect("cost present with its window",
+           v.cost.present && v.cost.start == 100 && v.cost.len == 7);
+    expect("cost totals kept",
+           v.cost.total == 93767 && v.cost.last30 == 39847 && v.cost.last7 == 6280
+           && v.cost.plan == 20000);
+    expect("cost models ranked",
+           v.cost.model_count == 2 && strcmp(v.cost.models[0].name, "opus-5") == 0);
+    expect("cost days decoded", v.cost.day[0] > 5000 && v.cost.day[1] == 0);
+    expect("a cost payload counts as a machine", v.host_count == 1);
+
+    parse("!cost\nhost studio\nstart 103\ntoday 106\ntotal 1000\n"
+          "c haiku 18\nc sonnet-5 500\ngrid ...5\n");
+    expect("costs sum across machines", v.cost.total == 94767);
+    expect("plan is not summed", v.cost.plan == 20000);
+    expect("shared model summed and a new one added",
+           v.cost.model_count == 3 && v.cost.models[1].cents == 500
+           && v.cost.models[2].cents == 200);
+    expect("cost days line up by date", v.cost.day[6] > 5000);
+
+    parse("!cost\nhost studio\nstart 100\ntoday 0\n");
+    expect("a cost payload without a date is not drawn but the other machine's is",
+           v.cost.present && v.cost.total == 93767);
+
+    memset(&d, 0, sizeof d);
+    parse("!year\nstart 1\ntoday 3\ngrid 555\nestimated 35\n");
+    expect("estimated day count kept", v.year.estimated == 35);
+
     if (failures == 0) { printf("all tests passed\n"); return 0; }
     printf("%d test(s) failed\n", failures);
     return 1;

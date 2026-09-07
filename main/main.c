@@ -66,11 +66,16 @@ static void on_message(const char *text, size_t len)
         if (s_pages.current == PAGE_CLOCK) s_drawn_second = -1;
         return;
     }
-    if (kind == UD_STATS || kind == UD_DAILY) {
+    if (kind == UD_STATS || kind == UD_DAILY || kind == UD_YEAR
+        || kind == UD_COST) {
         /* Data arrives on a timer, so it must never steal the view: refresh
-           the numbers, and redraw only if that page is already showing. */
-        page_t target = (kind == UD_STATS) ? PAGE_STATS : PAGE_DAILY;
-        if (s_pages.current == target) s_drawn_page = PAGE_COUNT;
+           the numbers, and redraw only if a page it feeds is showing. */
+        page_t cur = s_pages.current;
+        bool showing = (kind == UD_STATS && (cur == PAGE_STATS || cur == PAGE_MODELS))
+                    || (kind == UD_DAILY && cur == PAGE_DAILY)
+                    || (kind == UD_YEAR && cur == PAGE_YEAR)
+                    || (kind == UD_COST && cur == PAGE_COST);
+        if (showing) s_drawn_page = PAGE_COUNT;
         return;
     }
     if (len == 0) {
@@ -172,7 +177,8 @@ void app_main(void)
     bool touch = false;
 #ifdef CONFIG_SCREEN_BOARD_CROWPANEL_7
     available |= PAGE_BIT(PAGE_STATS) | PAGE_BIT(PAGE_DAILY)
-               | PAGE_BIT(PAGE_TODAY);
+               | PAGE_BIT(PAGE_TODAY) | PAGE_BIT(PAGE_MODELS)
+               | PAGE_BIT(PAGE_YEAR) | PAGE_BIT(PAGE_COST);
     touch = gt911_init() == ESP_OK;
 #endif
     pages_init(&s_pages, available);
@@ -187,6 +193,8 @@ void app_main(void)
     }
 
     int64_t last_beat = 0;
+    /* The merged view is a few kilobytes; the main task's stack is not. */
+    static ud_view_t v;
 
     for (;;) {
         vTaskDelay(pdMS_TO_TICKS(TICK_MS));
@@ -230,16 +238,25 @@ void app_main(void)
             switch (s_pages.current) {
             case PAGE_STATS:
             case PAGE_DAILY:
+            case PAGE_MODELS:
+            case PAGE_COST:
                 s_anim_start = now;      /* drawn by the animation below */
                 break;
             case PAGE_MESSAGE: draw_message(c); display_blit(); break;
             case PAGE_TODAY:   views_today(c, &s_data); display_blit(); break;
+            case PAGE_YEAR:
+                usagedata_merge(&s_data, &v);
+                views_year(c, &v, now);
+                display_blit();
+                break;
             default: break;
             }
         }
         /* Grow the bars into place, then hold the finished chart. */
         if (s_anim_start != 0
-            && (s_pages.current == PAGE_STATS || s_pages.current == PAGE_DAILY)) {
+            && (s_pages.current == PAGE_STATS || s_pages.current == PAGE_DAILY
+                || s_pages.current == PAGE_MODELS
+                || s_pages.current == PAGE_COST)) {
             int64_t elapsed = now - s_anim_start;
             float t = (float)elapsed / (float)ANIM_US;
             bool last = t >= 1.0f;
@@ -247,9 +264,10 @@ void app_main(void)
             /* Ease out, so the bars settle rather than stopping dead. */
             t = 1.0f - (1.0f - t) * (1.0f - t);
 
-            ud_view_t v;
             usagedata_merge(&s_data, &v);
             if (s_pages.current == PAGE_STATS) views_stats(c, &v, t, now);
+            else if (s_pages.current == PAGE_MODELS) views_models(c, &v, t, now);
+            else if (s_pages.current == PAGE_COST) views_cost(c, &v, t, now);
             else views_daily(c, &v, t, now);
             display_blit();
         }

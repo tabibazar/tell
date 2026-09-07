@@ -8,7 +8,11 @@ date | tell
 git log -1 --format=%s | tell
 ```
 
-When nothing is being displayed, the screen shows a clock.
+When nothing is being displayed, the screen shows a clock. On the big panel
+there are also pages of Claude Code usage: bars per model, bars per day, a
+line per model over the last two months, a heatmap of the last year in the
+style of Claude Code's own `/stats` screen, and what it all would have cost
+at API list prices, plus an almanac.
 
 ---
 
@@ -142,7 +146,9 @@ alone:
 | `textwrap` | Word wrap. Pure C, no hardware — this is where the unit tests live |
 | `canvas`   | Framebuffer and glyph rendering. Panel independent, host tested |
 | `display_*`| Panel bring-up and blitting. One file per board |
-| `timecalc` | Seconds-since-midnight arithmetic. Also pure, also tested |
+| `timecalc` | Seconds-since-midnight and days-since-epoch arithmetic. Also pure, also tested |
+| `usagedata` | Parses and merges the data payloads from several Macs. Pure, tested |
+| `views`    | Draws the usage pages onto a canvas. Rendered and inspected on the host |
 
 `main` wires them together. Nothing above `display` knows about SPI or pin
 numbers, and nothing above `ble_uart` knows about GATT.
@@ -161,6 +167,31 @@ firmware bugs apart from client bugs.
 | Service | `6E400001-B5A3-F393-E0A9-E50E24DCCA9E` | |
 | Text | `6E400002-B5A3-F393-E0A9-E50E24DCCA9E` | write, UTF-8, max 2048 bytes |
 | Clock | `6E400004-B5A3-F393-E0A9-E50E24DCCA9E` | write, 4 bytes LE, seconds since local midnight |
+
+**Data payloads.** A text message that starts with `!stats`, `!daily`,
+`!year`, `!cost`, `!clock` or `!today` is data for a page rather than a
+message to show, and replaces that section for the sending machine (named on
+a `host` line) without changing what is on screen. `tools/claude-stats.py
+--format data --section <stats|daily|year|cost>` produces the first four; the
+almanac and weather scripts produce the other two.
+
+The script reads the transcripts under `~/.claude/projects` for recent, exact
+figures and merges `~/.claude/stats-cache.json` for the months before that,
+since transcripts are pruned but the cache keeps a daily summary back to the
+first session. Days the cache knows only as message counts are estimated from
+the average message and footnoted on the board. Costs use API list prices
+per model, cache reads at the model's read rate, cache writes at 1.25x input
+for the 5-minute TTL or 2x for the 1-hour TTL when the transcript says which;
+set `CLAUDE_PLAN_USD` to your subscription price to see the ratio.
+
+Dates in these payloads are **day numbers**, days since 1970-01-01 in the
+Mac's local time, and per-day token counts are **one character per day**:
+`.` for none, otherwise `0-9A-Za-z` on a half-octave log scale
+(`round(2*log2(tokens/1000))`, decoded as `1000*2^(i/2)`, within about 19%).
+That keeps a year of days to 371 bytes and eight models' last sixty days to
+about a kilobyte, so each fits one 2048-byte message however heavy the usage.
+The board turns day numbers back into month names and weekdays itself
+(`timecalc_civil`); it still knows nothing about time zones.
 
 No pairing or bonding: it displays text on a desk, and pairing would add a setup
 step without buying meaningful security.
@@ -227,14 +258,18 @@ every 30 seconds.
 
 ## Tests
 
-The two pure units are tested on the host, no board required:
+The pure units are tested on the host, no board required:
 
 ```sh
 make -C host_tests && for t in host_tests/test_*; do [ -x "$t" ] && "$t"; done
 ```
 
 Covers wrap boundaries, over-long words, truncation marking, non-ASCII
-substitution, and — for the clock — midnight wrap and multi-day rollover.
+substitution, the clock's midnight wrap and multi-day rollover, the calendar
+arithmetic, the payload parser and multi-machine merge, and the page layouts.
+`host_tests/test_views /tmp/page tools-output.txt ...` also writes each usage
+page as a PPM, so a layout can be looked at without flashing anything:
+`sips -s format png /tmp/page-year.ppm --out page-year.png`.
 
 ## Known limitations
 

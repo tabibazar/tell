@@ -1,6 +1,7 @@
 #!/bin/sh
-# Push both usage pages to a board. Two messages, because each marker
-# replaces exactly one page. Data updates the board silently; it does not
+# Push the usage pages to a board. Four messages, because each marker
+# replaces exactly one section: models (the bar and line pages), days, the
+# year heatmap, and the API-equivalent cost. Data updates the board silently; it does not
 # steal whatever page you are looking at.
 set -e
 cd "$(dirname "$0")/.."
@@ -16,4 +17,6 @@ trap 'rmdir "$LOCK"' EXIT
 
 ./tools/claude-stats.py --format data --section stats | ./tools/tell-locked.sh --device "$DEVICE"
 ./tools/claude-stats.py --format data --section daily | ./tools/tell-locked.sh --device "$DEVICE"
-echo "pushed stats and daily to $DEVICE"
+./tools/claude-stats.py --format data --section year | ./tools/tell-locked.sh --device "$DEVICE"
+./tools/claude-stats.py --format data --section cost | ./tools/tell-locked.sh --device "$DEVICE"
+echo "pushed stats, daily, year and cost to $DEVICE"

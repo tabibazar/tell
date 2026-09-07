@@ -1,6 +1,7 @@
 #include "views.h"
 
 #include "palette.h"
+#include "timecalc.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -210,7 +211,7 @@ void views_daily(canvas_t *c, const ud_view_t *d, float t, int64_t now_us)
         if (d->host_count == 0)
             canvas_fill_rect(c, bx, bottom - h, bar_w, h, colour);
 
-marks:
+marks: ;   /* C11 needs a statement, not a declaration, after a label */
 
         int label_col = (gutter + i * slot) / c->cell_w;
         if (slot >= 6 * c->cell_w || (i % 2) == 0)
@@ -259,6 +260,395 @@ marks:
     snprintf(note, sizeof note,
              "peak %s on %s   avg %s/day   %s over %d days",
              peak_lab, d->days[peak_i].label, avg, total, d->day_count);
+    footer(c, note);
+}
+
+/* "18d 20h 19m", dropping the units that are zero from the left. */
+static void duration(uint32_t secs, char *out, int size)
+{
+    unsigned d = secs / 86400u, h = (secs % 86400u) / 3600u, m = (secs % 3600u) / 60u;
+    if (d) snprintf(out, size, "%ud %uh %um", d, h, m);
+    else if (h) snprintf(out, size, "%uh %um", h, m);
+    else snprintf(out, size, "%um", m);
+}
+
+/* "Aug 27" for a day count. */
+static void day_name(int32_t days, char *out, int size)
+{
+    int y, m, d;
+    timecalc_civil(days, &y, &m, &d);
+    snprintf(out, size, "%s %d", timecalc_month_abbr(m), d);
+}
+
+/* A dim label followed by a coloured value, as one line. */
+static void labelled(canvas_t *c, int col, int row, const char *label,
+                     const char *value, uint16_t colour)
+{
+    canvas_puts(c, col, row, label, PAL_DIM);
+    canvas_puts(c, col + (int)strlen(label), row, value, colour);
+}
+
+/* The heat grid's geometry: 53 week columns at their own pitch, wider than a
+   text column, so the map is a mosaic of touching cells rather than a row of
+   glyphs. Rows keep the text pitch so the weekday labels line up. */
+#define HEAT_PITCH_X 14
+#define HEAT_GAP     1
+
+/* One cell of the map at a pixel position. Empty days get a dot, so they
+   still read as days rather than as gaps in the map. */
+static void heat_cell(canvas_t *c, int x, int y, int level)
+{
+    int w = HEAT_PITCH_X - HEAT_GAP, h = c->cell_h - HEAT_GAP;
+    if (level > 0) canvas_fill_rect(c, x, y, w, h, pal_heat(level));
+    else canvas_fill_rect(c, x + w / 2 - 1, y + h / 2 - 1, 2, 2, pal_heat(0));
+}
+
+void views_year(canvas_t *c, const ud_view_t *d, int64_t now_us)
+{
+    canvas_clear(c);
+    char fresh[24];
+    freshness(d, now_us, fresh, sizeof fresh);
+    title(c, "LAST 12 MONTHS", fresh);
+
+    const ud_year_view_t *y = &d->year;
+    if (!y->present) {
+        canvas_puts(c, 1, 2, "no data yet -- run tools/push-stats.sh", PAL_DIM);
+        return;
+    }
+
+    /* The Mac starts the grid on a Sunday, so cell i is week i/7, row i%7.
+       Weekday labels sit in a gutter to the left, months above. */
+    const int grid_row = 2;
+    const int x0 = 4 * c->cell_w + 4;
+    const int y0 = grid_row * c->cell_h;
+    int weeks = (y->len + 6) / 7;
+
+    for (int w = 0; w < weeks; w++) {
+        int yy, mm, dd;
+        timecalc_civil(y->start + 7 * w, &yy, &mm, &dd);
+        /* The week that contains the first of a month carries its name. */
+        int x = x0 + w * HEAT_PITCH_X;
+        if (dd <= 7 && x + 3 * c->cell_w <= c->w)
+            canvas_puts_px(c, x, y0 - c->cell_h, timecalc_month_abbr(mm), PAL_DIM);
+    }
+    canvas_puts_px(c, 6, y0 + 1 * c->cell_h, "Mon", PAL_DIM);
+    canvas_puts_px(c, 6, y0 + 3 * c->cell_h, "Wed", PAL_DIM);
+    canvas_puts_px(c, 6, y0 + 5 * c->cell_h, "Fri", PAL_DIM);
+
+    for (int i = 0; i < y->len; i++)
+        heat_cell(c, x0 + (i / 7) * HEAT_PITCH_X, y0 + (i % 7) * c->cell_h,
+                  y->level[i]);
+
+    int row = grid_row + 7;
+    canvas_puts_px(c, x0, row * c->cell_h, "Less", PAL_DIM);
+    int lx = x0 + 5 * c->cell_w;
+    for (int l = 1; l <= PAL_HEAT_STEPS; l++, lx += HEAT_PITCH_X)
+        heat_cell(c, lx, row * c->cell_h, l);
+    canvas_puts_px(c, lx + c->cell_w, row * c->cell_h, "More", PAL_DIM);
+
+    /* The figures, two columns like the original. */
+    const int left = 1, right = c->cols / 2 + 1;
+    const uint16_t hi = pal_heat(PAL_HEAT_STEPS);
+    char buf[32];
+    uint64_t total = y->tok[0] + y->tok[1] + y->tok[2] + y->tok[3];
+
+    row += 2;
+    labelled(c, left, row, "Favorite model: ", y->fav[0] ? y->fav : "-", hi);
+    human(total, buf, sizeof buf);
+    labelled(c, right, row, "Total tokens: ", buf, hi);
+
+    row += 2;
+    snprintf(buf, sizeof buf, "%lu", (unsigned long)y->sessions);
+    labelled(c, left, row, "Sessions: ", buf, hi);
+    duration(y->longest_secs, buf, sizeof buf);
+    labelled(c, right, row, "Longest session: ", buf, hi);
+
+    row++;
+    snprintf(buf, sizeof buf, "%d/%d", y->active_days, y->span_days);
+    labelled(c, left, row, "Active days: ", buf, hi);
+    snprintf(buf, sizeof buf, "%d day%s", y->longest_streak,
+             y->longest_streak == 1 ? "" : "s");
+    labelled(c, right, row, "Longest streak: ", buf, hi);
+
+    row++;
+    if (y->peak_index >= 0) day_name(y->start + y->peak_index, buf, sizeof buf);
+    else snprintf(buf, sizeof buf, "-");
+    labelled(c, left, row, "Most active day: ", buf, hi);
+    snprintf(buf, sizeof buf, "%d day%s", y->current_streak,
+             y->current_streak == 1 ? "" : "s");
+    labelled(c, right, row, "Current streak: ", buf, hi);
+
+    row++;
+    char in[16], out[16], cr[16], cw[16], line[128];
+    human(y->tok[0], in, sizeof in);
+    human(y->tok[1], out, sizeof out);
+    human(y->tok[2], cr, sizeof cr);
+    human(y->tok[3], cw, sizeof cw);
+    snprintf(line, sizeof line, "In %s . Out %s . Cache %s read . %s write",
+             in, out, cr, cw);
+    footer_fit(c, line);
+    canvas_puts(c, left, row, line, PAL_DIM);
+
+    if (y->estimated > 0) {
+        snprintf(line, sizeof line,
+                 "%d older day%s estimated from message counts; the rest measured",
+                 y->estimated, y->estimated == 1 ? "" : "s");
+        footer_fit(c, line);
+        canvas_puts(c, left, row + 1, line, PAL_DIM);
+    }
+
+    snprintf(line, sizeof line,
+             "cell = a day's tokens, shaded by quartile   figures = all time");
+    footer(c, line);
+}
+
+/* "$1,234" from a hundred dollars up, "$12.34" below. */
+static void money(uint64_t cents, char *out, int size)
+{
+    if (cents < 10000) {
+        snprintf(out, size, "$%llu.%02llu", (unsigned long long)(cents / 100),
+                 (unsigned long long)(cents % 100));
+        return;
+    }
+    char digits[24];
+    snprintf(digits, sizeof digits, "%llu", (unsigned long long)(cents / 100));
+    int n = (int)strlen(digits), pos = 0;
+    if (pos < size - 1) out[pos++] = '$';
+    for (int i = 0; i < n && pos < size - 1; i++) {
+        if (i > 0 && (n - i) % 3 == 0 && pos < size - 1) out[pos++] = ',';
+        out[pos++] = digits[i];
+    }
+    out[pos] = '\0';
+}
+
+void views_cost(canvas_t *c, const ud_view_t *d, float t, int64_t now_us)
+{
+    canvas_clear(c);
+    char fresh[24];
+    freshness(d, now_us, fresh, sizeof fresh);
+    title(c, "IF THIS WERE THE API", fresh);
+
+    const ud_cost_view_t *k = &d->cost;
+    if (!k->present) {
+        canvas_puts(c, 1, 2, "no data yet -- run tools/push-stats.sh", PAL_DIM);
+        return;
+    }
+
+    const int left = 1, right = c->cols / 2 + 1;
+    const uint16_t hi = pal_heat(PAL_HEAT_STEPS);
+    char buf[32];
+
+    money(k->total, buf, sizeof buf);
+    labelled(c, left, 2, "All time: ", buf, hi);
+    money(k->last30, buf, sizeof buf);
+    labelled(c, right, 2, "Last 30 days: ", buf, hi);
+    money(k->last30 / 30, buf, sizeof buf);
+    labelled(c, left, 3, "Per day, last 30: ", buf, hi);
+    money(k->last7, buf, sizeof buf);
+    labelled(c, right, 3, "Last 7 days: ", buf, hi);
+    if (k->plan > 0) {
+        char plan[24];
+        money(k->plan, plan, sizeof plan);
+        snprintf(buf, sizeof buf, "%s/mo", plan);
+        labelled(c, left, 4, "Plan: ", buf, PAL_FG);
+        snprintf(buf, sizeof buf, "%.1fx", (double)k->last30 / (double)k->plan);
+        labelled(c, right, 4, "Last 30 days vs plan: ", buf, PAL_FG);
+    }
+
+    /* A bar per model, as on the tokens page, so the two read alike. */
+    canvas_puts(c, left, 6, "model", PAL_DIM);
+    canvas_puts(c, 17, 6, "share of all time", PAL_DIM);
+    right_text(c, 6, c->cols - 1, "cost", PAL_DIM);
+    int bar_x = 17 * c->cell_w;
+    int bar_max = c->w - bar_x - 10 * c->cell_w;
+    uint64_t peak = 1;
+    for (int i = 0; i < k->model_count; i++)
+        if (k->models[i].cents > peak) peak = k->models[i].cents;
+    int shown = k->model_count < 6 ? k->model_count : 6;
+    for (int i = 0; i < shown; i++) {
+        int row = 7 + i;
+        canvas_puts(c, left, row, k->models[i].name, PAL_FG);
+        int width = (int)((double)k->models[i].cents / (double)peak * bar_max * t);
+        if (width < 2 && k->models[i].cents > 0 && t >= 1.0f) width = 2;
+        canvas_fill_rect(c, bar_x, row * c->cell_h + c->cell_h / 4, width,
+                         c->cell_h / 2, pal_accent(i));
+        money(k->models[i].cents, buf, sizeof buf);
+        right_text(c, row, c->cols - 1, buf, PAL_FG);
+    }
+
+    /* A bar per day. Thousandths of a dollar in, so /10 is cents. */
+    const int head_row = 14, plot_top_row = 15, plot_bottom_row = 18, date_row = 18;
+    uint64_t day_peak = 1, day_sum = 0;
+    int peak_i = -1;
+    for (int i = 0; i < k->len; i++) {
+        day_sum += k->day[i];
+        if (k->day[i] > day_peak) { day_peak = k->day[i]; peak_i = i; }
+    }
+    snprintf(buf, sizeof buf, "per day, last %d days", k->len);
+    canvas_puts(c, left, head_row, buf, PAL_DIM);
+    if (peak_i >= 0) {
+        char m[24], dn[16], note[48];
+        money(day_peak / 10, m, sizeof m);
+        day_name(k->start + peak_i, dn, sizeof dn);
+        snprintf(note, sizeof note, "peak %s on %s", m, dn);
+        right_text(c, head_row, c->cols - 1, note, PAL_PEAK);
+    }
+    int px0 = c->cell_w, plot_w = c->w - 2 * c->cell_w;
+    int top = plot_top_row * c->cell_h;
+    int bottom = plot_bottom_row * c->cell_h - 2;
+    int plot_h = bottom - top;
+    canvas_fill_rect(c, px0, bottom, plot_w, 1, PAL_DIM);
+    if (k->len > 0) {
+        int slot = plot_w / k->len;
+        int bar_w = slot > 3 ? slot - 2 : slot;
+        for (int i = 0; i < k->len; i++) {
+            int h = (int)((double)k->day[i] / (double)day_peak * plot_h * t);
+            if (h < 1 && k->day[i] > 0 && t >= 1.0f) h = 1;
+            uint16_t colour = i == peak_i ? PAL_PEAK : pal_heat(PAL_HEAT_STEPS - 1);
+            canvas_fill_rect(c, px0 + i * slot + 1, bottom - h, bar_w, h, colour);
+        }
+        /* Dates a fortnight apart, as on the models page. */
+        for (int i = 0; i < k->len; i += 14) {
+            char lab[16];
+            day_name(k->start + i, lab, sizeof lab);
+            int col = (px0 + i * slot) / c->cell_w;
+            if (col + (int)strlen(lab) <= c->cols)
+                canvas_puts(c, col, date_row, lab, PAL_DIM);
+        }
+    }
+    (void)day_sum;
+
+    char note[128];
+    snprintf(note, sizeof note,
+             "API list prices per Mtok; cache writes at 5-min rate unless 1h");
+    footer(c, note);
+}
+
+/* A filled marker beside a legend or card entry. */
+static void dot(canvas_t *c, int col, int row, uint16_t colour)
+{
+    canvas_fill_rect(c, col * c->cell_w + 3, row * c->cell_h + c->cell_h / 2 - 3,
+                     6, 6, colour);
+}
+
+#define MODEL_LINES 3     /* series drawn; more would be unreadable */
+#define MODEL_CARDS 4
+
+void views_models(canvas_t *c, const ud_view_t *d, float t, int64_t now_us)
+{
+    canvas_clear(c);
+    char fresh[24];
+    freshness(d, now_us, fresh, sizeof fresh);
+    title(c, "TOKENS PER DAY BY MODEL", fresh);
+
+    if (d->model_count == 0) {
+        canvas_puts(c, 1, 2, "no data yet -- run tools/push-stats.sh", PAL_DIM);
+        return;
+    }
+
+    int lines = d->model_count < MODEL_LINES ? d->model_count : MODEL_LINES;
+
+    /* Plot area: a gutter for the value axis, rows 1..8 tall. */
+    const int date_row = 9, legend_row = 10, card_row = 11;
+    int gutter = 7 * c->cell_w;
+    int top = c->cell_h + c->cell_h / 2;
+    int bottom = date_row * c->cell_h - 4;
+    int plot_h = bottom - top;
+    int plot_w = c->w - gutter - 2 * c->cell_w;
+
+    uint64_t peak = 1;
+    for (int s = 0; s < lines; s++)
+        for (int i = 0; i < d->mlen; i++)
+            if (d->model_day[s][i] > peak) peak = d->model_day[s][i];
+
+    for (int q = 0; q <= 4; q++) {
+        int yy = bottom - plot_h * q / 4;
+        canvas_fill_rect(c, gutter, yy, plot_w, 1, PAL_DIM);
+        char lab[16];
+        human(peak * (uint64_t)q / 4, lab, sizeof lab);
+        right_text(c, yy / c->cell_h, gutter / c->cell_w - 1, lab, PAL_DIM);
+    }
+    canvas_fill_rect(c, gutter, top, 1, plot_h + 1, PAL_DIM);
+
+    if (d->mlen == 0) {
+        canvas_puts(c, gutter / c->cell_w + 2, 5,
+                    "no daily data -- update tools/claude-stats.py", PAL_DIM);
+    }
+
+    /* Step lines, biggest model drawn last so it sits on top. Each day is a
+       flat run at its value and a riser to the next; two pixels thick. */
+    for (int s = lines - 1; s >= 0; s--) {
+        uint16_t colour = pal_accent(s);
+        int prev_y = -1;
+        for (int i = 0; i < d->mlen; i++) {
+            int x0 = gutter + plot_w * i / d->mlen;
+            int x1 = gutter + plot_w * (i + 1) / d->mlen;
+            int h = (int)((double)d->model_day[s][i] / (double)peak * plot_h * t);
+            int yy = bottom - h;
+            if (prev_y >= 0 && prev_y != yy) {
+                int lo = prev_y < yy ? prev_y : yy;
+                canvas_fill_rect(c, x0, lo, 2, (prev_y > yy ? prev_y : yy) - lo + 2,
+                                 colour);
+            }
+            canvas_fill_rect(c, x0, yy, x1 - x0, 2, colour);
+            prev_y = yy;
+        }
+    }
+
+    /* Dates along the bottom, a fortnight apart, from the first day. */
+    if (d->mlen > 0) {
+        for (int i = 0; i < d->mlen; i += 14) {
+            char lab[16];
+            day_name(d->mstart + i, lab, sizeof lab);
+            int col = (gutter + plot_w * i / d->mlen) / c->cell_w;
+            if (col + (int)strlen(lab) <= c->cols)
+                canvas_puts(c, col, date_row, lab, PAL_DIM);
+        }
+    }
+
+    /* Legend: which colour is which model. */
+    int col = 1;
+    for (int s = 0; s < lines; s++) {
+        if (s > 0) { canvas_puts(c, col, legend_row, ".", PAL_DIM); col += 2; }
+        dot(c, col, legend_row, pal_accent(s));
+        canvas_puts(c, col + 1, legend_row, d->models[s].name, PAL_FG);
+        col += 1 + (int)strlen(d->models[s].name) + 1;
+    }
+
+    /* Cards: the biggest models with their all-time figures. Two lines each
+       across the full width; at 64 columns two side by side do not fit. */
+    uint64_t grand = 0;
+    for (int i = 0; i < d->model_count; i++)
+        grand += d->models[i].in + d->models[i].out + d->models[i].cread
+               + d->models[i].cwrite;
+    if (grand == 0) grand = 1;
+
+    int cards = d->model_count < MODEL_CARDS ? d->model_count : MODEL_CARDS;
+    for (int i = 0; i < cards; i++) {
+        const ud_model_t *m = &d->models[i];
+        int row = card_row + i * 2;
+        uint64_t mine = m->in + m->out + m->cread + m->cwrite;
+        char buf[96], a[16], b[16], cr[16], cw[16];
+
+        dot(c, 1, row, pal_accent(i));
+        canvas_puts(c, 2, row, m->name, PAL_FG);
+        snprintf(buf, sizeof buf, " (%.1f%%)", 100.0 * (double)mine / (double)grand);
+        canvas_puts(c, 2 + (int)strlen(m->name), row, buf, PAL_DIM);
+
+        human(m->in, a, sizeof a);
+        human(m->out, b, sizeof b);
+        human(m->cread, cr, sizeof cr);
+        human(m->cwrite, cw, sizeof cw);
+        snprintf(buf, sizeof buf, "In %s . Out %s . Cache %s read . %s write",
+                 a, b, cr, cw);
+        footer_fit(c, buf);
+        canvas_puts(c, 3, row + 1, buf, PAL_DIM);
+    }
+
+    char note[128];
+    snprintf(note, sizeof note,
+             "line = in+out+cache per day, last %d days   cards = all time",
+             d->mlen > 0 ? d->mlen : UD_MDAYS);
     footer(c, note);
 }
 

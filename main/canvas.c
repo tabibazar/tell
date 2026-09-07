@@ -186,6 +186,16 @@ void canvas_puts(canvas_t *c, int col, int row, const char *s, uint16_t colour)
     }
 }
 
+void canvas_puts_px(canvas_t *c, int x, int y, const char *s, uint16_t colour)
+{
+    if (s == NULL) return;
+    for (int i = 0; s[i] != '\0'; i++) {
+        int px = x + i * c->cell_w;
+        if (px >= c->w) return;
+        glyph(c, s[i], px, y, c->scale, colour);
+    }
+}
+
 void canvas_moon(canvas_t *c, int cx, int cy, int r, float phase,
                  uint16_t lit, uint16_t dark)
 {

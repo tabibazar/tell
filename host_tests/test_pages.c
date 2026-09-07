@@ -13,7 +13,8 @@ static void expect(const char *what, int cond)
 
 #define ALL (PAGE_BIT(PAGE_CLOCK) | PAGE_BIT(PAGE_STATS) \
              | PAGE_BIT(PAGE_DAILY) | PAGE_BIT(PAGE_MESSAGE) \
-             | PAGE_BIT(PAGE_TODAY))
+             | PAGE_BIT(PAGE_TODAY) | PAGE_BIT(PAGE_MODELS) \
+             | PAGE_BIT(PAGE_YEAR) | PAGE_BIT(PAGE_COST))
 #define FEATHER (PAGE_BIT(PAGE_CLOCK) | PAGE_BIT(PAGE_MESSAGE))
 
 int main(void)
@@ -26,6 +27,9 @@ int main(void)
     expect("then daily", pages_advance(&p, 2000) == PAGE_DAILY);
     expect("then message", pages_advance(&p, 3000) == PAGE_MESSAGE);
     expect("then today", pages_advance(&p, 4000) == PAGE_TODAY);
+    expect("then models", pages_advance(&p, 4500) == PAGE_MODELS);
+    expect("then the year", pages_advance(&p, 4800) == PAGE_YEAR);
+    expect("then the cost", pages_advance(&p, 4900) == PAGE_COST);
     expect("then wraps to clock", pages_advance(&p, 5000) == PAGE_CLOCK);
 
     pages_init(&p, FEATHER);

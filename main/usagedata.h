@@ -11,11 +11,19 @@
 #define UD_LABEL_MAX  7
 #define UD_HOST_MAX   15
 #define UD_TEXT_MAX   63
+#define UD_YEAR_MAX   371        /* 53 weeks of one character per day */
+#define UD_MDAYS      60         /* days of per-model history, one char each */
+#define UD_HEAT_LEVELS 4
 
 typedef struct {
     char name[UD_NAME_MAX + 1];
     uint64_t out;
     uint64_t cread;
+    /* Sent by newer clients; zero and empty from older ones. */
+    uint64_t in;
+    uint64_t cwrite;
+    uint32_t calls;
+    char grid[UD_MDAYS + 1];     /* this model's last days, a char per day */
 } ud_model_t;
 
 typedef struct {
@@ -24,14 +32,50 @@ typedef struct {
     int8_t dow;              /* 0 Monday .. 6 Sunday, -1 when not sent */
 } ud_day_t;
 
+/* One machine's year, as sent: a character per day so a whole year fits one
+   BLE message. Days are counts since 1970-01-01 in the Mac's local time, so
+   two machines' grids can be lined up even if they were sent on different
+   days; the board has no calendar of its own to do that with. */
+typedef struct {
+    bool used;
+    int32_t start;           /* the first grid cell; the Mac makes it a Sunday */
+    int32_t today;           /* the last grid cell */
+    int32_t first;           /* first day with any transcript, 0 if not sent */
+    char grid[UD_YEAR_MAX + 1];
+    uint32_t sessions;
+    uint32_t longest_secs;   /* longest single session */
+    char fav[UD_NAME_MAX + 1];
+    uint64_t tok[4];         /* input, output, cache read, cache write */
+    int estimated;           /* days the Mac could only estimate */
+} ud_year_t;
+
+/* What one machine's usage would have cost on the API, in cents, as sent. */
+typedef struct {
+    char name[UD_NAME_MAX + 1];
+    uint64_t cents;
+} ud_cost_model_t;
+
+typedef struct {
+    bool used;
+    int32_t start, today;
+    char grid[UD_MDAYS + 1]; /* cost per day in thousandths of a dollar */
+    uint64_t total, last30, last7;
+    uint64_t plan;           /* the subscription's monthly price, 0 if unknown */
+    ud_cost_model_t models[UD_MAX_MODELS];
+    int model_count;
+} ud_cost_t;
+
 /* One machine's contribution. Kept separately so a re-push from one Mac
    replaces only its own share instead of clobbering the other's. */
 typedef struct {
     char host[UD_HOST_MAX + 1];
     ud_model_t models[UD_MAX_MODELS];
     int model_count;
+    int32_t mstart, mtoday;  /* the model grids' first and last day */
     ud_day_t days[UD_MAX_DAYS];
     int day_count;
+    ud_year_t year;
+    ud_cost_t cost;
     int64_t updated_us;      /* when this machine last sent anything */
     bool used;
 } ud_host_t;
@@ -51,6 +95,36 @@ typedef struct {
     char holiday[UD_TEXT_MAX + 1];
 } usagedata_t;
 
+/* The merged year, ready to draw: every machine's days added by date, then
+   each active day ranked into a quartile so the busiest quarter of days is the
+   brightest colour, however busy that is in absolute terms. */
+typedef struct {
+    bool present;
+    int32_t start, today;
+    int len;                          /* cells from start to today inclusive */
+    uint8_t level[UD_YEAR_MAX];       /* 0 none, 1..UD_HEAT_LEVELS */
+    uint64_t tok[4];                  /* input, output, cache read, cache write */
+    uint32_t sessions;
+    uint32_t longest_secs;
+    char fav[UD_NAME_MAX + 1];        /* from the machine with the most tokens */
+    int active_days;                  /* cells with any tokens */
+    int span_days;                    /* days since the first transcript, capped at len */
+    int longest_streak, current_streak;
+    int peak_index;                   /* cell with the most tokens, -1 if none */
+    int estimated;                    /* older days estimated from message counts */
+} ud_year_view_t;
+
+/* Every machine's API-equivalent cost, summed. */
+typedef struct {
+    bool present;
+    int32_t start, today;
+    int len;
+    uint64_t total, last30, last7, plan;      /* cents */
+    ud_cost_model_t models[UD_MAX_MODELS];    /* ranked, costliest first */
+    int model_count;
+    uint64_t day[UD_MDAYS];                   /* thousandths of a dollar */
+} ud_cost_view_t;
+
 /* Every machine's data summed, which is what the charts draw. */
 typedef struct {
     ud_model_t models[UD_MAX_MODELS];
@@ -65,19 +139,35 @@ typedef struct {
     uint64_t model_by_host[UD_MAX_MODELS][UD_MAX_HOSTS];
     uint64_t day_by_host[UD_MAX_DAYS][UD_MAX_HOSTS];
     int64_t updated_us;      /* the most recent machine's update, 0 if none */
+    ud_year_view_t year;
+    ud_cost_view_t cost;
+
+    /* Each model's tokens per day, every machine summed, on the window of the
+       machine that sent most recently. mlen is 0 when no machine sent grids. */
+    int32_t mstart, mtoday;
+    int mlen;
+    uint64_t model_day[UD_MAX_MODELS][UD_MDAYS];
 } ud_view_t;
 
-typedef enum { UD_NONE = 0, UD_STATS, UD_DAILY, UD_CLOCK, UD_TODAY } ud_kind_t;
+typedef enum {
+    UD_NONE = 0, UD_STATS, UD_DAILY, UD_CLOCK, UD_TODAY, UD_YEAR, UD_COST
+} ud_kind_t;
 
 /* Parses one payload. "!stats" and "!daily" replace that section for the
    sending machine, named by a "host <name>" line and defaulting to "mac".
-   "!clock" carries the date and weather. Anything else returns UD_NONE and
+   "!clock" carries the date and weather; "!year" a machine's
+   heatmap grid and headline figures; "!cost" what its usage would have cost
+   on the API. Anything else returns UD_NONE and
    leaves `d` untouched, so the caller can treat it as a text message. */
 ud_kind_t usagedata_parse(usagedata_t *d, const char *payload, int64_t now_us);
 
 /* Sums every machine into one view: models added by name, days by label,
    both ordered largest and latest first respectively. */
 void usagedata_merge(const usagedata_t *d, ud_view_t *out);
+
+/* The tokens one grid character stands for: '.' is none, otherwise a
+   half-octave log scale, 1000 * 2^(i/2) for the i-th of 0-9A-Za-z. */
+uint64_t usagedata_grid_value(char c);
 
 /* How many machines have sent anything, and the name of the nth. */
 int usagedata_hosts(const usagedata_t *d);

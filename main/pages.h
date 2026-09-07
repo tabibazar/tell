@@ -10,6 +10,9 @@ typedef enum {
     PAGE_DAILY,
     PAGE_MESSAGE,
     PAGE_TODAY,
+    PAGE_MODELS,     /* tokens per day, one line per model */
+    PAGE_YEAR,       /* the last twelve months as a heatmap */
+    PAGE_COST,       /* what it would have cost on the API */
     PAGE_COUNT
 } page_t;
 
