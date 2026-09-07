@@ -37,6 +37,10 @@ static int s_drawn_second = -1;
 
 /* Screensaver: the clock drifts to a new spot each minute, so no pixel stays
    lit. Position is derived from the minute, so it is stable within one. */
+/* Charts grow into place when a page appears; 0 means no animation running. */
+#define ANIM_US (600 * 1000LL)
+static int64_t s_anim_start = 0;
+
 static bool s_saver = false;
 static int s_saver_minute = -1;
 static int s_saver_x, s_saver_y;
@@ -228,24 +232,31 @@ void app_main(void)
             s_drawn_page = s_pages.current;
             s_drawn_second = -1;
             switch (s_pages.current) {
-            case PAGE_STATS: {
-                ud_view_t v;
-                usagedata_merge(&s_data, &v);
-                views_stats(c, &v);
-                display_blit();
+            case PAGE_STATS:
+            case PAGE_DAILY:
+                s_anim_start = now;      /* drawn by the animation below */
                 break;
-            }
-            case PAGE_DAILY: {
-                ud_view_t v;
-                usagedata_merge(&s_data, &v);
-                views_daily(c, &v);
-                display_blit();
-                break;
-            }
             case PAGE_MESSAGE: draw_log(c); display_blit(); break;
             default: break;
             }
         }
+        /* Grow the bars into place, then hold the finished chart. */
+        if (s_anim_start != 0
+            && (s_pages.current == PAGE_STATS || s_pages.current == PAGE_DAILY)) {
+            int64_t elapsed = now - s_anim_start;
+            float t = (float)elapsed / (float)ANIM_US;
+            bool last = t >= 1.0f;
+            if (last) { t = 1.0f; s_anim_start = 0; }
+            /* Ease out, so the bars settle rather than stopping dead. */
+            t = 1.0f - (1.0f - t) * (1.0f - t);
+
+            ud_view_t v;
+            usagedata_merge(&s_data, &v);
+            if (s_pages.current == PAGE_STATS) views_stats(c, &v, t);
+            else views_daily(c, &v, t);
+            display_blit();
+        }
+
         if (s_pages.current == PAGE_CLOCK) draw_clock(c, now);
 
         /* USB-Serial-JTAG drops output when no host is attached, so the boot

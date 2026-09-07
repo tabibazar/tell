@@ -35,7 +35,7 @@ static void right_text(canvas_t *c, int row, int right_col, const char *s,
     canvas_puts(c, right_col - (int)strlen(s), row, s, colour);
 }
 
-void views_stats(canvas_t *c, const ud_view_t *d)
+void views_stats(canvas_t *c, const ud_view_t *d, float t)
 {
     canvas_clear(c);
     title(c, "USAGE BY MODEL", "tokens");
@@ -75,8 +75,8 @@ void views_stats(canvas_t *c, const ud_view_t *d)
         canvas_puts(c, 1, row, d->models[i].name, PAL_FG);
 
         uint64_t total = d->models[i].cread + d->models[i].out;
-        int width = (int)((double)total / (double)peak * bar_max);
-        if (width < 2 && total > 0) width = 2;
+        int width = (int)((double)total / (double)peak * bar_max * t);
+        if (width < 2 && total > 0 && t >= 1.0f) width = 2;
         canvas_fill_rect(c, bar_x, row * c->cell_h + c->cell_h / 4,
                          width, c->cell_h / 2, pal_accent(i));
 
@@ -98,7 +98,7 @@ void views_stats(canvas_t *c, const ud_view_t *d)
     footer(c, note);
 }
 
-void views_daily(canvas_t *c, const ud_view_t *d)
+void views_daily(canvas_t *c, const ud_view_t *d, float t)
 {
     canvas_clear(c);
 
@@ -141,8 +141,8 @@ void views_daily(canvas_t *c, const ud_view_t *d)
     int last = d->day_count - 1;
 
     for (int i = 0; i < d->day_count; i++) {
-        int h = (int)((double)d->days[i].tokens / (double)peak * plot_h);
-        if (h < 2 && d->days[i].tokens > 0) h = 2;
+        int h = (int)((double)d->days[i].tokens / (double)peak * plot_h * t);
+        if (h < 2 && d->days[i].tokens > 0 && t >= 1.0f) h = 2;
         /* One colour for every day: cycling accents implied categories that
            do not exist. Today and the peak are the only distinctions. */
         uint16_t colour = PAL_A0;
