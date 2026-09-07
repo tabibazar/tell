@@ -45,6 +45,10 @@ static pages_t s_pages;
 static page_t s_drawn_page = PAGE_COUNT;
 static int s_drawn_second = -1;
 
+/* The live page redraws on its own so its ages stay current. */
+#define NOW_REDRAW_US (10 * 1000000LL)
+static int64_t s_now_drawn_us = 0;
+
 /* Charts grow into place when a page appears; 0 means no animation running. */
 #define ANIM_US (600 * 1000LL)
 static int64_t s_anim_start = 0;
@@ -103,14 +107,16 @@ static void on_message(const char *text, size_t len)
         return;
     }
     if (kind == UD_STATS || kind == UD_DAILY || kind == UD_YEAR
-        || kind == UD_COST) {
+        || kind == UD_COST || kind == UD_RHYTHM || kind == UD_NOW) {
         /* Data arrives on a timer, so it must never steal the view: refresh
            the numbers, and redraw only if a page it feeds is showing. */
         page_t cur = s_pages.current;
         bool showing = (kind == UD_STATS && (cur == PAGE_STATS || cur == PAGE_MODELS))
                     || (kind == UD_DAILY && cur == PAGE_DAILY)
                     || (kind == UD_YEAR && cur == PAGE_YEAR)
-                    || (kind == UD_COST && cur == PAGE_COST);
+                    || (kind == UD_COST && cur == PAGE_COST)
+                    || (kind == UD_RHYTHM && cur == PAGE_RHYTHM)
+                    || (kind == UD_NOW && cur == PAGE_NOW);
         if (showing) s_drawn_page = PAGE_COUNT;
         return;
     }
@@ -214,7 +220,8 @@ void app_main(void)
 #ifdef CONFIG_SCREEN_BOARD_CROWPANEL_7
     available |= PAGE_BIT(PAGE_STATS) | PAGE_BIT(PAGE_DAILY)
                | PAGE_BIT(PAGE_TODAY) | PAGE_BIT(PAGE_MODELS)
-               | PAGE_BIT(PAGE_YEAR) | PAGE_BIT(PAGE_COST);
+               | PAGE_BIT(PAGE_YEAR) | PAGE_BIT(PAGE_COST)
+               | PAGE_BIT(PAGE_RHYTHM) | PAGE_BIT(PAGE_NOW);
     touch = gt911_init() == ESP_OK;
     if (touch) available |= PAGE_BIT(PAGE_SETTINGS);   /* useless without a finger */
 
@@ -343,6 +350,17 @@ void app_main(void)
                 views_settings(c, &s_settings);
                 display_blit();
                 break;
+            case PAGE_RHYTHM:
+                usagedata_merge(&s_data, &v);
+                views_rhythm(c, &v, now);
+                display_blit();
+                break;
+            case PAGE_NOW:
+                usagedata_merge(&s_data, &v);
+                views_now(c, &v, now);
+                display_blit();
+                s_now_drawn_us = now;
+                break;
             default: break;
             }
         }
@@ -367,6 +385,9 @@ void app_main(void)
         }
 
         if (s_pages.current == PAGE_CLOCK) draw_clock(c, now);
+        /* The live page's "last message N ago" keeps counting between pushes. */
+        if (s_pages.current == PAGE_NOW && now - s_now_drawn_us > NOW_REDRAW_US)
+            s_drawn_page = PAGE_COUNT;
 
         /* USB-Serial-JTAG drops output when no host is attached, so the boot
            log is often missed. A heartbeat makes liveness observable. */

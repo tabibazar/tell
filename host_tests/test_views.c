@@ -136,6 +136,23 @@ static void synthetic(void)
     cost[at++] = '\n';
     cost[at] = '\0';
     usagedata_parse(&data, cost, 1000000);
+
+    char rhythm[256] = "!rhythm\nhost air\ndays 23\nmsgs 23173\ngrid ";
+    at = strlen(rhythm);
+    for (int i = 0; i < 168; i++) {
+        int dow = i / 24, hour = i % 24;
+        char ch = '.';
+        if (hour >= 8 && hour <= 23 && dow < 5) ch = (char)('D' + ((hour * 3 + dow * 5) % 9));
+        if (dow >= 5 && hour >= 10 && hour <= 18) ch = (char)('2' + (hour % 4));
+        rhythm[at++] = ch;
+    }
+    rhythm[at++] = '\n';
+    rhythm[at] = '\0';
+    usagedata_parse(&data, rhythm, 1000000);
+
+    usagedata_parse(&data, "!now\nhost air\ntokens 85406000\ncost 8337\nmsgs 290\n"
+                           "sessions 1\navg 306469905\nlast 5\nmodel fable-5.1\n"
+                           "project tell\nsession 4883\n", 1000000);
 }
 
 int main(int argc, char **argv)
@@ -198,6 +215,41 @@ int main(int argc, char **argv)
            lit_in(W - 12, 24, W, H) == 0);
     views_cost(&cv, &empty, 1.0f, now);
     expect("empty cost page shows a message", lit_in(0, 48, W, 72) > 0);
+
+    /* When you work. */
+    views_rhythm(&cv, &view, now);
+    save(prefix, "rhythm");
+    expect("rhythm page has data", view.rhythm.present);
+    expect("hour labels drawn", lit_in(52, 24, W, 48) > 0);
+    expect("weekday labels drawn", lit_in(0, 48, 48, 48 + 7 * 36) > 0);
+    expect("rhythm cells lit", count_colour(pal_heat(4)) > 500);
+    expect("rhythm map stays inside the panel", 52 + 24 * 31 <= W);
+    expect("rhythm figures drawn", lit_in(0, 14 * 24, W, 18 * 24) > 100);
+    /* The map itself runs to within 5px of the edge by design; the check is
+       that nothing is clipped, so it looks at the last few pixels only. */
+    expect("rhythm stays inside the panel", lit_in(W - 4, 24, W, H) == 0);
+    views_rhythm(&cv, &empty, now);
+    expect("empty rhythm page shows a message", lit_in(0, 48, W, 72) > 0);
+
+    /* Today, live: drawn as if pushed just now, then much later. */
+    views_now(&cv, &view, now);
+    save(prefix, "now");
+    expect("now page has data", view.now.present);
+    expect("status line drawn", lit_in(12, 2 * 24, W, 3 * 24) > 100);
+    expect("busy shows in amber right after a message",
+           count_colour(pal_heat(4)) > 100);
+    expect("figures drawn", lit_in(0, 5 * 24, W, 8 * 24) > 200);
+    expect("comparison bar drawn", lit_in(12, 10 * 24, W - 12, 12 * 24) > 1000);
+    expect("now text stops short of the right edge", lit_in(W - 12, 24, W, H) == 0);
+    {
+        /* An hour later, with no new push, the age has grown past busy. */
+        int amber_busy = count_colour(pal_heat(4));
+        views_now(&cv, &view, now + 3600LL * 1000000LL);
+        expect("idle later: less amber than when busy",
+               count_colour(pal_heat(4)) < amber_busy);
+    }
+    views_now(&cv, &empty, now);
+    expect("empty now page shows a message", lit_in(0, 48, W, 72) > 0);
 
     /* The settings page, and whether its buttons can be hit. */
     settings_t st;

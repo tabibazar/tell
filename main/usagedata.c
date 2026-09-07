@@ -90,6 +90,8 @@ ud_kind_t usagedata_parse(usagedata_t *d, const char *payload,
     else if (starts_with(payload, "!today")) kind = UD_TODAY;
     else if (starts_with(payload, "!year")) kind = UD_YEAR;
     else if (starts_with(payload, "!cost")) kind = UD_COST;
+    else if (starts_with(payload, "!rhythm")) kind = UD_RHYTHM;
+    else if (starts_with(payload, "!now")) kind = UD_NOW;
     else return UD_NONE;
 
     if (kind == UD_CLOCK) {
@@ -102,7 +104,7 @@ ud_kind_t usagedata_parse(usagedata_t *d, const char *payload,
 
     ud_host_t *h = NULL;
     if (kind == UD_STATS || kind == UD_DAILY || kind == UD_YEAR
-        || kind == UD_COST) {
+        || kind == UD_COST || kind == UD_RHYTHM || kind == UD_NOW) {
         char name[UD_HOST_MAX + 1];
         find_host(payload, name);
         h = host_slot(d, name);
@@ -112,7 +114,9 @@ ud_kind_t usagedata_parse(usagedata_t *d, const char *payload,
         if (kind == UD_STATS) { h->model_count = 0; h->mstart = h->mtoday = 0; }
         else if (kind == UD_DAILY) h->day_count = 0;
         else if (kind == UD_YEAR) memset(&h->year, 0, sizeof h->year);
-        else memset(&h->cost, 0, sizeof h->cost);
+        else if (kind == UD_COST) memset(&h->cost, 0, sizeof h->cost);
+        else if (kind == UD_RHYTHM) memset(&h->rhythm, 0, sizeof h->rhythm);
+        else { memset(&h->now, 0, sizeof h->now); h->now_sent_us = now_us; }
     }
 
     for (const char *p = next_line(payload); *p; p = next_line(p)) {
@@ -236,6 +240,29 @@ ud_kind_t usagedata_parse(usagedata_t *d, const char *payload,
                 else if (strcmp(tag, "last7") == 0) k->last7 = strtoull(num, NULL, 10);
                 else if (strcmp(tag, "plan") == 0) k->plan = strtoull(num, NULL, 10);
             }
+        } else if (kind == UD_RHYTHM) {
+            ud_rhythm_t *r = &h->rhythm;
+            char num[24];
+            if (strcmp(tag, "grid") == 0) {
+                token(q, r->grid, UD_RHYTHM_CELLS);
+            } else if (token(q, num, sizeof num - 1) != NULL) {
+                if (strcmp(tag, "days") == 0) r->days = atoi(num);
+                else if (strcmp(tag, "msgs") == 0) r->msgs = (uint32_t)strtoul(num, NULL, 10);
+            }
+        } else if (kind == UD_NOW) {
+            ud_now_t *n = &h->now;
+            char num[24];
+            if (strcmp(tag, "model") == 0) { token(q, n->model, UD_NAME_MAX); continue; }
+            if (strcmp(tag, "project") == 0) { token(q, n->project, UD_NAME_MAX); continue; }
+            if (token(q, num, sizeof num - 1) == NULL) continue;
+            uint64_t v = strtoull(num, NULL, 10);
+            if (strcmp(tag, "tokens") == 0) n->tokens = v;
+            else if (strcmp(tag, "avg") == 0) n->avg = v;
+            else if (strcmp(tag, "cost") == 0) n->cost = v;
+            else if (strcmp(tag, "msgs") == 0) n->msgs = (uint32_t)v;
+            else if (strcmp(tag, "sessions") == 0) n->sessions = (uint32_t)v;
+            else if (strcmp(tag, "session") == 0) n->session_secs = (uint32_t)v;
+            else if (strcmp(tag, "last") == 0) { n->last_secs = (uint32_t)v; n->have_last = true; }
         } else if (kind == UD_CLOCK) {
             /* The rest of the line is free text, so take it verbatim. */
             char *dest = NULL;
@@ -262,6 +289,8 @@ ud_kind_t usagedata_parse(usagedata_t *d, const char *payload,
         int32_t len = k->today - k->start + 1;
         k->used = k->today > 0 && len >= 1 && len <= UD_MDAYS;
     }
+    if (kind == UD_RHYTHM) h->rhythm.used = h->rhythm.grid[0] != '\0';
+    if (kind == UD_NOW) h->now.used = true;
     return kind;
 }
 
@@ -318,7 +347,7 @@ static void add_day(ud_view_t *v, const ud_day_t *day, int host)
 static bool contributes(const ud_host_t *h)
 {
     return h->used && (h->model_count || h->day_count || h->year.used
-                       || h->cost.used);
+                       || h->cost.used || h->rhythm.used || h->now.used);
 }
 
 int usagedata_hosts(const usagedata_t *d)
@@ -344,6 +373,39 @@ static int cmp_u64(const void *a, const void *b)
 {
     uint64_t x = *(const uint64_t *)a, y = *(const uint64_t *)b;
     return x < y ? -1 : x > y;
+}
+
+/* Quartiles of the non-zero values, GitHub's rule: a value at or above the
+   k-th quarter mark is level k+1, so the single busiest cell is always the
+   brightest and one lonely active cell is bright rather than faint. Zero
+   stays level 0. `scratch` must hold n values. Returns how many were
+   non-zero. */
+static int rank_levels(const uint64_t *vals, int n, uint8_t *level,
+                       uint64_t *scratch)
+{
+    int m = 0;
+    for (int i = 0; i < n; i++) {
+        level[i] = 0;
+        if (vals[i] > 0) scratch[m++] = vals[i];
+    }
+    if (m == 0) return 0;
+    qsort(scratch, (size_t)m, sizeof scratch[0], cmp_u64);
+    /* Thresholds round up, so with fewer than four values the smallest is
+       still level 1 and the largest still level 4. */
+    uint64_t q[UD_HEAT_LEVELS - 1];
+    for (int k = 1; k < UD_HEAT_LEVELS; k++) {
+        int at = (k * m + UD_HEAT_LEVELS - 1) / UD_HEAT_LEVELS;
+        if (at > m - 1) at = m - 1;
+        q[k - 1] = scratch[at];
+    }
+    for (int i = 0; i < n; i++) {
+        if (vals[i] == 0) continue;
+        int l = 1;
+        for (int k = 0; k < UD_HEAT_LEVELS - 1; k++)
+            if (vals[i] >= q[k]) l = k + 2;
+        level[i] = (uint8_t)l;
+    }
+    return m;
 }
 
 /* Lines every machine's grid up by date on the window of whichever machine
@@ -399,29 +461,7 @@ static void merge_year(const usagedata_t *d, ud_year_view_t *y)
         }
     }
 
-    /* Quartiles of the active days, GitHub's rule: a day at or above the
-       k-th quarter mark is level k+1, so the single busiest day is always
-       the brightest, and one lonely active day is bright rather than faint. */
-    int n = 0;
-    for (int i = 0; i < y->len; i++)
-        if (tokens[i] > 0) sorted[n++] = tokens[i];
-    y->active_days = n;
-    if (n > 0) {
-        qsort(sorted, (size_t)n, sizeof sorted[0], cmp_u64);
-        uint64_t q[UD_HEAT_LEVELS - 1];
-        for (int k = 1; k < UD_HEAT_LEVELS; k++) {
-            int at = k * n / UD_HEAT_LEVELS;
-            if (at > n - 1) at = n - 1;
-            q[k - 1] = sorted[at];
-        }
-        for (int i = 0; i < y->len; i++) {
-            if (tokens[i] == 0) continue;
-            int level = 1;
-            for (int k = 0; k < UD_HEAT_LEVELS - 1; k++)
-                if (tokens[i] >= q[k]) level = k + 2;
-            y->level[i] = (uint8_t)level;
-        }
-    }
+    y->active_days = rank_levels(tokens, y->len, y->level, sorted);
 
     /* Streaks and the peak, from the merged days. */
     int run = 0;
@@ -502,11 +542,87 @@ static void merge_cost(const usagedata_t *d, ud_cost_view_t *k)
     }
 }
 
+/* Sums every machine's weekday-by-hour grid; the cells line up by
+   construction, so no window is needed. */
+static void merge_rhythm(const usagedata_t *d, ud_rhythm_view_t *r)
+{
+    static uint64_t vals[UD_RHYTHM_CELLS], scratch[UD_RHYTHM_CELLS];
+    memset(r, 0, sizeof *r);
+    memset(vals, 0, sizeof vals);
+
+    for (int i = 0; i < UD_MAX_HOSTS; i++) {
+        const ud_host_t *h = &d->hosts[i];
+        if (!h->used || !h->rhythm.used) continue;
+        r->present = true;
+        if (h->rhythm.days > r->days) r->days = h->rhythm.days;
+        r->msgs += h->rhythm.msgs;
+        for (int c = 0; h->rhythm.grid[c] != '\0' && c < UD_RHYTHM_CELLS; c++)
+            vals[c] += usagedata_grid_value(h->rhythm.grid[c]) / 1000;   /* a thousand is one message */
+    }
+    if (!r->present) return;
+
+    rank_levels(vals, UD_RHYTHM_CELLS, r->level, scratch);
+
+    uint64_t total = 0, night = 0, weekend = 0, peak = 0;
+    uint64_t by_dow[7] = {0}, by_hour[24] = {0};
+    for (int c = 0; c < UD_RHYTHM_CELLS; c++) {
+        int dow = c / 24, hour = c % 24;
+        uint64_t v = vals[c];
+        r->cell[c] = (uint32_t)v;
+        total += v;
+        by_dow[dow] += v;
+        by_hour[hour] += v;
+        if (hour >= 22 || hour < 6) night += v;
+        if (dow >= 5) weekend += v;
+        if (v > peak) { peak = v; r->peak_dow = dow; r->peak_hour = hour; }
+    }
+    for (int i = 1; i < 7; i++) if (by_dow[i] > by_dow[r->busiest_dow]) r->busiest_dow = i;
+    for (int i = 1; i < 24; i++) if (by_hour[i] > by_hour[r->busiest_hour]) r->busiest_hour = i;
+    if (total > 0) {
+        r->night_pct = (int)((night * 100 + total / 2) / total);
+        r->weekend_pct = (int)((weekend * 100 + total / 2) / total);
+    }
+    if (r->msgs == 0) r->msgs = total;
+}
+
+/* Sums today across machines; "last" comes from whichever machine's last
+   message is the more recent once each report is aged to the same moment. */
+static void merge_now(const usagedata_t *d, ud_now_view_t *n)
+{
+    memset(n, 0, sizeof *n);
+    int64_t best_when = INT64_MIN;
+    for (int i = 0; i < UD_MAX_HOSTS; i++) {
+        const ud_host_t *h = &d->hosts[i];
+        if (!h->used || !h->now.used) continue;
+        const ud_now_t *s = &h->now;
+        n->present = true;
+        n->tokens += s->tokens;
+        n->avg += s->avg;
+        n->cost += s->cost;
+        n->msgs += s->msgs;
+        n->sessions += s->sessions;
+        if (!s->have_last) continue;
+        /* When that last message happened, on the board's clock. */
+        int64_t when = h->now_sent_us - (int64_t)s->last_secs * 1000000LL;
+        if (when > best_when) {
+            best_when = when;
+            n->have_last = true;
+            n->last_secs = s->last_secs;
+            n->last_sent_us = h->now_sent_us;
+            n->session_secs = s->session_secs;
+            strncpy(n->model, s->model, UD_NAME_MAX);
+            strncpy(n->project, s->project, UD_NAME_MAX);
+        }
+    }
+}
+
 void usagedata_merge(const usagedata_t *d, ud_view_t *out)
 {
     memset(out, 0, sizeof *out);
     merge_year(d, &out->year);
     merge_cost(d, &out->cost);
+    merge_rhythm(d, &out->rhythm);
+    merge_now(d, &out->now);
 
     /* The model grids' window: the most recently dated machine's, as long as
        it is sane. Chosen before the rows are added so they can be placed. */

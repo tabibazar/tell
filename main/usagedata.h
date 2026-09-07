@@ -13,6 +13,7 @@
 #define UD_TEXT_MAX   63
 #define UD_YEAR_MAX   371        /* 53 weeks of one character per day */
 #define UD_MDAYS      60         /* days of per-model history, one char each */
+#define UD_RHYTHM_CELLS 168      /* 7 weekdays x 24 hours */
 #define UD_HEAT_LEVELS 4
 
 typedef struct {
@@ -65,6 +66,27 @@ typedef struct {
     int model_count;
 } ud_cost_t;
 
+/* Messages by weekday and hour, Monday first, one character per cell. */
+typedef struct {
+    bool used;
+    int days;                /* distinct days the grid was built from */
+    uint32_t msgs;
+    char grid[UD_RHYTHM_CELLS + 1];
+} ud_rhythm_t;
+
+/* Today so far on one machine, and what happened last. */
+typedef struct {
+    bool used;
+    uint64_t tokens, avg;    /* today, and a typical day of the last 30 */
+    uint64_t cost;           /* cents */
+    uint32_t msgs, sessions;
+    bool have_last;
+    uint32_t last_secs;      /* age of the last message when this was sent */
+    uint32_t session_secs;   /* length of the session that message was in */
+    char model[UD_NAME_MAX + 1];
+    char project[UD_NAME_MAX + 1];
+} ud_now_t;
+
 /* One machine's contribution. Kept separately so a re-push from one Mac
    replaces only its own share instead of clobbering the other's. */
 typedef struct {
@@ -76,6 +98,9 @@ typedef struct {
     int day_count;
     ud_year_t year;
     ud_cost_t cost;
+    ud_rhythm_t rhythm;
+    ud_now_t now;
+    int64_t now_sent_us;     /* when the now section arrived, to age "last" */
     int64_t updated_us;      /* when this machine last sent anything */
     bool used;
 } ud_host_t;
@@ -125,6 +150,31 @@ typedef struct {
     uint64_t day[UD_MDAYS];                   /* thousandths of a dollar */
 } ud_cost_view_t;
 
+/* Every machine's messages by weekday and hour, ranked into quartiles. */
+typedef struct {
+    bool present;
+    int days;
+    uint64_t msgs;
+    uint32_t cell[UD_RHYTHM_CELLS];
+    uint8_t level[UD_RHYTHM_CELLS];
+    int peak_dow, peak_hour;          /* the single busiest cell */
+    int busiest_dow, busiest_hour;    /* row and column with the most */
+    int night_pct, weekend_pct;       /* 22:00-05:59, Saturday and Sunday */
+} ud_rhythm_view_t;
+
+/* Today across every machine; "last" is from whichever spoke most recently. */
+typedef struct {
+    bool present;
+    uint64_t tokens, avg, cost;
+    uint32_t msgs, sessions;
+    bool have_last;
+    uint32_t last_secs;
+    int64_t last_sent_us;             /* so the age can keep counting */
+    uint32_t session_secs;
+    char model[UD_NAME_MAX + 1];
+    char project[UD_NAME_MAX + 1];
+} ud_now_view_t;
+
 /* Every machine's data summed, which is what the charts draw. */
 typedef struct {
     ud_model_t models[UD_MAX_MODELS];
@@ -141,6 +191,8 @@ typedef struct {
     int64_t updated_us;      /* the most recent machine's update, 0 if none */
     ud_year_view_t year;
     ud_cost_view_t cost;
+    ud_rhythm_view_t rhythm;
+    ud_now_view_t now;
 
     /* Each model's tokens per day, every machine summed, on the window of the
        machine that sent most recently. mlen is 0 when no machine sent grids. */
@@ -150,14 +202,15 @@ typedef struct {
 } ud_view_t;
 
 typedef enum {
-    UD_NONE = 0, UD_STATS, UD_DAILY, UD_CLOCK, UD_TODAY, UD_YEAR, UD_COST
+    UD_NONE = 0, UD_STATS, UD_DAILY, UD_CLOCK, UD_TODAY, UD_YEAR, UD_COST,
+    UD_RHYTHM, UD_NOW
 } ud_kind_t;
 
 /* Parses one payload. "!stats" and "!daily" replace that section for the
    sending machine, named by a "host <name>" line and defaulting to "mac".
    "!clock" carries the date and weather; "!year" a machine's
    heatmap grid and headline figures; "!cost" what its usage would have cost
-   on the API. Anything else returns UD_NONE and
+   on the API; "!rhythm" messages by weekday and hour; "!now" today so far. Anything else returns UD_NONE and
    leaves `d` untouched, so the caller can treat it as a text message. */
 ud_kind_t usagedata_parse(usagedata_t *d, const char *payload, int64_t now_us);
 

@@ -6,6 +6,8 @@
     tools/claude-stats.py --self-test
     tools/claude-stats.py --format data --section year   # the heatmap page
     tools/claude-stats.py --format data --section cost   # API-equivalent cost
+    tools/claude-stats.py --format data --section rhythm # weekday x hour heatmap
+    tools/claude-stats.py --format data --section now    # today, live
 
 Reads the session transcripts under ~/.claude/projects for recent, exact
 figures, and merges ~/.claude/stats-cache.json for the months before that:
@@ -128,6 +130,14 @@ def new_model():
     return {"in": 0, "out": 0, "cread": 0, "ccreate": 0, "calls": 0, "cost": 0.0}
 
 
+def project_name(path):
+    """The repository a transcript belongs to, from its folder: the folder is
+    the working directory with slashes turned to dashes, so the last piece is
+    the directory's own name."""
+    folder = os.path.basename(os.path.dirname(path))
+    return (folder.rsplit("-", 1)[-1] or folder)[:15] or "?"
+
+
 def collect(pattern=TRANSCRIPTS, cache=None):
     """Aggregate token usage from every transcript, then fill in the days the
     transcripts no longer cover from the stats cache (a dict, a path, or the
@@ -137,6 +147,11 @@ def collect(pattern=TRANSCRIPTS, cache=None):
     daily_cost = collections.Counter()
     model_daily = collections.defaultdict(collections.Counter)
     sessions = {}                       # id -> [first, last] epoch seconds
+    rhythm = collections.Counter()      # (weekday 0=Mon, hour) -> messages
+    rhythm_days = set()
+    msgs_by_day = collections.Counter()
+    sessions_by_day = collections.defaultdict(set)
+    latest = None                       # (epoch, model, project, session id)
     files = 0
     calls = 0
     first_day = last_day = None
@@ -144,6 +159,7 @@ def collect(pattern=TRANSCRIPTS, cache=None):
 
     for path in glob.glob(pattern, recursive=True):
         files += 1
+        project = project_name(path)
         for line in open(path, errors="ignore"):
             if '"usage"' not in line:
                 continue
@@ -197,6 +213,14 @@ def collect(pattern=TRANSCRIPTS, cache=None):
                 daily[day] += total
                 daily_cost[day] += cost
                 model_daily[model][day] += total
+                rhythm[(when.weekday(), when.hour)] += 1
+                rhythm_days.add(day)
+                msgs_by_day[day] += 1
+                if d.get("sessionId"):
+                    sessions_by_day[day].add(d["sessionId"])
+                t = when.timestamp()
+                if latest is None or t > latest[0]:
+                    latest = (t, model, project, d.get("sessionId"))
                 if first_day is None or day < first_day:
                     first_day = day
                 if last_day is None or day > last_day:
@@ -211,7 +235,10 @@ def collect(pattern=TRANSCRIPTS, cache=None):
              "model_daily": model_daily, "sessions": len(sessions),
              "files": files, "calls": calls, "longest_session": int(longest),
              "first_day": first_day, "last_day": last_day,
-             "estimated_days": 0}
+             "estimated_days": 0,
+             "rhythm": rhythm, "rhythm_days": len(rhythm_days),
+             "msgs_by_day": msgs_by_day, "sessions_by_day": sessions_by_day,
+             "session_spans": sessions, "latest": latest}
     if cache is None:
         cache = load_cache()
     elif isinstance(cache, str):
@@ -549,12 +576,60 @@ def render_cost(stats, today=None):
     return lines
 
 
+def render_rhythm(stats):
+    """The !rhythm payload: messages by weekday and hour, Monday first, as
+    168 characters. Counts are scaled by a thousand before encoding so the
+    grid alphabet's unit of a thousand becomes one message."""
+    rhythm = stats.get("rhythm", {})
+    chars = []
+    for dow in range(7):
+        for hour in range(24):
+            chars.append(grid_char(rhythm.get((dow, hour), 0) * 1000))
+    return ["!rhythm", "host %s" % host_name(),
+            "days %d" % stats.get("rhythm_days", 0),
+            "msgs %d" % sum(rhythm.values()),
+            "grid %s" % "".join(chars)]
+
+
+def render_now(stats, now=None):
+    """The !now payload: today so far, and what happened last."""
+    now = now or dt.datetime.now().astimezone()
+    today = now.date().isoformat()
+    daily_cost = stats.get("daily_cost", {})
+    lines = ["!now", "host %s" % host_name(),
+             "tokens %d" % stats["daily"].get(today, 0),
+             "cost %d" % cents(daily_cost.get(today, 0.0)),
+             "msgs %d" % stats.get("msgs_by_day", {}).get(today, 0),
+             "sessions %d" % len(stats.get("sessions_by_day", {}).get(today, ()))]
+
+    # A typical day, for the "today versus usual" bar: the 30-day mean of
+    # the days that had anything at all.
+    since = (now.date() - dt.timedelta(days=30)).isoformat()
+    recent = [t for d, t in stats["daily"].items() if since <= d < today and t > 0]
+    lines.append("avg %d" % (sum(recent) // len(recent) if recent else 0))
+
+    latest = stats.get("latest")
+    if latest:
+        t, model, project, sid = latest
+        lines.append("last %d" % max(0, int(now.timestamp() - t)))
+        lines.append("model %s" % model[:15])
+        lines.append("project %s" % project[:15])
+        span = stats.get("session_spans", {}).get(sid)
+        if span and span[0] is not None and span[1] is not None:
+            lines.append("session %d" % int(span[1] - span[0]))
+    return lines
+
+
 def render_data(stats, section, today=None):
     """Marker-prefixed lines for the firmware to parse."""
     if section == "year":
         return render_year(stats, today)
     if section == "cost":
         return render_cost(stats, today)
+    if section == "rhythm":
+        return render_rhythm(stats)
+    if section == "now":
+        return render_now(stats)
     today = today or dt.date.today()
     lines = []
     if section == "stats":
@@ -744,6 +819,29 @@ def self_test():
         failures += 1
     print("ok   cost payload (%d bytes)" % len(payload))
 
+    fake["rhythm"] = collections.Counter({(1, 14): 40, (6, 2): 1})
+    fake["rhythm_days"] = 62
+    payload = "\n".join(render_rhythm(fake))
+    grid = [l for l in payload.split("\n") if l.startswith("grid ")][0][5:]
+    if len(grid) != 168 or grid[1 * 24 + 14] == "." or grid[6 * 24 + 2] == "." \
+            or grid[0] != "." or grid_value(grid[1 * 24 + 14]) < 30000:
+        print("FAIL rhythm grid:\n%s" % payload)
+        failures += 1
+    print("ok   rhythm payload (%d bytes)" % len(payload))
+
+    fake["msgs_by_day"] = collections.Counter({"2026-09-07": 12})
+    fake["sessions_by_day"] = {"2026-09-07": {"a", "b"}}
+    fake["latest"] = (dt.datetime(2026, 9, 7, 12, 0).timestamp(), "opus-5", "tell", "a")
+    fake["session_spans"] = {"a": [dt.datetime(2026, 9, 7, 9, 0).timestamp(),
+                                   dt.datetime(2026, 9, 7, 12, 0).timestamp()]}
+    payload = "\n".join(render_now(fake, dt.datetime(2026, 9, 7, 12, 5).astimezone()))
+    if "tokens 7000" not in payload or "msgs 12" not in payload or "sessions 2" not in payload \
+            or "last 300" not in payload or "session 10800" not in payload \
+            or "project tell" not in payload:
+        print("FAIL now payload:\n%s" % payload)
+        failures += 1
+    print("ok   now payload (%d bytes)" % len(payload))
+
     print("all tests passed" if not failures else "%d test(s) failed" % failures)
     return 1 if failures else 0
 
@@ -754,16 +852,25 @@ def main():
     ap.add_argument("--rows", type=int, default=20)
     ap.add_argument("--self-test", action="store_true")
     ap.add_argument("--format", choices=("ascii", "data"), default="ascii")
-    ap.add_argument("--section", choices=("stats", "daily", "year", "cost"),
+    ap.add_argument("--section",
+                    choices=("stats", "daily", "year", "cost", "rhythm", "now"),
                     default="stats")
     ap.add_argument("--no-cache", action="store_true",
                     help="transcripts only; skip ~/.claude/stats-cache.json")
+    ap.add_argument("--all", metavar="DIR",
+                    help="write every data section to DIR/<section>.txt in one pass")
     a = ap.parse_args()
 
     if a.self_test:
         sys.exit(self_test())
 
     stats = collect(cache=False if a.no_cache else None)
+    if a.all:
+        os.makedirs(a.all, exist_ok=True)
+        for section in ("stats", "daily", "year", "cost", "rhythm", "now"):
+            with open(os.path.join(a.all, section + ".txt"), "w") as f:
+                f.write("\n".join(render_data(stats, section)) + "\n")
+        return
     if a.format == "data":
         print("\n".join(render_data(stats, a.section)))
     else:

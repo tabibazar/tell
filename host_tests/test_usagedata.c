@@ -397,6 +397,72 @@ int main(void)
     parse("!year\nstart 1\ntoday 3\ngrid 555\nestimated 35\n");
     expect("estimated day count kept", v.year.estimated == 35);
 
+    /* When you work: a 7x24 grid of messages. */
+    memset(&d, 0, sizeof d);
+    {
+        char grid[UD_RHYTHM_CELLS + 1];
+        memset(grid, '.', UD_RHYTHM_CELLS);
+        grid[UD_RHYTHM_CELLS] = '\0';
+        grid[1 * 24 + 14] = 'A';     /* Tuesday 14:00: 32 messages */
+        grid[1 * 24 + 15] = '5';     /* Tuesday 15:00: ~5 */
+        grid[6 * 24 + 2] = '0';      /* Sunday 02:00: 1 */
+        char payload[300];
+        snprintf(payload, sizeof payload, "!rhythm\nhost air\ndays 23\nmsgs 38\ngrid %s\n", grid);
+        expect("rhythm marker recognised", parse(payload) == UD_RHYTHM);
+    }
+    expect("rhythm present", v.rhythm.present && v.rhythm.days == 23 && v.rhythm.msgs == 38);
+    expect("rhythm cells decoded to messages",
+           v.rhythm.cell[1 * 24 + 14] == 32 && v.rhythm.cell[6 * 24 + 2] == 1
+           && v.rhythm.cell[0] == 0);
+    expect("rhythm levels ranked",
+           v.rhythm.level[1 * 24 + 14] == 4 && v.rhythm.level[6 * 24 + 2] == 1
+           && v.rhythm.level[0] == 0);
+    expect("peak cell found", v.rhythm.peak_dow == 1 && v.rhythm.peak_hour == 14);
+    expect("busiest weekday and hour", v.rhythm.busiest_dow == 1 && v.rhythm.busiest_hour == 14);
+    expect("night and weekend shares",
+           v.rhythm.night_pct == 3 && v.rhythm.weekend_pct == 3);
+
+    parse("!rhythm\nhost studio\ndays 10\nmsgs 2\ngrid .5\n");
+    expect("second machine's cells add in",
+           v.rhythm.cell[1] > 0 && v.rhythm.cell[1 * 24 + 14] == 32 && v.rhythm.days == 23);
+    expect("rhythm messages sum", v.rhythm.msgs == 40);
+
+    parse("!rhythm\nhost studio\n");
+    expect("a rhythm payload without a grid is not drawn for that machine",
+           v.rhythm.present && v.rhythm.cell[1] == 0);
+
+    /* Today, live. */
+    memset(&d, 0, sizeof d);
+    usagedata_parse(&d, "!now\nhost air\ntokens 85406000\ncost 8337\nmsgs 290\n"
+                        "sessions 1\navg 306469905\nlast 93\nmodel fable-5.1\n"
+                        "project tell\nsession 4883\n", 50000000);
+    usagedata_merge(&d, &v);
+    expect("now marker parsed",
+           v.now.present && v.now.tokens == 85406000ULL && v.now.cost == 8337
+           && v.now.msgs == 290 && v.now.sessions == 1 && v.now.avg == 306469905ULL);
+    expect("now's last message kept",
+           v.now.have_last && v.now.last_secs == 93 && v.now.session_secs == 4883
+           && strcmp(v.now.model, "fable-5.1") == 0 && strcmp(v.now.project, "tell") == 0);
+    expect("now records when it was sent", v.now.last_sent_us == 50000000);
+
+    usagedata_parse(&d, "!now\nhost studio\ntokens 1000\nmsgs 10\nsessions 2\n"
+                        "last 600\nmodel haiku\nproject other\n", 60000000);
+    usagedata_merge(&d, &v);
+    expect("today sums across machines",
+           v.now.tokens == 85407000ULL && v.now.msgs == 300 && v.now.sessions == 3);
+    expect("the more recent last message wins after ageing",
+           strcmp(v.now.model, "fable-5.1") == 0);
+
+    usagedata_parse(&d, "!now\nhost studio\nlast 5\nmodel haiku\nproject other\n", 70000000);
+    usagedata_merge(&d, &v);
+    expect("a fresher machine takes over last",
+           strcmp(v.now.model, "haiku") == 0 && v.now.last_sent_us == 70000000);
+
+    memset(&d, 0, sizeof d);
+    parse("!now\nhost air\ntokens 5\n");
+    expect("now without a last message is still present",
+           v.now.present && !v.now.have_last);
+
     if (failures == 0) { printf("all tests passed\n"); return 0; }
     printf("%d test(s) failed\n", failures);
     return 1;

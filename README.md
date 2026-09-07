@@ -11,8 +11,10 @@ git log -1 --format=%s | tell
 When nothing is being displayed, the screen shows a clock. On the big panel
 there are also pages of Claude Code usage: bars per model, bars per day, a
 line per model over the last two months, a heatmap of the last year in the
-style of Claude Code's own `/stats` screen, and what it all would have cost
-at API list prices, plus an almanac and a Settings page.
+style of Claude Code's own `/stats` screen, a weekday-by-hour heatmap of when
+you work, a live page for today with whether Claude is busy right now, and
+what it all would have cost at API list prices, plus an almanac and a
+Settings page.
 
 After ten minutes with no tap and no message the screensaver cycles through
 the pages, twenty seconds each, so nothing sits still long enough to burn in;
@@ -185,11 +187,12 @@ firmware bugs apart from client bugs.
 | Clock | `6E400004-B5A3-F393-E0A9-E50E24DCCA9E` | write, 4 bytes LE, seconds since local midnight |
 
 **Data payloads.** A text message that starts with `!stats`, `!daily`,
-`!year`, `!cost`, `!clock` or `!today` is data for a page rather than a
+`!year`, `!cost`, `!rhythm`, `!now`, `!clock` or `!today` is data for a page rather than a
 message to show, and replaces that section for the sending machine (named on
 a `host` line) without changing what is on screen. `tools/claude-stats.py
---format data --section <stats|daily|year|cost>` produces the first four; the
-almanac and weather scripts produce the other two.
+--format data --section <stats|daily|year|cost|rhythm|now>` produces the
+first six (or `--all DIR` writes them all from one pass); the almanac and
+weather scripts produce the other two.
 
 The script reads the transcripts under `~/.claude/projects` for recent, exact
 figures and merges `~/.claude/stats-cache.json` for the months before that,
@@ -266,7 +269,9 @@ Two more traps on this board, both learned the hard way:
   the port drops with `Device not configured`. Use the default rate.
 - **After a failed build, `idf.py` leaves the previous `build/screen.bin` in
   place.** Check the binary's timestamp before flashing, or you will flash a
-  stale image and debug a bug you already fixed.
+  stale image and debug a bug you already fixed. `tools/flash-crowpanel.sh`
+  refuses a binary older than the sources for exactly this reason, then
+  flashes the app partition and pushes every data section.
 
 Serial output goes over USB-Serial-JTAG (`idf.py monitor`). It is discarded when
 no host is attached, so boot logs are usually missed — hence the heartbeat log

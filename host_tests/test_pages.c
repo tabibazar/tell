@@ -15,7 +15,8 @@ static void expect(const char *what, int cond)
              | PAGE_BIT(PAGE_DAILY) | PAGE_BIT(PAGE_MESSAGE) \
              | PAGE_BIT(PAGE_TODAY) | PAGE_BIT(PAGE_MODELS) \
              | PAGE_BIT(PAGE_YEAR) | PAGE_BIT(PAGE_COST) \
-             | PAGE_BIT(PAGE_SETTINGS))
+             | PAGE_BIT(PAGE_SETTINGS) | PAGE_BIT(PAGE_NOW) \
+             | PAGE_BIT(PAGE_RHYTHM))
 #define FEATHER (PAGE_BIT(PAGE_CLOCK) | PAGE_BIT(PAGE_MESSAGE))
 
 int main(void)
@@ -24,10 +25,12 @@ int main(void)
 
     pages_init(&p, ALL);
     expect("starts on the clock", p.current == PAGE_CLOCK);
-    expect("advance goes to stats", pages_advance(&p, 1000) == PAGE_STATS);
+    expect("advance goes to now", pages_advance(&p, 900) == PAGE_NOW);
+    expect("then stats", pages_advance(&p, 1000) == PAGE_STATS);
     expect("then today", pages_advance(&p, 2000) == PAGE_TODAY);
     expect("then models", pages_advance(&p, 3000) == PAGE_MODELS);
     expect("then the year", pages_advance(&p, 4000) == PAGE_YEAR);
+    expect("then the rhythm", pages_advance(&p, 4200) == PAGE_RHYTHM);
     expect("then the cost", pages_advance(&p, 4500) == PAGE_COST);
     expect("then message", pages_advance(&p, 4800) == PAGE_MESSAGE);
     expect("then daily", pages_advance(&p, 4900) == PAGE_DAILY);
@@ -71,7 +74,7 @@ int main(void)
 
     int64_t t = PAGES_IDLE_US + PAGES_ROTATE_US + 1;
     expect("rotates once idle", pages_tick(&p, t));
-    expect("moved off the clock", p.current == PAGE_STATS);
+    expect("moved off the clock", p.current == PAGE_NOW);
     expect("does not rotate again immediately", !pages_tick(&p, t + 1));
     expect("rotates after the interval", pages_tick(&p, t + PAGES_ROTATE_US + 1));
     expect("advanced again", p.current == PAGE_DAILY);

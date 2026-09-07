@@ -524,6 +524,181 @@ void views_cost(canvas_t *c, const ud_view_t *d, float t, int64_t now_us)
     footer(c, note);
 }
 
+static const char *const DOW_SHORT[7] = { "Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun" };
+static const char *const DOW_LONG[7] = {
+    "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"
+};
+
+/* The rhythm grid: 24 hour columns at their own pitch across the width, and
+   seven weekday rows taller than a text row so the map fills the top half. */
+#define RHY_PITCH_X 31
+#define RHY_PITCH_Y 36
+#define RHY_GAP 1
+
+void views_rhythm(canvas_t *c, const ud_view_t *d, int64_t now_us)
+{
+    canvas_clear(c);
+    const ud_rhythm_view_t *r = &d->rhythm;
+    char head[48];
+    if (r->present) {
+        snprintf(head, sizeof head, "%llu messages over %d days",
+                 (unsigned long long)r->msgs, r->days);
+        title(c, "WHEN YOU WORK", head);
+    } else {
+        title(c, "WHEN YOU WORK", NULL);
+        canvas_puts(c, 1, 2, "no data yet -- run tools/push-stats.sh", PAL_DIM);
+        return;
+    }
+    (void)now_us;
+
+    const int x0 = 4 * c->cell_w + 4;
+    const int y0 = 2 * c->cell_h;
+    for (int h = 0; h < 24; h += 3) {
+        char lab[4];
+        snprintf(lab, sizeof lab, "%d", h);
+        canvas_puts_px(c, x0 + h * RHY_PITCH_X, y0 - c->cell_h, lab, PAL_DIM);
+    }
+    for (int dow = 0; dow < 7; dow++) {
+        int y = y0 + dow * RHY_PITCH_Y;
+        canvas_puts_px(c, 6, y + (RHY_PITCH_Y - c->cell_h) / 2, DOW_SHORT[dow], PAL_DIM);
+        for (int h = 0; h < 24; h++) {
+            int x = x0 + h * RHY_PITCH_X;
+            int level = r->level[dow * 24 + h];
+            int w = RHY_PITCH_X - RHY_GAP, hh = RHY_PITCH_Y - RHY_GAP;
+            if (level > 0) canvas_fill_rect(c, x, y, w, hh, pal_heat(level));
+            else canvas_fill_rect(c, x + w / 2 - 1, y + hh / 2 - 1, 2, 2, pal_heat(0));
+        }
+    }
+
+    /* Legend under the map, then the figures. */
+    int ly = y0 + 7 * RHY_PITCH_Y + 6;
+    canvas_puts_px(c, x0, ly, "Less", PAL_DIM);
+    int lx = x0 + 5 * c->cell_w;
+    for (int l = 1; l <= PAL_HEAT_STEPS; l++, lx += HEAT_PITCH_X)
+        heat_cell(c, lx, ly, l);
+    canvas_puts_px(c, lx + c->cell_w, ly, "More", PAL_DIM);
+
+    const uint16_t hi = pal_heat(PAL_HEAT_STEPS);
+    const int left = 1, right = c->cols / 2 + 1;
+    int row = (ly + c->cell_h) / c->cell_h + 1;
+    char buf[40];
+    snprintf(buf, sizeof buf, "%02d:00-%02d:00", r->busiest_hour, (r->busiest_hour + 1) % 24);
+    labelled(c, left, row, "Busiest hour: ", buf, hi);
+    labelled(c, right, row, "Busiest day: ", DOW_LONG[r->busiest_dow], hi);
+    row++;
+    snprintf(buf, sizeof buf, "%d%%", r->night_pct);
+    labelled(c, left, row, "Nights (22-06): ", buf, hi);
+    snprintf(buf, sizeof buf, "%d%%", r->weekend_pct);
+    labelled(c, right, row, "Weekends: ", buf, hi);
+    row++;
+    snprintf(buf, sizeof buf, "%s %02d:00, %lu messages", DOW_SHORT[r->peak_dow],
+             r->peak_hour, (unsigned long)r->cell[r->peak_dow * 24 + r->peak_hour]);
+    labelled(c, left, row, "Peak hour: ", buf, hi);
+
+    char note[96];
+    snprintf(note, sizeof note,
+             "cell = messages in that weekday hour, shaded by quartile");
+    footer(c, note);
+}
+
+/* "1h 21m" or "14m" or "38s". */
+static void age(uint32_t secs, char *out, int size)
+{
+    unsigned long v = secs;
+    if (v >= 86400) snprintf(out, size, "%lud %luh", v / 86400, (v % 86400) / 3600);
+    else if (v >= 3600) snprintf(out, size, "%luh %lum", v / 3600, (v % 3600) / 60);
+    else if (v >= 60) snprintf(out, size, "%lum", v / 60);
+    else snprintf(out, size, "%lus", v);
+}
+
+#define BUSY_SECS 180      /* a message this recent means Claude is working */
+
+void views_now(canvas_t *c, const ud_view_t *d, int64_t now_us)
+{
+    canvas_clear(c);
+    char fresh[24];
+    freshness(d, now_us, fresh, sizeof fresh);
+    title(c, "TODAY, LIVE", fresh);
+
+    const ud_now_view_t *n = &d->now;
+    if (!n->present) {
+        canvas_puts(c, 1, 2, "no data yet -- run tools/push-stats.sh", PAL_DIM);
+        return;
+    }
+
+    const uint16_t hi = pal_heat(PAL_HEAT_STEPS);
+    const int left = 1, right = c->cols / 2 + 1;
+    char buf[64], a[24];
+
+    /* The status line first: it is what a glance is for. */
+    if (n->have_last) {
+        int64_t since = n->last_secs + (now_us - n->last_sent_us) / 1000000;
+        if (since < 0) since = 0;
+        age((uint32_t)since, a, sizeof a);
+        if (since < BUSY_SECS) {
+            canvas_puts(c, left, 2, "Claude is busy", hi);
+            snprintf(buf, sizeof buf, "   last message %s ago", a);
+            canvas_puts(c, left + 14, 2, buf, PAL_DIM);
+        } else {
+            canvas_puts(c, left, 2, "Claude is idle", PAL_FG);
+            snprintf(buf, sizeof buf, "   last message %s ago", a);
+            canvas_puts(c, left + 14, 2, buf, PAL_DIM);
+        }
+        snprintf(buf, sizeof buf, "on %s with %s", n->project[0] ? n->project : "?",
+                 n->model[0] ? n->model : "?");
+        canvas_puts(c, left, 3, buf, PAL_DIM);
+    } else {
+        canvas_puts(c, left, 2, "Nothing recorded yet today", PAL_DIM);
+    }
+
+    int row = 5;
+    human(n->tokens, a, sizeof a);
+    labelled(c, left, row, "Tokens today: ", a, hi);
+    money(n->cost, a, sizeof a);
+    labelled(c, right, row, "Cost today: ", a, hi);
+    row++;
+    snprintf(a, sizeof a, "%lu", (unsigned long)n->msgs);
+    labelled(c, left, row, "Messages: ", a, hi);
+    snprintf(a, sizeof a, "%lu", (unsigned long)n->sessions);
+    labelled(c, right, row, "Sessions: ", a, hi);
+    row++;
+    if (n->have_last) {
+        age(n->session_secs, a, sizeof a);
+        labelled(c, left, row, "Current session: ", a, hi);
+    }
+    human(n->avg, a, sizeof a);
+    labelled(c, right, row, "Typical day: ", a, hi);
+
+    /* Today against a typical day, as one bar with a mark for typical. */
+    row += 2;
+    canvas_puts(c, left, row, "today against a typical day", PAL_DIM);
+    uint64_t scale = n->tokens > n->avg ? n->tokens : n->avg;
+    if (scale == 0) scale = 1;
+    int bx = left * c->cell_w, bw = (c->cols - 2) * c->cell_w;
+    int by = (row + 1) * c->cell_h + 4, bh = 2 * c->cell_h - 8;
+    canvas_fill_rect(c, bx, by, bw, bh, 0x2124);
+    int today_w = (int)((double)n->tokens / (double)scale * bw);
+    canvas_fill_rect(c, bx, by, today_w, bh, hi);
+    if (n->avg > 0) {
+        int ax = bx + (int)((double)n->avg / (double)scale * bw);
+        if (ax >= bx + bw) ax = bx + bw - 2;
+        canvas_fill_rect(c, ax, by - 4, 2, bh + 8, PAL_FG);
+        int lx = ax - 3 * c->cell_w;             /* centred under the mark */
+        if (lx + 7 * c->cell_w > bx + bw) lx = bx + bw - 7 * c->cell_w;
+        if (lx < bx) lx = bx;
+        canvas_puts_px(c, lx, by + bh + 4, "typical", PAL_FG);
+    }
+    if (n->avg > 0) {
+        snprintf(buf, sizeof buf, "%d%% of a typical day so far",
+                 (int)((n->tokens * 100 + n->avg / 2) / n->avg));
+        canvas_puts(c, left, row + 4, buf, PAL_DIM);
+    }
+
+    char note[96];
+    snprintf(note, sizeof note, "from the transcripts, refreshed every minute");
+    footer(c, note);
+}
+
 /* A filled marker beside a legend or card entry. */
 static void dot(canvas_t *c, int col, int row, uint16_t colour)
 {

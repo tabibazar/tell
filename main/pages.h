@@ -8,10 +8,12 @@ typedef enum {
     /* Tap order. The clock is home; the pages you glance at most come first,
        and the two text-heavy ones sit last, just before the clock returns. */
     PAGE_CLOCK = 0,
+    PAGE_NOW,        /* today so far, and whether Claude is busy */
     PAGE_STATS,
     PAGE_TODAY,
     PAGE_MODELS,     /* tokens per day, one line per model */
     PAGE_YEAR,       /* the last twelve months as a heatmap */
+    PAGE_RHYTHM,     /* messages by weekday and hour */
     PAGE_COST,       /* what it would have cost on the API */
     PAGE_MESSAGE,
     PAGE_DAILY,      /* tokens per day as bars */
