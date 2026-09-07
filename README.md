@@ -129,10 +129,19 @@ A message holds the screen for 5 minutes, then the clock returns.
 
 ## The clock
 
-The board has no battery-backed real-time clock, so it starts at `--:--:--`
-after every power cycle and drifts a few seconds a day. Every `tell` command
-re-syncs it, so in practice this is invisible; `tell --sync` corrects it without
-disturbing what is on screen.
+The board has no real-time clock of its own, so on its own it starts at
+`--:--:--` after every power cycle and drifts a few seconds a day. Every `tell`
+command re-syncs it, so in practice this is invisible; `tell --sync` corrects
+it without disturbing what is on screen.
+
+A **DS3231 module on the CrowPanel's I2C header** fixes the power-cycle gap:
+the firmware finds it at boot, takes the time from it, and writes every sync
+from a Mac back to it, so the chip always holds the last NTP-disciplined time
+the Mac had. Once an hour without a sync it re-reads the chip to cancel the
+ESP timer's drift. The chip stores local time of day only; after a
+daylight-saving change it is an hour off until the next sync, which the
+`push-clock` agent provides within five minutes. A chip whose battery has
+died reports that its oscillator stopped, and is then ignored until set again.
 
 Time is sent as **seconds since your local midnight**, not a Unix timestamp.
 That way the firmware never needs to know about timezones or leap seconds — it

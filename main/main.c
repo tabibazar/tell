@@ -2,6 +2,7 @@
 #include "ble_uart.h"
 #include "gt911.h"
 #include "pages.h"
+#include "ds3231.h"
 #include "settings.h"
 #include "timecalc.h"
 #include "usagedata.h"
@@ -25,6 +26,14 @@ static const char *TAG = "main";
 static uint32_t s_base_secs;
 static int64_t  s_base_us;
 static bool     s_synced;
+
+/* The battery-backed clock, when one is on the bus. A Mac's sync is written
+   to it from the main loop rather than from the BLE task that receives it,
+   so the I2C bus is only ever driven from one task. */
+static bool     s_rtc;
+static bool     s_rtc_pending;      /* a sync arrived; copy it to the chip */
+static int64_t  s_rtc_checked_us;
+#define RTC_RECHECK_US (3600 * 1000000LL)
 
 static usagedata_t s_data;
 static settings_t s_settings;
@@ -70,6 +79,13 @@ static void on_time(uint32_t secs)
     s_base_us = esp_timer_get_time();
     s_synced = true;
     s_drawn_second = -1;
+    s_rtc_pending = true;
+}
+
+/* The board's idea of the time right now. */
+static uint32_t now_secs(int64_t now)
+{
+    return timecalc_advance(s_base_secs, (uint64_t)(now - s_base_us));
 }
 
 static void on_message(const char *text, size_t len)
@@ -201,6 +217,16 @@ void app_main(void)
                | PAGE_BIT(PAGE_YEAR) | PAGE_BIT(PAGE_COST);
     touch = gt911_init() == ESP_OK;
     if (touch) available |= PAGE_BIT(PAGE_SETTINGS);   /* useless without a finger */
+
+    /* The clock chip shares the touch bus. If it knows the time, start from
+       it, so the display is right before any Mac has said anything. */
+    s_rtc = ds3231_init() == ESP_OK;
+    uint32_t rtc_secs;
+    if (s_rtc && ds3231_read(&rtc_secs)) {
+        on_time(rtc_secs);
+        s_rtc_pending = false;          /* it came from the chip; no need to write it back */
+        ESP_LOGI(TAG, "clock set from the RTC");
+    }
 #endif
     pages_init(&s_pages, available);
     settings_defaults(&s_settings);
@@ -224,6 +250,25 @@ void app_main(void)
     for (;;) {
         vTaskDelay(pdMS_TO_TICKS(TICK_MS));
         int64_t now = esp_timer_get_time();
+
+        if (s_rtc && s_rtc_pending && s_synced) {
+            /* A Mac just synced us; its clock is NTP-disciplined, so the chip
+               takes that time and holds it through the next power cycle. */
+            s_rtc_pending = false;
+            s_rtc_checked_us = now;
+            if (ds3231_write(now_secs(now))) ESP_LOGI(TAG, "RTC set from the Mac");
+        }
+        if (s_rtc && now - s_rtc_checked_us > RTC_RECHECK_US) {
+            /* The ESP timer drifts seconds a day; the chip does not. Once an
+               hour without a Mac's sync, take the chip's word for it. */
+            s_rtc_checked_us = now;
+            uint32_t secs;
+            if (ds3231_read(&secs)) {
+                on_time(secs);
+                s_rtc_pending = false;
+                ESP_LOGI(TAG, "clock re-read from the RTC");
+            }
+        }
 
         if (touch && gt911_tapped()) {
             int tx, ty, row, choice;
@@ -327,8 +372,9 @@ void app_main(void)
            log is often missed. A heartbeat makes liveness observable. */
         if (now - last_beat > 30 * 1000000LL) {
             last_beat = now;
-            ESP_LOGI(TAG, "alive, page %d, clock %s",
-                     (int)s_pages.current, s_synced ? "synced" : "unset");
+            ESP_LOGI(TAG, "alive, page %d, clock %s, rtc %s",
+                     (int)s_pages.current, s_synced ? "synced" : "unset",
+                     s_rtc ? "present" : "absent");
         }
     }
 }

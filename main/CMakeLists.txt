@@ -6,6 +6,6 @@ endif()
 
 idf_component_register(
     SRCS "main.c" "canvas.c" "textwrap.c" "timecalc.c" "ble_uart.c"
-         "usagedata.c" "pages.c" "views.c" "settings.c" "gt911.c" "i2cbus.c" ${DISPLAY_SRC}
+         "usagedata.c" "pages.c" "views.c" "settings.c" "gt911.c" "i2cbus.c" "ds3231.c" ${DISPLAY_SRC}
     INCLUDE_DIRS "."
     REQUIRES esp_lcd driver esp_driver_i2c esp_timer bt nvs_flash)

@@ -1,6 +1,6 @@
 CFLAGS = -std=c11 -Wall -Wextra -Werror -g -I../main
 
-all: test_textwrap test_font test_font_clock test_timecalc test_canvas test_usagedata test_pages test_views test_settings
+all: test_textwrap test_font test_font_clock test_timecalc test_canvas test_usagedata test_pages test_views test_settings test_ds3231
 
 test_textwrap: test_textwrap.c ../main/textwrap.c
 	cc $(CFLAGS) -o $@ $^
@@ -29,7 +29,10 @@ test_views: test_views.c ../main/views.c ../main/canvas.c ../main/textwrap.c ../
 test_settings: test_settings.c ../main/settings.c
 	cc $(CFLAGS) -o $@ $^
 
+test_ds3231: test_ds3231.c ../main/ds3231.c
+	cc $(CFLAGS) -o $@ $^
+
 clean:
-	rm -f test_textwrap test_font test_font_clock test_timecalc test_canvas test_usagedata test_pages test_views test_settings
+	rm -f test_textwrap test_font test_font_clock test_timecalc test_canvas test_usagedata test_pages test_views test_settings test_ds3231
 
 .PHONY: all clean
