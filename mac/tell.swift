@@ -15,6 +15,9 @@ let rxUUID      = CBUUID(string: "6E400002-B5A3-F393-E0A9-E50E24DCCA9E")
 let timeUUID    = CBUUID(string: "6E400004-B5A3-F393-E0A9-E50E24DCCA9E")
 let maxMessage  = 2048
 let timeout     = 10.0
+/// The board accepts one connection at a time, so a Mac pushing on a timer
+/// can be holding it. Retry rather than failing the first time we miss.
+let maxAttempts = 5
 
 func note(_ msg: String) {
     FileHandle.standardError.write(Data("tell: \(msg)\n".utf8))
@@ -93,6 +96,8 @@ final class Client: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate {
     private var peripheral: CBPeripheral?
     private let payload: Data
     private var outstanding = 0
+    private var attempt = 0
+    private var finished = false
     /// Names seen while listing, mapped to their strongest signal.
     private var seen: [String: Int] = [:]
 
@@ -105,14 +110,16 @@ final class Client: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate {
     func centralManagerDidUpdateState(_ c: CBCentralManager) {
         switch c.state {
         case .poweredOn:
-            // Scan by service UUID: CoreBluetooth caches peripheral names, so
-            // matching on name can miss a renamed device.
-            c.scanForPeripherals(withServices: [serviceUUID])
             if listOnly {
+                // Scan by service UUID: CoreBluetooth caches peripheral names,
+                // so matching on name can miss a renamed device.
+                c.scanForPeripherals(withServices: [serviceUUID])
                 DispatchQueue.main.asyncAfter(deadline: .now() + listSeconds) {
                     self.report()
                     exit(0)
                 }
+            } else {
+                startAttempt()
             }
         case .poweredOff:
             fail("Bluetooth is off")
@@ -123,6 +130,31 @@ final class Client: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate {
             fail("Bluetooth LE unsupported on this machine")
         default:
             break
+        }
+    }
+
+    /// Scans for the board, giving up on this try after `timeout` seconds.
+    /// A miss is usually the board being busy with another connection, so we
+    /// simply start again rather than reporting failure.
+    private func startAttempt() {
+        attempt += 1
+        central.scanForPeripherals(withServices: [serviceUUID])
+
+        let thisAttempt = attempt
+        DispatchQueue.main.asyncAfter(deadline: .now() + timeout) { [weak self] in
+            guard let self = self, !self.finished, self.attempt == thisAttempt else { return }
+            self.central.stopScan()
+            if let p = self.peripheral { self.central.cancelPeripheralConnection(p) }
+            self.peripheral = nil
+
+            if self.attempt >= maxAttempts {
+                if let wanted = wantedDevice {
+                    fail("no device named \(wanted) after \(maxAttempts) tries")
+                }
+                fail("no screen found after \(maxAttempts) tries")
+            }
+            note("busy, retrying (\(self.attempt + 1)/\(maxAttempts))")
+            self.startAttempt()
         }
     }
 
@@ -164,7 +196,10 @@ final class Client: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate {
 
     func centralManager(_ c: CBCentralManager, didFailToConnect p: CBPeripheral,
                         error: Error?) {
-        fail("connect failed: \(error?.localizedDescription ?? "unknown")")
+        // Losing a connect race with another Mac looks like this; try again.
+        note("connect failed: \(error?.localizedDescription ?? "unknown")")
+        peripheral = nil
+        startAttempt()
     }
 
     func centralManager(_ c: CBCentralManager, didConnect p: CBPeripheral) {
@@ -226,18 +261,12 @@ final class Client: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate {
         if let error = error { fail("write failed: \(error.localizedDescription)") }
         outstanding -= 1
         if outstanding <= 0 {
-            // The firmware completes a message after 50 ms of quiet.
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { exit(0) }
+            finished = true
+            // The firmware completes a message after 250 ms of quiet.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { exit(0) }
         }
     }
 }
 
 let client = Client(payload: readMessage())
-
-DispatchQueue.main.asyncAfter(deadline: .now() + timeout) {
-    if let wanted = wantedDevice {
-        fail("no device named \(wanted) found within \(Int(timeout))s")
-    }
-    fail("no screen found within \(Int(timeout))s")
-}
 dispatchMain()
