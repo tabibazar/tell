@@ -18,7 +18,7 @@ static ud_view_t v;
 /* Every assertion below reads the merged view, which is what the charts draw. */
 static ud_kind_t parse(const char *payload)
 {
-    ud_kind_t k = usagedata_parse(&d, payload);
+    ud_kind_t k = usagedata_parse(&d, payload, 0);
     usagedata_merge(&d, &v);
     return k;
 }
@@ -178,6 +178,42 @@ int main(void)
     expect("day shares survive the sort",
            v.day_by_host[0][0] == 10 && v.day_by_host[0][1] == 30);
     expect("and match their day", v.days[0].tokens == 40);
+
+    /* Freshness: the view reports the newest machine's update time, which the
+       title turns into "updated Nm ago". */
+    memset(&d, 0, sizeof d);
+    usagedata_parse(&d, "!stats\nhost air\nm opus-5 1 2\n", 5000000);
+    usagedata_merge(&d, &v);
+    expect("update time recorded", v.updated_us == 5000000);
+
+    usagedata_parse(&d, "!stats\nhost studio\nm opus-5 1 2\n", 9000000);
+    usagedata_merge(&d, &v);
+    expect("the newest machine wins", v.updated_us == 9000000);
+
+    usagedata_parse(&d, "!stats\nhost air\nm opus-5 3 4\n", 12000000);
+    usagedata_merge(&d, &v);
+    expect("a later push from either machine updates it",
+           v.updated_us == 12000000);
+
+    memset(&d, 0, sizeof d);
+    usagedata_merge(&d, &v);
+    expect("no data means no update time", v.updated_us == 0);
+
+    memset(&d, 0, sizeof d);
+    usagedata_parse(&d, "!clock\ndate Monday\n", 7000000);
+    usagedata_merge(&d, &v);
+    expect("a clock payload is not chart data", v.updated_us == 0);
+
+    /* The optional weekday, which the chart colours by. */
+    memset(&d, 0, sizeof d);
+    parse("!daily\nhost air\nd 09-07 100 0\nd 09-06 50 6\n");
+    expect("weekday parsed", v.days[1].dow == 0 && v.days[0].dow == 6);
+
+    parse("!daily\nhost air\nd 09-07 100\n");
+    expect("a day without a weekday is marked unknown", v.days[0].dow == -1);
+
+    parse("!daily\nhost air\nd 09-07 100 9\n");
+    expect("an out-of-range weekday is rejected", v.days[0].dow == -1);
 
     if (failures == 0) { printf("all tests passed\n"); return 0; }
     printf("%d test(s) failed\n", failures);

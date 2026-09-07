@@ -62,7 +62,8 @@ static void find_host(const char *payload, char *out)
     }
 }
 
-ud_kind_t usagedata_parse(usagedata_t *d, const char *payload)
+ud_kind_t usagedata_parse(usagedata_t *d, const char *payload,
+                          int64_t now_us)
 {
     if (d == NULL || payload == NULL) return UD_NONE;
 
@@ -86,6 +87,7 @@ ud_kind_t usagedata_parse(usagedata_t *d, const char *payload)
         char name[UD_HOST_MAX + 1];
         find_host(payload, name);
         h = host_slot(d, name);
+        h->updated_us = now_us;
         /* A section replaces this machine's rows wholesale: no merge, so no
            stale rows, and the other machine's data is untouched. */
         if (kind == UD_STATS) h->model_count = 0;
@@ -119,6 +121,13 @@ ud_kind_t usagedata_parse(usagedata_t *d, const char *payload)
             q = token(q, num, sizeof num - 1);
             if (q == NULL) continue;
             day.tokens = strtoull(num, NULL, 10);
+            /* Optional weekday, so the chart can colour by it. Older senders
+               omit it and the day simply has no weekday colour. */
+            day.dow = -1;
+            if (token(q, num, sizeof num - 1) != NULL) {
+                int v = atoi(num);
+                if (v >= 0 && v <= 6) day.dow = (int8_t)v;
+            }
             h->days[h->day_count++] = day;
         } else if (kind == UD_TODAY) {
             char *dest = NULL;
@@ -224,6 +233,7 @@ void usagedata_merge(const usagedata_t *d, ud_view_t *out)
         if (!contributes(h)) continue;
         int host = out->host_count++;
         strncpy(out->host_names[host], h->host, UD_HOST_MAX);
+        if (h->updated_us > out->updated_us) out->updated_us = h->updated_us;
 
         for (int m = 0; m < h->model_count; m++) add_model(out, &h->models[m], host);
         for (int k = 0; k < h->day_count; k++) add_day(out, &h->days[k], host);

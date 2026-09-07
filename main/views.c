@@ -14,6 +14,19 @@ static void human(uint64_t n, char *out, int size)
     else snprintf(out, size, "%llu", (unsigned long long)n);
 }
 
+/* How long ago the newest machine sent data. Shown rather than used to expire
+   anything: stale numbers are more useful when labelled than when deleted. */
+static void freshness(const ud_view_t *d, int64_t now_us, char *out, int size)
+{
+    if (d->updated_us <= 0) { snprintf(out, size, "no data"); return; }
+
+    long secs = (long)((now_us - d->updated_us) / 1000000);
+    if (secs < 0) secs = 0;
+    if (secs < 90) snprintf(out, size, "updated %lds ago", secs);
+    else if (secs < 5400) snprintf(out, size, "updated %ldm ago", secs / 60);
+    else snprintf(out, size, "updated %ldh ago", secs / 3600);
+}
+
 static void title(canvas_t *c, const char *left, const char *right)
 {
     canvas_fill_rect(c, 0, 0, c->w, c->cell_h, PAL_TITLE_BG);
@@ -47,15 +60,15 @@ static void right_text(canvas_t *c, int row, int right_col, const char *s,
     canvas_puts(c, right_col - (int)strlen(s), row, s, colour);
 }
 
-void views_stats(canvas_t *c, const ud_view_t *d, float t)
+void views_stats(canvas_t *c, const ud_view_t *d, float t, int64_t now_us)
 {
     canvas_clear(c);
-    char head[24];
+    char head[48], fresh[24];
+    freshness(d, now_us, fresh, sizeof fresh);
     if (d->host_count > 1)
-        snprintf(head, sizeof head, "%d machines", d->host_count);
+        snprintf(head, sizeof head, "%d machines   %s", d->host_count, fresh);
     else
-        snprintf(head, sizeof head, "tokens");
-    canvas_clear(c);
+        snprintf(head, sizeof head, "%s", fresh);
     title(c, "USAGE BY MODEL", head);
 
     if (d->model_count == 0) {
@@ -111,7 +124,7 @@ void views_stats(canvas_t *c, const ud_view_t *d, float t)
     footer(c, note);
 }
 
-void views_daily(canvas_t *c, const ud_view_t *d, float t)
+void views_daily(canvas_t *c, const ud_view_t *d, float t, int64_t now_us)
 {
     canvas_clear(c);
 
@@ -121,14 +134,10 @@ void views_daily(canvas_t *c, const ud_view_t *d, float t)
         return;
     }
 
-    char range[48];
-    if (d->host_count > 1)
-        snprintf(range, sizeof range, "%s to %s   %d machines",
-                 d->days[0].label, d->days[d->day_count - 1].label,
-                 d->host_count);
-    else
-        snprintf(range, sizeof range, "%s to %s",
-                 d->days[0].label, d->days[d->day_count - 1].label);
+    char range[64], fresh[24];
+    freshness(d, now_us, fresh, sizeof fresh);
+    snprintf(range, sizeof range, "%s to %s   %s",
+             d->days[0].label, d->days[d->day_count - 1].label, fresh);
     title(c, "TOKENS PER DAY", range);
 
     uint64_t peak = 1, grand = 0;
@@ -173,6 +182,17 @@ void views_daily(canvas_t *c, const ud_view_t *d, float t)
 
         int bx = gutter + i * slot + 2;
 
+        /* With one machine there is nothing to stack, so colour by weekday
+           instead: the bar still carries information, and the chart is not a
+           single hue. With several machines the split matters more. */
+        if (d->host_count <= 1) {
+            uint16_t wc = pal_weekday(d->days[i].dow);
+            canvas_fill_rect(c, bx, bottom - h, bar_w, h, wc);
+            if (h >= 3)
+                canvas_fill_rect(c, bx, bottom - h, bar_w, 2, pal_lighten(wc));
+            goto marks;
+        }
+
         /* Stack the machines up the bar, newest colour on top. */
         int drawn = 0;
         uint64_t day_total = d->days[i].tokens;
@@ -189,6 +209,8 @@ void views_daily(canvas_t *c, const ud_view_t *d, float t)
         }
         if (d->host_count == 0)
             canvas_fill_rect(c, bx, bottom - h, bar_w, h, colour);
+
+marks:
 
         int label_col = (gutter + i * slot) / c->cell_w;
         if (slot >= 6 * c->cell_w || (i % 2) == 0)

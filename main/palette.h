@@ -31,6 +31,24 @@
 #define PAL_PEAK     0xF728  /* yellow */
 #define PAL_LATEST   0xE4E0  /* orange */
 
+/* One colour per weekday, so a single machine's chart still reads as more
+   than a wall of one hue -- and the colour means something: you can see the
+   working week against the weekend. */
+static inline unsigned short pal_weekday(int dow)
+{
+    const unsigned short a[7] = {
+        0x55BD,  /* Mon  sky blue */
+        0x04EE,  /* Tue  bluish green */
+        0xF728,  /* Wed  yellow */
+        0xE4E0,  /* Thu  orange */
+        0xCBD4,  /* Fri  reddish purple */
+        0xD2E0,  /* Sat  vermillion */
+        0xFBEE,  /* Sun  light vermillion */
+    };
+    if (dow < 0 || dow > 6) return 0x55BD;
+    return a[dow];
+}
+
 static inline unsigned short pal_accent(int i)
 {
     const unsigned short a[PAL_ACCENTS] = {

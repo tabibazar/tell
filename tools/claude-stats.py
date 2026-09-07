@@ -212,7 +212,13 @@ def render_data(stats, section):
         lines.append("!daily")
         lines.append("host %s" % host_name())
         for day, total in sorted(stats["daily"].items())[-14:]:
-            lines.append("d %s %d" % (day[5:], total))
+            # Trailing weekday (0 Monday) so the board can colour by it; it
+            # has no calendar of its own.
+            try:
+                dow = dt.date.fromisoformat(day).weekday()
+            except ValueError:
+                dow = -1
+            lines.append("d %s %d %d" % (day[5:], total, dow))
     return lines
 
 

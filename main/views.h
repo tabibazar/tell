@@ -11,8 +11,8 @@
 
    `t` runs 0..1 and scales the bars, so a page can grow into place when it
    appears. Pass 1 for the finished chart. */
-void views_stats(canvas_t *c, const ud_view_t *d, float t);
-void views_daily(canvas_t *c, const ud_view_t *d, float t);
+void views_stats(canvas_t *c, const ud_view_t *d, float t, int64_t now_us);
+void views_daily(canvas_t *c, const ud_view_t *d, float t, int64_t now_us);
 
 /* The almanac page: moon, sun, the day's numbers and the next holiday. */
 void views_today(canvas_t *c, const usagedata_t *d);

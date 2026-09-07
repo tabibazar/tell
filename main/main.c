@@ -56,7 +56,7 @@ static void on_message(const char *text, size_t len)
 {
     int64_t now = esp_timer_get_time();
 
-    ud_kind_t kind = usagedata_parse(&s_data, text);
+    ud_kind_t kind = usagedata_parse(&s_data, text, now);
     if (kind == UD_TODAY) {
         if (s_pages.current == PAGE_TODAY) s_drawn_page = PAGE_COUNT;
         return;
@@ -249,8 +249,8 @@ void app_main(void)
 
             ud_view_t v;
             usagedata_merge(&s_data, &v);
-            if (s_pages.current == PAGE_STATS) views_stats(c, &v, t);
-            else views_daily(c, &v, t);
+            if (s_pages.current == PAGE_STATS) views_stats(c, &v, t, now);
+            else views_daily(c, &v, t, now);
             display_blit();
         }
 

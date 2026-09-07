@@ -21,6 +21,7 @@ typedef struct {
 typedef struct {
     char label[UD_LABEL_MAX + 1];
     uint64_t tokens;
+    int8_t dow;              /* 0 Monday .. 6 Sunday, -1 when not sent */
 } ud_day_t;
 
 /* One machine's contribution. Kept separately so a re-push from one Mac
@@ -31,6 +32,7 @@ typedef struct {
     int model_count;
     ud_day_t days[UD_MAX_DAYS];
     int day_count;
+    int64_t updated_us;      /* when this machine last sent anything */
     bool used;
 } ud_host_t;
 
@@ -62,6 +64,7 @@ typedef struct {
     char host_names[UD_MAX_HOSTS][UD_HOST_MAX + 1];
     uint64_t model_by_host[UD_MAX_MODELS][UD_MAX_HOSTS];
     uint64_t day_by_host[UD_MAX_DAYS][UD_MAX_HOSTS];
+    int64_t updated_us;      /* the most recent machine's update, 0 if none */
 } ud_view_t;
 
 typedef enum { UD_NONE = 0, UD_STATS, UD_DAILY, UD_CLOCK, UD_TODAY } ud_kind_t;
@@ -70,7 +73,7 @@ typedef enum { UD_NONE = 0, UD_STATS, UD_DAILY, UD_CLOCK, UD_TODAY } ud_kind_t;
    sending machine, named by a "host <name>" line and defaulting to "mac".
    "!clock" carries the date and weather. Anything else returns UD_NONE and
    leaves `d` untouched, so the caller can treat it as a text message. */
-ud_kind_t usagedata_parse(usagedata_t *d, const char *payload);
+ud_kind_t usagedata_parse(usagedata_t *d, const char *payload, int64_t now_us);
 
 /* Sums every machine into one view: models added by name, days by label,
    both ordered largest and latest first respectively. */
