@@ -1067,6 +1067,170 @@ void views_thinking(canvas_t *c, const ud_view_t *d, float t, int64_t now_us)
     footer(c, note);
 }
 
+/* "20 Aug 2026" for a day count, for records that may span years. */
+static void full_date(int32_t days, char *out, int size)
+{
+    int y, m, d;
+    timecalc_civil(days, &y, &m, &d);
+    snprintf(out, size, "%d %s %d", d, timecalc_month_abbr(m), y);
+}
+
+void views_week(canvas_t *c, const ud_view_t *d, float t, int64_t now_us)
+{
+    canvas_clear(c);
+    const ud_week_view_t *w = &d->week;
+    char head[72], fresh[24];
+    freshness(d, now_us, fresh, sizeof fresh);
+    if (w->present && w->today > 0) {
+        char dn[16];
+        day_name(w->today, dn, sizeof dn);
+        snprintf(head, sizeof head, "to %s   %s", dn, fresh);
+    } else {
+        snprintf(head, sizeof head, "%s", fresh);
+    }
+    title(c, "THIS WEEK VS LAST", head);
+    if (!w->present) {
+        canvas_puts(c, 1, 2, "no data yet -- run tools/push-stats.sh", PAL_DIM);
+        return;
+    }
+
+    static const char *const labels[UD_WEEK_ROWS] = {
+        "Tokens", "Cost", "Messages", "Sessions", "Tool calls", "Active days"
+    };
+    const int col_this = 30, col_last = 46, col_change = c->cols - 1;
+    right_text(c, 2, col_this, "last 7 days", PAL_DIM);
+    right_text(c, 2, col_last, "the 7 before", PAL_DIM);
+    right_text(c, 2, col_change, "change", PAL_DIM);
+    for (int r = 0; r < UD_WEEK_ROWS; r++) {
+        int row = 3 + r;
+        char a[24], b[24], ch[16];
+        uint64_t now_v = w->this_week[r], then_v = w->last_week[r];
+        if (r == 0) { human(now_v, a, sizeof a); human(then_v, b, sizeof b); }
+        else if (r == 1) { money(now_v, a, sizeof a); money(then_v, b, sizeof b); }
+        else {
+            snprintf(a, sizeof a, "%llu", (unsigned long long)now_v);
+            snprintf(b, sizeof b, "%llu", (unsigned long long)then_v);
+        }
+        canvas_puts(c, 1, row, labels[r], PAL_DIM);
+        right_text(c, row, col_this, a, PAL_FG);
+        right_text(c, row, col_last, b, PAL_DIM);
+        /* Up is amber, down is blue, so the direction reads at a glance and
+           the sign is there too for anyone who cannot tell them apart. */
+        uint16_t colour = PAL_DIM;
+        if (then_v == 0 && now_v == 0) snprintf(ch, sizeof ch, "-");
+        else if (then_v == 0) { snprintf(ch, sizeof ch, "new"); colour = pal_heat(PAL_HEAT_STEPS); }
+        else {
+            long long pct = (long long)(((double)now_v - (double)then_v) / (double)then_v * 100.0);
+            snprintf(ch, sizeof ch, "%s%lld%%", pct > 0 ? "+" : "", pct);
+            if (pct > 0) colour = pal_heat(PAL_HEAT_STEPS);
+            else if (pct < 0) colour = PAL_A0;
+        }
+        right_text(c, row, col_change, ch, colour);
+    }
+
+    /* Two rows of daily bars, the earlier week in grey, so the shape of the
+       week is visible as well as the totals. */
+    uint64_t peak = 1;
+    for (int i = 0; i < 14; i++) if (w->day[i] > peak) peak = w->day[i];
+    const int top_row = 11, bottom_row = 17;
+    int top = top_row * c->cell_h, bottom = bottom_row * c->cell_h - 2;
+    int plot_h = bottom - top;
+    for (int half = 0; half < 2; half++) {
+        int x0 = (half == 0 ? 2 : 34) * c->cell_w;
+        int width = 28 * c->cell_w, slot = width / 7, bar_w = slot - 8;
+        canvas_puts(c, x0 / c->cell_w, top_row - 1,
+                    half == 0 ? "the 7 before" : "last 7 days", PAL_DIM);
+        canvas_fill_rect(c, x0, bottom, width, 1, PAL_DIM);
+        for (int i = 0; i < 7; i++) {
+            int idx = half * 7 + i;
+            int h = (int)((double)w->day[idx] / (double)peak * plot_h * t);
+            if (h < 1 && w->day[idx] > 0 && t >= 1.0f) h = 1;
+            int bx = x0 + i * slot + 4;
+            canvas_fill_rect(c, bx, bottom - h, bar_w, h,
+                             half == 0 ? PAL_DIM : pal_heat(PAL_HEAT_STEPS));
+            if (w->today > 0) {
+                static const char *const wd = "SMTWTFS";
+                char lab[2] = { wd[timecalc_weekday(w->today - 13 + idx)], '\0' };
+                canvas_puts_px(c, bx + bar_w / 2 - c->cell_w / 2, bottom_row * c->cell_h, lab, PAL_DIM);
+            }
+        }
+    }
+
+    char note[96];
+    snprintf(note, sizeof note,
+             "bars = tokens per day; older days from Claude Code's own cache");
+    footer(c, note);
+}
+
+void views_records(canvas_t *c, const ud_view_t *d, int64_t now_us)
+{
+    canvas_clear(c);
+    const ud_records_view_t *r = &d->records;
+    char head[72], fresh[24];
+    freshness(d, now_us, fresh, sizeof fresh);
+    if (r->present && r->since > 0) {
+        char since[24];
+        full_date(r->since, since, sizeof since);
+        snprintf(head, sizeof head, "since %s   %s", since, fresh);
+    } else {
+        snprintf(head, sizeof head, "%s", fresh);
+    }
+    title(c, "RECORDS", head);
+    if (!r->present) {
+        canvas_puts(c, 1, 2, "no data yet -- run tools/push-stats.sh", PAL_DIM);
+        return;
+    }
+
+    /* Each record: what it is, the value, and when. Unknown keys are ignored,
+       so a newer collector can send more than this firmware shows. */
+    struct { const char *key, *label; int kind; } rows[] = {
+        { "bigday",   "Biggest day",               0 },   /* tokens */
+        { "costday",  "Most expensive day",        1 },   /* cents */
+        { "msgs",     "Most messages in a day",    2 },   /* count */
+        { "streak",   "Longest streak",            3 },   /* days */
+        { "session",  "Longest session",           4 },   /* seconds */
+        { "toolsess", "Most tool calls, one session", 2 },
+        { "response", "Biggest single response",   5 },   /* tokens, "tokens" */
+        { "early",    "Earliest message",          6 },   /* minute of day */
+        { "late",     "Latest message",            6 },
+    };
+    const uint16_t hi = pal_heat(PAL_HEAT_STEPS);
+    int row = 2;
+    for (size_t i = 0; i < sizeof rows / sizeof rows[0]; i++) {
+        const ud_record_t *rec = usagedata_record(r, rows[i].key);
+        if (rec == NULL) continue;
+        char val[32], when[24];
+        switch (rows[i].kind) {
+        case 0: human(rec->value, val, sizeof val); strncat(val, " tokens", sizeof val - strlen(val) - 1); break;
+        case 1: money(rec->value, val, sizeof val); break;
+        case 3: snprintf(val, sizeof val, "%llu days", (unsigned long long)rec->value); break;
+        case 4: duration((uint32_t)rec->value, val, sizeof val); break;
+        case 5: human(rec->value, val, sizeof val); strncat(val, " tokens", sizeof val - strlen(val) - 1); break;
+        case 6: snprintf(val, sizeof val, "%02llu:%02llu", (unsigned long long)rec->value / 60,
+                         (unsigned long long)rec->value % 60); break;
+        default: snprintf(val, sizeof val, "%llu", (unsigned long long)rec->value); break;
+        }
+        canvas_puts(c, 1, row, rows[i].label, PAL_DIM);
+        canvas_puts(c, 31, row, val, hi);
+        if (rec->day > 0) {
+            full_date(rec->day, when, sizeof when);
+            if (strcmp(rows[i].key, "streak") == 0) {
+                char ending[32];
+                snprintf(ending, sizeof ending, "ending %s", when);
+                right_text(c, row, c->cols - 1, ending, PAL_DIM);
+            } else {
+                right_text(c, row, c->cols - 1, when, PAL_DIM);
+            }
+        }
+        row += 2;
+        if (row >= c->rows - 1) break;
+    }
+
+    char note[96];
+    snprintf(note, sizeof note, "personal bests from the transcripts and Claude Code's cache");
+    footer(c, note);
+}
+
 /* A filled marker beside a legend or card entry. */
 static void dot(canvas_t *c, int col, int row, uint16_t colour)
 {

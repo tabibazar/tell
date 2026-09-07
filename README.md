@@ -14,8 +14,9 @@ line per model over the last two months, a heatmap of the last year in the
 style of Claude Code's own `/stats` screen, a weekday-by-hour heatmap of when
 you work, a live page for today with whether Claude is busy right now, the
 tokens by repository, the prompt-cache hit rate and what caching saved, which
-tools Claude calls, how much of its output is thinking, and what it all would
-have cost at API list prices, plus an almanac and a Settings page.
+tools Claude calls, how much of its output is thinking, this week against
+last, your personal records, and what it all would have cost at API list
+prices, plus an almanac and a Settings page.
 
 After ten minutes with no tap and no message the screensaver cycles through
 the pages, twenty seconds each, so nothing sits still long enough to burn in;
@@ -189,10 +190,10 @@ firmware bugs apart from client bugs.
 
 **Data payloads.** A text message that starts with `!stats`, `!daily`,
 `!year`, `!cost`, `!rhythm`, `!now`, `!projects`, `!cache`, `!tools`,
-`!thinking`, `!clock` or `!today` is data for a page rather than a
+`!thinking`, `!week`, `!records`, `!clock` or `!today` is data for a page rather than a
 message to show, and replaces that section for the sending machine (named on
 a `host` line) without changing what is on screen. `tools/claude-stats.py
---format data --section <name>` produces each of the first ten (or `--all
+--format data --section <name>` produces each of the first twelve (or `--all
 DIR` writes them all from one pass); the almanac and weather scripts produce
 the other two.
 

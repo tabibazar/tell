@@ -195,6 +195,14 @@ static void synthetic(void)
         usagedata_parse(&data, think, 1000000);
     }
 
+    usagedata_parse(&data, "!week\nhost air\ntoday 20703\nw tokens 638480337 1807285709\n"
+                           "w cost 71205 123980\nw msgs 5105 10751\nw sessions 12 9\n"
+                           "w tools 1760 2356\nw days 4 5\ngrid ZWcc..bZZY...Y\n", 1000000);
+    usagedata_parse(&data, "!records\nhost air\nr bigday 1448000000 20686\n"
+                           "r costday 36200 20686\nr msgs 4400 20686\nr streak 12 20703\n"
+                           "r session 1628367 20651\nr toolsess 1200 20690\n"
+                           "r response 48000 20700\nr early 365 20698\nr late 1420 20700\n"
+                           "since 20561\n", 1000000);
     usagedata_parse(&data, "!now\nhost air\ntokens 85406000\ncost 8337\nmsgs 290\n"
                            "sessions 1\navg 306469905\nlast 5\nmodel fable-5.1\n"
                            "project tell\nsession 4883\n", 1000000);
@@ -340,6 +348,28 @@ int main(int argc, char **argv)
     expect("thinking text stops short of the right edge", lit_in(W - 12, 24, W, H) == 0);
     views_thinking(&cv, &empty, 1.0f, now);
     expect("empty thinking page shows a message", lit_in(0, 48, W, 72) > 0);
+
+    /* This week against last. */
+    views_week(&cv, &view, 1.0f, now);
+    save(prefix, "week");
+    expect("week present", view.week.present);
+    expect("week table drawn", lit_in(0, 3 * 24, W, 9 * 24) > 500);
+    expect("week bars drawn on both sides",
+           lit_in(2 * 12, 11 * 24, 30 * 12, 17 * 24) > 200 && lit_in(34 * 12, 11 * 24, 62 * 12, 17 * 24) > 200);
+    expect("weekday letters drawn", lit_in(2 * 12, 17 * 24, 62 * 12, 18 * 24) > 0);
+    expect("week text stops short of the right edge", lit_in(W - 12, 24, W, H) == 0);
+    views_week(&cv, &empty, 1.0f, now);
+    expect("empty week page shows a message", lit_in(0, 48, W, 72) > 0);
+
+    /* Records. */
+    views_records(&cv, &view, now);
+    save(prefix, "records");
+    expect("records present", view.records.present && view.records.count == 9);
+    expect("nine records drawn two rows apart", lit_in(0, 2 * 24, W, 19 * 24) > 2000);
+    expect("record values in amber", count_colour(pal_heat(4)) > 300);
+    expect("records text stops short of the right edge", lit_in(W - 12, 24, W, H) == 0);
+    views_records(&cv, &empty, now);
+    expect("empty records page shows a message", lit_in(0, 48, W, 72) > 0);
 
     /* The settings page, and whether its buttons can be hit. */
     settings_t st;

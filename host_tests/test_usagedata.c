@@ -563,6 +563,56 @@ int main(void)
     parse("!thinking\nhost air\nstart 1\ntoday 3\n");
     expect("thinking without models is not drawn", !v.thinking.present);
 
+    /* This week against last. */
+    memset(&d, 0, sizeof d);
+    expect("week marker recognised",
+           parse("!week\nhost air\ntoday 20703\nw tokens 28000 1000\nw cost 500 200\n"
+                 "w msgs 15 40\nw sessions 2 5\nw tools 42 7\nw days 7 2\n"
+                 "grid ......5......A\n") == UD_WEEK);
+    expect("week rows kept in order",
+           v.week.present && v.week.this_week[0] == 28000 && v.week.last_week[0] == 1000
+           && v.week.this_week[1] == 500 && v.week.this_week[2] == 15
+           && v.week.this_week[3] == 2 && v.week.this_week[4] == 42
+           && v.week.this_week[5] == 7 && v.week.last_week[5] == 2);
+    expect("week days decoded oldest first",
+           v.week.day[6] > 5000 && v.week.day[13] == 32000 && v.week.day[0] == 0);
+    parse("!week\nhost studio\ntoday 20702\nw tokens 100 100\nw days 3 3\ngrid .............5\n");
+    expect("weeks sum across machines and cap active days",
+           v.week.this_week[0] == 28100 && v.week.this_week[5] == 7 && v.week.last_week[5] == 5);
+    expect("an older machine's days shift onto the newest today",
+           v.week.day[12] > 5000 && v.week.today == 20703);
+    parse("!week\nhost studio\ntoday 20702\nw bogus 1 1\n");
+    expect("a week with only unknown rows is dropped for that machine",
+           v.week.this_week[0] == 28000);
+
+    /* Records. */
+    memset(&d, 0, sizeof d);
+    expect("records marker recognised",
+           parse("!records\nhost air\nr bigday 7000 20703\nr streak 9 20703\n"
+                 "r session 10800 20697\nr early 365 20698\nr late 1420 20700\n"
+                 "since 20561\n") == UD_RECORDS);
+    expect("records present", v.records.present && v.records.count == 5 && v.records.since == 20561);
+    {
+        const ud_record_t *r = usagedata_record(&v.records, "bigday");
+        expect("record looked up by key", r && r->value == 7000 && r->day == 20703);
+        expect("missing record is NULL", usagedata_record(&v.records, "nope") == NULL);
+    }
+    parse("!records\nhost studio\nr bigday 9000 20600\nr early 300 20500\nr late 1000 20500\n"
+          "r response 555 20600\nsince 20400\n");
+    {
+        const ud_record_t *big = usagedata_record(&v.records, "bigday");
+        const ud_record_t *early = usagedata_record(&v.records, "early");
+        const ud_record_t *late = usagedata_record(&v.records, "late");
+        expect("the larger record wins with its day", big && big->value == 9000 && big->day == 20600);
+        expect("the earlier early wins", early && early->value == 300);
+        expect("the later late is kept", late && late->value == 1420);
+        expect("a new key is added", usagedata_record(&v.records, "response") != NULL);
+        expect("since is the earliest", v.records.since == 20400);
+    }
+    parse("!records\nhost studio\n");
+    expect("an empty records payload drops that machine's rows",
+           usagedata_record(&v.records, "response") == NULL);
+
     if (failures == 0) { printf("all tests passed\n"); return 0; }
     printf("%d test(s) failed\n", failures);
     return 1;

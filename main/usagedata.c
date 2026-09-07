@@ -105,6 +105,8 @@ ud_kind_t usagedata_parse(usagedata_t *d, const char *payload,
     else if (starts_with(payload, "!cache")) kind = UD_CACHE;
     else if (starts_with(payload, "!tools")) kind = UD_TOOLS;
     else if (starts_with(payload, "!thinking")) kind = UD_THINKING;
+    else if (starts_with(payload, "!week")) kind = UD_WEEK;
+    else if (starts_with(payload, "!records")) kind = UD_RECORDS;
     else return UD_NONE;
 
     if (kind == UD_CLOCK) {
@@ -119,7 +121,7 @@ ud_kind_t usagedata_parse(usagedata_t *d, const char *payload,
     if (kind == UD_STATS || kind == UD_DAILY || kind == UD_YEAR
         || kind == UD_COST || kind == UD_RHYTHM || kind == UD_NOW
         || kind == UD_PROJECTS || kind == UD_CACHE || kind == UD_TOOLS
-        || kind == UD_THINKING) {
+        || kind == UD_THINKING || kind == UD_WEEK || kind == UD_RECORDS) {
         char name[UD_HOST_MAX + 1];
         find_host(payload, name);
         h = host_slot(d, name);
@@ -135,6 +137,8 @@ ud_kind_t usagedata_parse(usagedata_t *d, const char *payload,
         else if (kind == UD_CACHE) memset(&h->cache, 0, sizeof h->cache);
         else if (kind == UD_TOOLS) memset(&h->tools, 0, sizeof h->tools);
         else if (kind == UD_THINKING) memset(&h->thinking, 0, sizeof h->thinking);
+        else if (kind == UD_WEEK) memset(&h->week, 0, sizeof h->week);
+        else if (kind == UD_RECORDS) memset(&h->records, 0, sizeof h->records);
         else { memset(&h->now, 0, sizeof h->now); h->now_sent_us = now_us; }
     }
 
@@ -373,6 +377,44 @@ ud_kind_t usagedata_parse(usagedata_t *d, const char *payload,
                 else if (strcmp(tag, "start") == 0) th->start = (int32_t)strtol(num, NULL, 10);
                 else if (strcmp(tag, "today") == 0) th->today = (int32_t)strtol(num, NULL, 10);
             }
+        } else if (kind == UD_WEEK) {
+            ud_week_t *w = &h->week;
+            char num[24], key[12];
+            if (strcmp(tag, "grid") == 0) {
+                token(q, w->grid, 14);
+            } else if (strcmp(tag, "today") == 0) {
+                if (token(q, num, sizeof num - 1) != NULL) w->today = (int32_t)strtol(num, NULL, 10);
+            } else if (strcmp(tag, "w") == 0) {
+                static const char *const keys[UD_WEEK_ROWS] = {
+                    "tokens", "cost", "msgs", "sessions", "tools", "days"
+                };
+                q = token(q, key, sizeof key - 1);
+                if (q == NULL) continue;
+                int row = -1;
+                for (int i = 0; i < UD_WEEK_ROWS; i++) if (strcmp(key, keys[i]) == 0) row = i;
+                if (row < 0) continue;
+                q = token(q, num, sizeof num - 1);
+                if (q == NULL) continue;
+                w->this_week[row] = strtoull(num, NULL, 10);
+                if (token(q, num, sizeof num - 1) != NULL) w->last_week[row] = strtoull(num, NULL, 10);
+                w->used = true;
+            }
+        } else if (kind == UD_RECORDS) {
+            ud_records_t *r = &h->records;
+            char num[24];
+            if (strcmp(tag, "since") == 0) {
+                if (token(q, num, sizeof num - 1) != NULL) r->since = (int32_t)strtol(num, NULL, 10);
+            } else if (strcmp(tag, "r") == 0) {
+                if (r->count >= UD_RECORD_MAX) continue;
+                ud_record_t row;
+                memset(&row, 0, sizeof row);
+                q = token(q, row.key, UD_RECORD_KEY);
+                if (q == NULL || (q = token(q, num, sizeof num - 1)) == NULL) continue;
+                row.value = strtoull(num, NULL, 10);
+                if (token(q, num, sizeof num - 1) != NULL) row.day = (int32_t)strtol(num, NULL, 10);
+                r->rows[r->count++] = row;
+                r->used = true;
+            }
         } else if (kind == UD_CLOCK) {
             /* The rest of the line is free text, so take it verbatim. */
             char *dest = NULL;
@@ -479,7 +521,7 @@ static bool contributes(const ud_host_t *h)
     return h->used && (h->model_count || h->day_count || h->year.used
                        || h->cost.used || h->rhythm.used || h->now.used
                        || h->projects.used || h->cache.used || h->tools.used
-                       || h->thinking.used);
+                       || h->thinking.used || h->week.used || h->records.used);
 }
 
 int usagedata_hosts(const usagedata_t *d)
@@ -982,9 +1024,72 @@ static void merge_thinking(const usagedata_t *d, ud_thinking_view_t *v)
     }
 }
 
+static void merge_week(const usagedata_t *d, ud_week_view_t *v)
+{
+    memset(v, 0, sizeof *v);
+    for (int i = 0; i < UD_MAX_HOSTS; i++) {
+        const ud_host_t *h = &d->hosts[i];
+        if (!h->used || !h->week.used) continue;
+        v->present = true;
+        if (h->week.today > v->today) v->today = h->week.today;
+        for (int r = 0; r < UD_WEEK_ROWS; r++) {
+            v->this_week[r] += h->week.this_week[r];
+            v->last_week[r] += h->week.last_week[r];
+        }
+    }
+    /* Active days cannot exceed seven however many machines were busy. */
+    if (v->this_week[5] > 7) v->this_week[5] = 7;
+    if (v->last_week[5] > 7) v->last_week[5] = 7;
+    for (int i = 0; i < UD_MAX_HOSTS; i++) {
+        const ud_host_t *h = &d->hosts[i];
+        if (!h->used || !h->week.used || h->week.today <= 0) continue;
+        /* Line the fourteen days up on the newest today. */
+        int shift = (int)(v->today - h->week.today);
+        for (int c = 0; h->week.grid[c] != '\0' && c < 14; c++) {
+            int idx = c - shift;
+            if (idx >= 0 && idx < 14) v->day[idx] += usagedata_grid_value(h->week.grid[c]);
+        }
+    }
+}
+
+static void merge_records(const usagedata_t *d, ud_records_view_t *v)
+{
+    memset(v, 0, sizeof *v);
+    for (int i = 0; i < UD_MAX_HOSTS; i++) {
+        const ud_host_t *h = &d->hosts[i];
+        if (!h->used || !h->records.used) continue;
+        v->present = true;
+        if (h->records.since > 0 && (v->since == 0 || h->records.since < v->since))
+            v->since = h->records.since;
+        for (int r = 0; r < h->records.count; r++) {
+            const ud_record_t *row = &h->records.rows[r];
+            bool smaller_wins = strcmp(row->key, "early") == 0;
+            int j;
+            for (j = 0; j < v->count; j++)
+                if (strcmp(v->rows[j].key, row->key) == 0) break;
+            if (j == v->count) {
+                if (v->count >= UD_RECORD_MAX) continue;
+                v->rows[v->count++] = *row;
+            } else if (smaller_wins ? row->value < v->rows[j].value
+                                    : row->value > v->rows[j].value) {
+                v->rows[j] = *row;
+            }
+        }
+    }
+}
+
+const ud_record_t *usagedata_record(const ud_records_view_t *r, const char *key)
+{
+    for (int i = 0; i < r->count; i++)
+        if (strcmp(r->rows[i].key, key) == 0) return &r->rows[i];
+    return NULL;
+}
+
 void usagedata_merge(const usagedata_t *d, ud_view_t *out)
 {
     memset(out, 0, sizeof *out);
+    merge_week(d, &out->week);
+    merge_records(d, &out->records);
     merge_tools(d, &out->tools);
     merge_thinking(d, &out->thinking);
     merge_projects(d, &out->projects);

@@ -12,6 +12,8 @@
     tools/claude-stats.py --format data --section cache  # prompt-cache hit rate
     tools/claude-stats.py --format data --section tools  # which tools Claude calls
     tools/claude-stats.py --format data --section thinking  # thinking vs visible output
+    tools/claude-stats.py --format data --section week   # last 7 days vs the 7 before
+    tools/claude-stats.py --format data --section records  # personal bests
 
 Reads the session transcripts under ~/.claude/projects for recent, exact
 figures, and merges ~/.claude/stats-cache.json for the months before that:
@@ -176,6 +178,10 @@ def collect(pattern=TRANSCRIPTS, cache=None):
     daily_tools = collections.Counter()
     thinking = collections.defaultdict(lambda: [0, 0])         # model -> [thinking, output]
     daily_thinking = collections.defaultdict(lambda: [0, 0])   # day -> [thinking, output]
+    session_tools = collections.Counter()                      # session id -> tool calls
+    session_day = {}                                           # session id -> first day
+    biggest_response = (0, None)                               # output tokens, day
+    first_minute = last_minute = None                          # (minute of day, day)
     files = 0
     calls = 0
     first_day = last_day = None
@@ -250,6 +256,19 @@ def collect(pattern=TRANSCRIPTS, cache=None):
                 rhythm[(when.weekday(), when.hour)] += 1
                 rhythm_days.add(day)
                 daily_tools[day] += n_tools
+                sid = d.get("sessionId")
+                if sid:
+                    session_tools[sid] += n_tools
+                    if sid not in session_day or day < session_day[sid]:
+                        session_day[sid] = day
+                out_tokens = u.get("output_tokens") or 0
+                if out_tokens > biggest_response[0]:
+                    biggest_response = (out_tokens, day)
+                minute = when.hour * 60 + when.minute
+                if first_minute is None or minute < first_minute[0]:
+                    first_minute = (minute, day)
+                if last_minute is None or minute > last_minute[0]:
+                    last_minute = (minute, day)
                 if think is not None:
                     thinking[model][0] += think or 0
                     thinking[model][1] += u.get("output_tokens") or 0
@@ -292,7 +311,10 @@ def collect(pattern=TRANSCRIPTS, cache=None):
              "projects": projects, "daily_cache": daily_cache,
              "tools": tools, "daily_tools": daily_tools,
              "tx_sessions": len(sessions), "tx_calls": calls,
-             "thinking": thinking, "daily_thinking": daily_thinking}
+             "thinking": thinking, "daily_thinking": daily_thinking,
+             "session_tools": session_tools, "session_day": session_day,
+             "biggest_response": biggest_response,
+             "earliest_minute": first_minute, "latest_minute": last_minute}
     if cache is None:
         cache = load_cache()
     elif isinstance(cache, str):
@@ -375,13 +397,26 @@ def merge_cache(stats, cache, sessions):
             daily_cost[d] += t * rate.get(name, 0.0)
 
     daily_tools = stats.get("daily_tools")
+    msgs_by_day = stats.get("msgs_by_day")
+    sessions_by_day = stats.get("sessions_by_day")
+    cache_sessions_by_day = {}
     if daily_tools is not None:
-        for d in [d for d in daily_tools if d <= cutoff]:
-            del daily_tools[d]
+        for series in (daily_tools, msgs_by_day):
+            for d in [d for d in series if d <= cutoff]:
+                del series[d]
+        for d in [d for d in sessions_by_day if d <= cutoff]:
+            del sessions_by_day[d]
         for r in cache.get("dailyActivity") or []:
             d = r.get("date")
-            if isinstance(d, str) and d <= cutoff and r.get("toolCallCount"):
+            if not isinstance(d, str) or d > cutoff:
+                continue
+            if r.get("toolCallCount"):
                 daily_tools[d] += int(r["toolCallCount"])
+            if r.get("messageCount"):
+                msgs_by_day[d] += int(r["messageCount"])
+            if r.get("sessionCount"):
+                cache_sessions_by_day[d] = int(r["sessionCount"])
+    stats["cache_sessions_by_day"] = cache_sessions_by_day
 
     # Older still, the cache knows only that there were messages. Estimate
     # tokens from the average message on the days where both are known, so
@@ -802,8 +837,110 @@ def render_thinking(stats, today=None):
     return lines
 
 
+def sessions_on(stats, day):
+    """Sessions active on a day: the transcripts' set, or the cache's count."""
+    live = stats.get("sessions_by_day", {}).get(day)
+    if live:
+        return len(live)
+    return stats.get("cache_sessions_by_day", {}).get(day, 0)
+
+
+def render_week(stats, today=None):
+    """The !week payload: the last seven days against the seven before."""
+    today = today or dt.date.today()
+    days = [(today - dt.timedelta(days=i)).isoformat() for i in range(14)]
+    this, last = days[:7], days[7:]
+
+    def total(series, window):
+        return sum(series.get(d, 0) for d in window)
+
+    daily, daily_cost = stats["daily"], stats.get("daily_cost", {})
+    msgs, tools_by_day = stats.get("msgs_by_day", {}), stats.get("daily_tools", {})
+    lines = ["!week", "host %s" % host_name(), "today %d" % day_number(today),
+             "w tokens %d %d" % (total(daily, this), total(daily, last)),
+             "w cost %d %d" % (cents(total(daily_cost, this)), cents(total(daily_cost, last))),
+             "w msgs %d %d" % (total(msgs, this), total(msgs, last)),
+             "w sessions %d %d" % (sum(sessions_on(stats, d) for d in this),
+                                   sum(sessions_on(stats, d) for d in last)),
+             "w tools %d %d" % (total(tools_by_day, this), total(tools_by_day, last)),
+             "w days %d %d" % (sum(1 for d in this if daily.get(d, 0) > 0),
+                               sum(1 for d in last if daily.get(d, 0) > 0))]
+    # Fourteen days of tokens, oldest first, for the two rows of bars.
+    lines.append("grid %s" % "".join(grid_char(daily.get(d, 0)) for d in reversed(days)))
+    return lines
+
+
+def longest_streak(daily):
+    """The longest run of consecutive active days, and the day it ended."""
+    best, best_end, run, prev = 0, None, 0, None
+    for d in sorted(d for d, t in daily.items() if t > 0):
+        day = dt.date.fromisoformat(d)
+        run = run + 1 if prev is not None and (day - prev).days == 1 else 1
+        prev = day
+        if run > best:
+            best, best_end = run, d
+    return best, best_end
+
+
+def render_records(stats, cache=None):
+    """The !records payload: personal bests, each with the day it happened."""
+    daily, daily_cost = stats["daily"], stats.get("daily_cost", {})
+    msgs = stats.get("msgs_by_day", {})
+    lines = ["!records", "host %s" % host_name()]
+
+    def record(key, value, day):
+        if value and day:
+            lines.append("r %s %d %d" % (key, value, day_number(dt.date.fromisoformat(day))))
+
+    if daily:
+        d = max(daily, key=daily.get)
+        record("bigday", daily[d], d)
+    if daily_cost:
+        d = max(daily_cost, key=daily_cost.get)
+        record("costday", cents(daily_cost[d]), d)
+    if msgs:
+        d = max(msgs, key=msgs.get)
+        record("msgs", msgs[d], d)
+    streak, end = longest_streak(daily)
+    record("streak", streak, end)
+
+    # Longest session: the transcripts' spans, or the cache's if longer.
+    best_secs, best_day = 0, None
+    for sid, (first, last) in stats.get("session_spans", {}).items():
+        if first is not None and last is not None and last - first > best_secs:
+            best_secs = int(last - first)
+            best_day = dt.datetime.fromtimestamp(first).date().isoformat()
+    cache = cache if cache is not None else load_cache()
+    longest = (cache or {}).get("longestSession") or {}
+    if isinstance(longest, dict) and (longest.get("duration") or 0) / 1000 > best_secs:
+        when = local_stamp(longest.get("timestamp") or "")
+        if when is not None:
+            best_secs = int(longest["duration"] / 1000)
+            best_day = when.date().isoformat()
+    record("session", best_secs, best_day)
+
+    session_tools = stats.get("session_tools", {})
+    if session_tools:
+        sid = max(session_tools, key=session_tools.get)
+        record("toolsess", session_tools[sid], stats.get("session_day", {}).get(sid))
+    tokens, day = stats.get("biggest_response") or (0, None)
+    record("response", tokens, day)
+    early, late = stats.get("earliest_minute"), stats.get("latest_minute")
+    if early:
+        lines.append("r early %d %d" % (early[0], day_number(dt.date.fromisoformat(early[1]))))
+    if late:
+        lines.append("r late %d %d" % (late[0], day_number(dt.date.fromisoformat(late[1]))))
+    if stats.get("first_day"):
+        lines.append("since %d" % day_number(dt.date.fromisoformat(stats["first_day"])))
+    return lines
+
+
 def render_data(stats, section, today=None):
     """Marker-prefixed lines for the firmware to parse."""
+    if section == "week":
+        return render_week(stats, today)
+    if section == "records":
+        return render_records(stats)
     if section == "tools":
         return render_tools(stats, today)
     if section == "thinking":
@@ -1088,6 +1225,39 @@ def self_test():
         failures += 1
     print("ok   thinking payload (%d bytes)" % len(payload))
 
+    fake["daily"] = collections.Counter({"2026-09-0%d" % i: i * 1000 for i in range(1, 8)})
+    fake["daily"].update({"2026-08-3%d" % i: 500 for i in range(0, 2)})
+    fake["msgs_by_day"] = collections.Counter({"2026-09-07": 12, "2026-09-01": 3, "2026-08-30": 40})
+    fake["sessions_by_day"] = {"2026-09-07": {"a", "b"}}
+    fake["cache_sessions_by_day"] = {"2026-08-30": 5}
+    fake["daily_tools"] = collections.Counter({"2026-09-07": 42, "2026-08-31": 7})
+    payload = "\n".join(render_week(fake, dt.date(2026, 9, 7)))
+    grid = [l for l in payload.split("\n") if l.startswith("grid ")][0][5:]
+    if "w tokens 28000 1000" not in payload or "w msgs 15 40" not in payload \
+            or "w sessions 2 5" not in payload or "w tools 42 7" not in payload \
+            or "w days 7 2" not in payload or len(grid) != 14 or grid[-1] == "." or grid[0] != ".":
+        print("FAIL week payload:\n%s" % payload)
+        failures += 1
+    print("ok   week payload (%d bytes)" % len(payload))
+
+    fake["session_spans"] = {"a": [dt.datetime(2026, 9, 1, 9).timestamp(),
+                                   dt.datetime(2026, 9, 1, 12).timestamp()]}
+    fake["session_tools"] = collections.Counter({"a": 300})
+    fake["session_day"] = {"a": "2026-09-01"}
+    fake["biggest_response"] = (12345, "2026-09-03")
+    fake["earliest_minute"] = (6 * 60 + 5, "2026-09-02")
+    fake["latest_minute"] = (23 * 60 + 40, "2026-09-04")
+    fake["first_day"] = "2026-08-30"
+    payload = "\n".join(render_records(fake, cache={}))
+    if "r bigday 7000 20703" not in payload or "r streak 9 20703" not in payload \
+            or "r session 10800 20697" not in payload or "r toolsess 300 20697" not in payload \
+            or "r response 12345 20699" not in payload or "r early 365 20698" not in payload \
+            or "r late 1420 20700" not in payload or "r msgs 40 20695" not in payload \
+            or "since 20695" not in payload:
+        print("FAIL records payload:\n%s" % payload)
+        failures += 1
+    print("ok   records payload (%d bytes)" % len(payload))
+
     print("all tests passed" if not failures else "%d test(s) failed" % failures)
     return 1 if failures else 0
 
@@ -1100,7 +1270,8 @@ def main():
     ap.add_argument("--format", choices=("ascii", "data"), default="ascii")
     ap.add_argument("--section",
                     choices=("stats", "daily", "year", "cost", "rhythm", "now",
-                             "projects", "cache", "tools", "thinking"),
+                             "projects", "cache", "tools", "thinking", "week",
+                             "records"),
                     default="stats")
     ap.add_argument("--no-cache", action="store_true",
                     help="transcripts only; skip ~/.claude/stats-cache.json")
@@ -1115,7 +1286,7 @@ def main():
     if a.all:
         os.makedirs(a.all, exist_ok=True)
         for section in ("stats", "daily", "year", "cost", "rhythm", "now",
-                        "projects", "cache", "tools", "thinking"):
+                        "projects", "cache", "tools", "thinking", "week", "records"):
             with open(os.path.join(a.all, section + ".txt"), "w") as f:
                 f.write("\n".join(render_data(stats, section)) + "\n")
         return

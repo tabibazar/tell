@@ -150,6 +150,31 @@ typedef struct {
     int model_count;
 } ud_thinking_t;
 
+/* The last seven days against the seven before, one machine. */
+#define UD_WEEK_ROWS 6
+typedef struct {
+    bool used;
+    int32_t today;
+    uint64_t this_week[UD_WEEK_ROWS], last_week[UD_WEEK_ROWS];
+    char grid[15];               /* fourteen days of tokens, oldest first */
+} ud_week_t;
+
+/* Personal bests, one machine: a value and the day it happened. */
+#define UD_RECORD_MAX 10
+#define UD_RECORD_KEY 9
+typedef struct {
+    char key[UD_RECORD_KEY + 1];
+    uint64_t value;
+    int32_t day;
+} ud_record_t;
+
+typedef struct {
+    bool used;
+    ud_record_t rows[UD_RECORD_MAX];
+    int count;
+    int32_t since;               /* first day with anything, 0 if not sent */
+} ud_records_t;
+
 /* One machine's contribution. Kept separately so a re-push from one Mac
    replaces only its own share instead of clobbering the other's. */
 typedef struct {
@@ -167,6 +192,8 @@ typedef struct {
     ud_cache_t cache;
     ud_tools_t tools;
     ud_thinking_t thinking;
+    ud_week_t week;
+    ud_records_t records;
     int64_t now_sent_us;     /* when the now section arrived, to age "last" */
     int64_t updated_us;      /* when this machine last sent anything */
     bool used;
@@ -290,6 +317,24 @@ typedef struct {
     int8_t pct[UD_MDAYS];                 /* -1 when no machine reported that day */
 } ud_thinking_view_t;
 
+/* Every machine's week, summed. Row order: tokens, cost (cents), messages,
+   sessions, tool calls, active days. */
+typedef struct {
+    bool present;
+    int32_t today;
+    uint64_t this_week[UD_WEEK_ROWS], last_week[UD_WEEK_ROWS];
+    uint64_t day[14];            /* tokens, oldest first */
+} ud_week_view_t;
+
+/* Every machine's records: the best across machines for each key, except
+   "early", where the smallest wins. */
+typedef struct {
+    bool present;
+    ud_record_t rows[UD_RECORD_MAX];
+    int count;
+    int32_t since;
+} ud_records_view_t;
+
 /* Every machine's data summed, which is what the charts draw. */
 typedef struct {
     ud_model_t models[UD_MAX_MODELS];
@@ -312,6 +357,8 @@ typedef struct {
     ud_cache_view_t cache;
     ud_tools_view_t tools;
     ud_thinking_view_t thinking;
+    ud_week_view_t week;
+    ud_records_view_t records;
 
     /* Each model's tokens per day, every machine summed, on the window of the
        machine that sent most recently. mlen is 0 when no machine sent grids. */
@@ -322,7 +369,8 @@ typedef struct {
 
 typedef enum {
     UD_NONE = 0, UD_STATS, UD_DAILY, UD_CLOCK, UD_TODAY, UD_YEAR, UD_COST,
-    UD_RHYTHM, UD_NOW, UD_PROJECTS, UD_CACHE, UD_TOOLS, UD_THINKING
+    UD_RHYTHM, UD_NOW, UD_PROJECTS, UD_CACHE, UD_TOOLS, UD_THINKING,
+    UD_WEEK, UD_RECORDS
 } ud_kind_t;
 
 /* Parses one payload. "!stats" and "!daily" replace that section for the
@@ -346,6 +394,9 @@ uint64_t usagedata_grid_value(char c);
 /* A percentage from a linear grid character (the same alphabet, 0..100
    spread over its 62 steps); -1 for '.' or anything unknown. */
 int usagedata_pct_value(char c);
+
+/* A record by key from the merged view, NULL if none. */
+const ud_record_t *usagedata_record(const ud_records_view_t *r, const char *key);
 
 /* How many machines have sent anything, and the name of the nth. */
 int usagedata_hosts(const usagedata_t *d);

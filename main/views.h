@@ -45,6 +45,13 @@ void views_tools(canvas_t *c, const ud_view_t *d, float t, int64_t now_us);
 /* Thinking share: how much of each model's output was thinking. */
 void views_thinking(canvas_t *c, const ud_view_t *d, float t, int64_t now_us);
 
+/* This week against last: six figures with their change, and two rows of
+   daily bars. `t` grows the bars. */
+void views_week(canvas_t *c, const ud_view_t *d, float t, int64_t now_us);
+
+/* Records: personal bests, each with the day it happened. */
+void views_records(canvas_t *c, const ud_view_t *d, int64_t now_us);
+
 /* The settings page: each setting as a row of buttons, the current choice
    lit. Touch only, so it is not offered on the Feather. */
 void views_settings(canvas_t *c, const settings_t *s);

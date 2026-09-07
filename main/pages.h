@@ -9,6 +9,7 @@ typedef enum {
        and the two text-heavy ones sit last, just before the clock returns. */
     PAGE_CLOCK = 0,
     PAGE_NOW,        /* today so far, and whether Claude is busy */
+    PAGE_WEEK,       /* the last seven days against the seven before */
     PAGE_STATS,
     PAGE_TODAY,
     PAGE_MODELS,     /* tokens per day, one line per model */
@@ -19,6 +20,7 @@ typedef enum {
     PAGE_CACHE,      /* prompt-cache hit rate and savings */
     PAGE_TOOLS,      /* which tools Claude calls */
     PAGE_THINKING,   /* thinking versus visible output */
+    PAGE_RECORDS,    /* personal bests */
     PAGE_MESSAGE,
     PAGE_DAILY,      /* tokens per day as bars */
     PAGE_SETTINGS,   /* touch-only; last, so it is out of the way */
