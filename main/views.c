@@ -96,27 +96,32 @@ void views_stats(canvas_t *c, const usagedata_t *d)
 void views_daily(canvas_t *c, const usagedata_t *d)
 {
     canvas_clear(c);
-    title(c, "TOKENS PER DAY", "tokens");
 
     if (d->day_count == 0) {
+        title(c, "TOKENS PER DAY", NULL);
         canvas_puts(c, 1, 2, "no data yet -- run tools/push-stats.sh", PAL_DIM);
         return;
     }
 
+    char range[24];
+    snprintf(range, sizeof range, "%s to %s",
+             d->days[0].label, d->days[d->day_count - 1].label);
+    title(c, "TOKENS PER DAY", range);
+
     uint64_t peak = 1, grand = 0;
+    int peak_i = 0;
     for (int i = 0; i < d->day_count; i++) {
         grand += d->days[i].tokens;
-        if (d->days[i].tokens > peak) peak = d->days[i].tokens;
+        if (d->days[i].tokens > peak) { peak = d->days[i].tokens; peak_i = i; }
     }
 
-    /* Left gutter for the value axis, bottom rows for dates and the footnote. */
+    /* Left gutter for the value axis; bottom rows for dates, legend, notes. */
     int gutter = 7 * c->cell_w;
     int top = 2 * c->cell_h;
-    int bottom = (c->rows - 3) * c->cell_h;
+    int bottom = (c->rows - 4) * c->cell_h;
     int plot_h = bottom - top;
     int plot_w = c->w - gutter - c->cell_w;
 
-    /* Gridlines every quarter, labelled, so bar heights mean something. */
     for (int q = 0; q <= 4; q++) {
         int y = bottom - plot_h * q / 4;
         canvas_fill_rect(c, gutter, y, plot_w, 1, PAL_DIM);
@@ -124,29 +129,47 @@ void views_daily(canvas_t *c, const usagedata_t *d)
         human(peak * (uint64_t)q / 4, lab, sizeof lab);
         right_text(c, y / c->cell_h, gutter / c->cell_w - 1, lab, PAL_DIM);
     }
-    /* The axis itself. */
     canvas_fill_rect(c, gutter, top, 1, plot_h + 1, PAL_DIM);
 
     int slot = plot_w / d->day_count;
     int bar_w = slot > 4 ? slot - 4 : slot;
+    int last = d->day_count - 1;
 
     for (int i = 0; i < d->day_count; i++) {
         int h = (int)((double)d->days[i].tokens / (double)peak * plot_h);
         if (h < 2 && d->days[i].tokens > 0) h = 2;
-        canvas_fill_rect(c, gutter + i * slot + 2, bottom - h, bar_w, h,
-                         pal_accent(i));
+        /* One colour for every day: cycling accents implied categories that
+           do not exist. Today and the peak are the only distinctions. */
+        uint16_t colour = PAL_A0;
+        if (i == last) colour = PAL_A3;
+        else if (i == peak_i) colour = PAL_A2;
+        canvas_fill_rect(c, gutter + i * slot + 2, bottom - h, bar_w, h, colour);
 
-        /* Labels are 5 chars wide; skip alternate ones when slots are tight. */
         if (slot >= 6 * c->cell_w || (i % 2) == 0)
-            canvas_puts(c, (gutter + i * slot) / c->cell_w, c->rows - 2,
+            canvas_puts(c, (gutter + i * slot) / c->cell_w, c->rows - 3,
                         d->days[i].label, PAL_DIM);
     }
 
-    char note[96], total[16], avg[16];
-    human(grand, total, sizeof total);
+    /* Legend: swatches, so the three colours are not left to guess at. */
+    int row = c->rows - 2;
+    int y = row * c->cell_h + c->cell_h / 4;
+    int sw = c->cell_w;
+    canvas_fill_rect(c, 1 * c->cell_w, y, sw, c->cell_h / 2, PAL_A0);
+    canvas_puts(c, 3, row, "a day", PAL_DIM);
+    canvas_fill_rect(c, 10 * c->cell_w, y, sw, c->cell_h / 2, PAL_A2);
+    canvas_puts(c, 12, row, "busiest", PAL_DIM);
+    canvas_fill_rect(c, 22 * c->cell_w, y, sw, c->cell_h / 2, PAL_A3);
+    canvas_puts(c, 24, row, "most recent", PAL_DIM);
+
+    char peak_lab[16], avg[16], total[16];
+    human(peak, peak_lab, sizeof peak_lab);
     human(grand / (uint64_t)d->day_count, avg, sizeof avg);
+    human(grand, total, sizeof total);
+    canvas_puts(c, 38, row, "bar = in+out+cache tokens", PAL_DIM);
+
+    char note[96];
     snprintf(note, sizeof note,
-             "all tokens per day   %d days   %s total   %s/day average",
-             d->day_count, total, avg);
+             "peak %s on %s   avg %s/day   %s over %d days",
+             peak_lab, d->days[peak_i].label, avg, total, d->day_count);
     footer(c, note);
 }
