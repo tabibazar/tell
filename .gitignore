@@ -16,3 +16,4 @@ sdkconfig
 sdkconfig.crowpanel
 sdkconfig.crowpanel.old
 sdkconfig.old
+.claude/settings.local.json

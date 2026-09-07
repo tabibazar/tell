@@ -2,12 +2,16 @@
 # Installs the launchd agent that refreshes the board's stats every minute.
 set -e
 cd "$(dirname "$0")/.."
-PLIST="$HOME/Library/LaunchAgents/com.tabibazar.tell-stats.plist"
-
 mkdir -p "$HOME/Library/LaunchAgents"
-cp tools/com.tabibazar.tell-stats.plist "$PLIST"
 
-launchctl bootout "gui/$(id -u)/com.tabibazar.tell-stats" 2>/dev/null || true
-launchctl bootstrap "gui/$(id -u)" "$PLIST"
-echo "installed; logs in /tmp/tell-stats.log and /tmp/tell-stats.err"
-echo "remove with: launchctl bootout gui/$(id -u)/com.tabibazar.tell-stats"
+# tell-stats refreshes the charts; screen-pump ships the running log.
+for name in tell-stats screen-pump; do
+    label="com.tabibazar.$name"
+    plist="$HOME/Library/LaunchAgents/$label.plist"
+    cp "tools/$label.plist" "$plist"
+    launchctl bootout "gui/$(id -u)/$label" 2>/dev/null || true
+    launchctl bootstrap "gui/$(id -u)" "$plist"
+    echo "installed $label"
+done
+echo "logs: /tmp/tell-stats.log /tmp/screen-pump.log (and .err)"
+echo "remove: launchctl bootout gui/$(id -u)/com.tabibazar.<name>"
