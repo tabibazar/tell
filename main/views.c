@@ -3,93 +3,150 @@
 #include "palette.h"
 
 #include <stdio.h>
+#include <string.h>
 
 /* Compact magnitude: a billion has to fit in a narrow column. */
 static void human(uint64_t n, char *out, int size)
 {
     if (n >= 1000000000ULL) snprintf(out, size, "%.1fB", n / 1e9);
     else if (n >= 1000000ULL) snprintf(out, size, "%.1fM", n / 1e6);
-    else if (n >= 1000ULL) snprintf(out, size, "%.1fK", n / 1e3);
+    else if (n >= 1000ULL) snprintf(out, size, "%.0fK", n / 1e3);
     else snprintf(out, size, "%llu", (unsigned long long)n);
 }
 
-static void title(canvas_t *c, const char *text)
+static void title(canvas_t *c, const char *left, const char *right)
 {
     canvas_fill_rect(c, 0, 0, c->w, c->cell_h, PAL_TITLE_BG);
-    canvas_puts(c, 1, 0, text, PAL_FG);
+    canvas_puts(c, 1, 0, left, PAL_FG);
+    if (right)
+        canvas_puts(c, c->cols - 1 - (int)strlen(right), 0, right, PAL_FG);
+}
+
+/* A footnote explaining what was actually measured. Without it a bar chart is
+   decoration: the reader cannot tell tokens from calls, or which window. */
+static void footer(canvas_t *c, const char *text)
+{
+    canvas_puts(c, 1, c->rows - 1, text, PAL_DIM);
+}
+
+static void right_text(canvas_t *c, int row, int right_col, const char *s,
+                       uint16_t colour)
+{
+    canvas_puts(c, right_col - (int)strlen(s), row, s, colour);
 }
 
 void views_stats(canvas_t *c, const usagedata_t *d)
 {
     canvas_clear(c);
-    title(c, "USAGE BY MODEL");
+    title(c, "USAGE BY MODEL", "tokens");
 
     if (d->model_count == 0) {
-        canvas_puts(c, 1, 2, "no data yet", PAL_DIM);
+        canvas_puts(c, 1, 2, "no data yet -- run tools/push-stats.sh", PAL_DIM);
         return;
     }
 
-    uint64_t peak = 1;
+    uint64_t peak = 1, grand = 0;
     for (int i = 0; i < d->model_count; i++) {
         uint64_t t = d->models[i].cread + d->models[i].out;
+        grand += t;
         if (t > peak) peak = t;
     }
 
-    int cell_w = c->cell_w;
-    int cell_h = c->cell_h;
-    int bar_x = 17 * cell_w;
-    int bar_max = c->w - bar_x - 9 * cell_w;
+    canvas_puts(c, 1, 1, "model", PAL_DIM);
+    canvas_puts(c, 17, 1, "share of busiest model", PAL_DIM);
+    right_text(c, 1, c->cols - 1, "total", PAL_DIM);
 
-    for (int i = 0; i < d->model_count && i + 2 < c->rows; i++) {
-        int row = i + 2;
+    int bar_x = 17 * c->cell_w;
+    int bar_max = c->w - bar_x - 10 * c->cell_w;
+
+    /* Quarter gridlines behind the bars, so a bar's length has a value. */
+    int first_row = 3, last_row = first_row + d->model_count;
+    for (int q = 1; q <= 4; q++) {
+        int x = bar_x + bar_max * q / 4;
+        canvas_fill_rect(c, x, first_row * c->cell_h, 1,
+                         (last_row - first_row) * c->cell_h, PAL_DIM);
+        char lab[16];
+        human(peak * (uint64_t)q / 4, lab, sizeof lab);
+        canvas_puts(c, x / c->cell_w - (int)strlen(lab) + 1, 2, lab, PAL_DIM);
+    }
+
+    for (int i = 0; i < d->model_count && first_row + i < c->rows - 2; i++) {
+        int row = first_row + i;
         canvas_puts(c, 1, row, d->models[i].name, PAL_FG);
 
         uint64_t total = d->models[i].cread + d->models[i].out;
         int width = (int)((double)total / (double)peak * bar_max);
         if (width < 2 && total > 0) width = 2;
-        canvas_fill_rect(c, bar_x, row * cell_h + cell_h / 4,
-                         width, cell_h / 2, pal_accent(i));
+        canvas_fill_rect(c, bar_x, row * c->cell_h + c->cell_h / 4,
+                         width, c->cell_h / 2, pal_accent(i));
 
         char value[16];
         human(total, value, sizeof value);
-        canvas_puts(c, c->cols - 8, row, value, PAL_DIM);
+        right_text(c, row, c->cols - 1, value, PAL_FG);
     }
+
+    char note[96], total[16];
+    human(grand, total, sizeof total);
+    snprintf(note, sizeof note,
+             "bar = output + cache-read tokens   %d models   %s total",
+             d->model_count, total);
+    footer(c, note);
 }
 
 void views_daily(canvas_t *c, const usagedata_t *d)
 {
     canvas_clear(c);
-    title(c, "TOKENS PER DAY");
+    title(c, "TOKENS PER DAY", "tokens");
 
     if (d->day_count == 0) {
-        canvas_puts(c, 1, 2, "no data yet", PAL_DIM);
+        canvas_puts(c, 1, 2, "no data yet -- run tools/push-stats.sh", PAL_DIM);
         return;
     }
 
-    uint64_t peak = 1;
-    for (int i = 0; i < d->day_count; i++)
+    uint64_t peak = 1, grand = 0;
+    for (int i = 0; i < d->day_count; i++) {
+        grand += d->days[i].tokens;
         if (d->days[i].tokens > peak) peak = d->days[i].tokens;
+    }
 
-    int cell_w = c->cell_w;
-    int cell_h = c->cell_h;
-    int top = 2 * cell_h;
-    int bottom = c->h - cell_h;          /* leave a row for date labels */
+    /* Left gutter for the value axis, bottom rows for dates and the footnote. */
+    int gutter = 7 * c->cell_w;
+    int top = 2 * c->cell_h;
+    int bottom = (c->rows - 3) * c->cell_h;
     int plot_h = bottom - top;
-    int slot = c->w / d->day_count;
+    int plot_w = c->w - gutter - c->cell_w;
+
+    /* Gridlines every quarter, labelled, so bar heights mean something. */
+    for (int q = 0; q <= 4; q++) {
+        int y = bottom - plot_h * q / 4;
+        canvas_fill_rect(c, gutter, y, plot_w, 1, PAL_DIM);
+        char lab[16];
+        human(peak * (uint64_t)q / 4, lab, sizeof lab);
+        right_text(c, y / c->cell_h, gutter / c->cell_w - 1, lab, PAL_DIM);
+    }
+    /* The axis itself. */
+    canvas_fill_rect(c, gutter, top, 1, plot_h + 1, PAL_DIM);
+
+    int slot = plot_w / d->day_count;
     int bar_w = slot > 4 ? slot - 4 : slot;
 
     for (int i = 0; i < d->day_count; i++) {
         int h = (int)((double)d->days[i].tokens / (double)peak * plot_h);
         if (h < 2 && d->days[i].tokens > 0) h = 2;
-        canvas_fill_rect(c, i * slot + 2, bottom - h, bar_w, h, pal_accent(i));
+        canvas_fill_rect(c, gutter + i * slot + 2, bottom - h, bar_w, h,
+                         pal_accent(i));
 
-        /* Labels are 5 chars; print every other one when the slots are tight. */
-        if (slot >= 6 * cell_w || (i % 2) == 0)
-            canvas_puts(c, (i * slot) / cell_w, c->rows - 1,
+        /* Labels are 5 chars wide; skip alternate ones when slots are tight. */
+        if (slot >= 6 * c->cell_w || (i % 2) == 0)
+            canvas_puts(c, (gutter + i * slot) / c->cell_w, c->rows - 2,
                         d->days[i].label, PAL_DIM);
     }
 
-    char value[16];
-    human(peak, value, sizeof value);
-    canvas_puts(c, c->cols - 9, 1, value, PAL_DIM);
+    char note[96], total[16], avg[16];
+    human(grand, total, sizeof total);
+    human(grand / (uint64_t)d->day_count, avg, sizeof avg);
+    snprintf(note, sizeof note,
+             "all tokens per day   %d days   %s total   %s/day average",
+             d->day_count, total, avg);
+    footer(c, note);
 }

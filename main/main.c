@@ -126,7 +126,16 @@ void app_main(void)
             switch (s_pages.current) {
             case PAGE_STATS:   views_stats(c, &s_data); display_blit(); break;
             case PAGE_DAILY:   views_daily(c, &s_data); display_blit(); break;
-            case PAGE_MESSAGE: canvas_text(c, s_message); display_blit(); break;
+            case PAGE_MESSAGE:
+                /* A blank page says nothing about what it is or why it is
+                   empty, so name it rather than showing nothing. */
+                /* This page carries Claude's running commentary while it
+                   works. Name it, so an empty one reads as "idle" rather
+                   than as a broken screen. */
+                canvas_text(c, s_message[0] ? s_message
+                                            : "CLAUDE\n\nidle -- no update yet");
+                display_blit();
+                break;
             default: break;
             }
         }
