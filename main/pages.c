@@ -7,6 +7,24 @@ void pages_init(pages_t *p, unsigned available)
     p->current = PAGE_CLOCK;
     p->last_activity_us = 0;
     p->last_rotate_us = 0;
+    p->saver_us = PAGES_SAVER_US;
+}
+
+void pages_set_saver(pages_t *p, int64_t us)
+{
+    p->saver_us = us < 0 ? 0 : us;
+}
+
+page_t pages_step(pages_t *p, unsigned skip)
+{
+    for (int i = 1; i <= PAGE_COUNT; i++) {
+        page_t candidate = (page_t)(((int)p->current + i) % PAGE_COUNT);
+        if ((p->available & PAGE_BIT(candidate)) && !(skip & PAGE_BIT(candidate))) {
+            p->current = candidate;
+            break;
+        }
+    }
+    return p->current;
 }
 
 page_t pages_advance(pages_t *p, int64_t now_us)
@@ -39,7 +57,8 @@ bool pages_idle_expired(const pages_t *p, int64_t now_us)
 
 bool pages_saver_active(const pages_t *p, int64_t now_us)
 {
-    return now_us - p->last_activity_us > PAGES_SAVER_US;
+    if (p->saver_us <= 0) return false;
+    return now_us - p->last_activity_us > p->saver_us;
 }
 
 bool pages_tick(pages_t *p, int64_t now_us)
@@ -51,13 +70,7 @@ bool pages_tick(pages_t *p, int64_t now_us)
     if (now_us - p->last_rotate_us < PAGES_ROTATE_US) return false;
 
     page_t before = p->current;
-    for (int i = 1; i <= PAGE_COUNT; i++) {
-        page_t candidate = (page_t)(((int)p->current + i) % PAGE_COUNT);
-        if (p->available & PAGE_BIT(candidate)) {
-            p->current = candidate;
-            break;
-        }
-    }
+    pages_step(p, 0);
     /* Rotation must not count as activity, or it would pin the page it just
        moved to and stop rotating. */
     p->last_rotate_us = now_us;

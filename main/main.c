@@ -2,6 +2,7 @@
 #include "ble_uart.h"
 #include "gt911.h"
 #include "pages.h"
+#include "settings.h"
 #include "timecalc.h"
 #include "usagedata.h"
 
@@ -26,6 +27,7 @@ static int64_t  s_base_us;
 static bool     s_synced;
 
 static usagedata_t s_data;
+static settings_t s_settings;
 #define MESSAGE_MAX 512
 static char s_message[MESSAGE_MAX + 1];
 static pages_t s_pages;
@@ -38,11 +40,29 @@ static int s_drawn_second = -1;
 #define ANIM_US (600 * 1000LL)
 static int64_t s_anim_start = 0;
 
-/* Screensaver: the clock drifts to a new spot each minute, so no pixel stays
-   lit. Position is derived from the minute, so it is stable within one. */
+/* Screensaver. In its default mode it cycles the pages, each for a set
+   number of seconds; in the other the clock drifts to a new spot each minute
+   so no pixel stays lit. Position is derived from the minute, so it is
+   stable within one. */
 static bool s_saver = false;
 static int s_saver_minute = -1;
 static int s_saver_x, s_saver_y;
+static int64_t s_cycle_last = 0;
+
+static void apply_settings(void)
+{
+    pages_set_saver(&s_pages, (int64_t)s_settings.saver_min * 60 * 1000000LL);
+}
+
+/* The pages the cycling saver leaves out: settings, because a slideshow
+   should not land on a control panel, and the message page when nothing
+   has been sent, because "nothing sent yet" is not worth twenty seconds. */
+static unsigned cycle_skip(void)
+{
+    unsigned skip = PAGE_BIT(PAGE_SETTINGS);
+    if (s_message[0] == '\0') skip |= PAGE_BIT(PAGE_MESSAGE);
+    return skip;
+}
 
 static void on_time(uint32_t secs)
 {
@@ -180,8 +200,10 @@ void app_main(void)
                | PAGE_BIT(PAGE_TODAY) | PAGE_BIT(PAGE_MODELS)
                | PAGE_BIT(PAGE_YEAR) | PAGE_BIT(PAGE_COST);
     touch = gt911_init() == ESP_OK;
+    if (touch) available |= PAGE_BIT(PAGE_SETTINGS);   /* useless without a finger */
 #endif
     pages_init(&s_pages, available);
+    settings_defaults(&s_settings);
 
     canvas_t *c = display_canvas();
 
@@ -191,6 +213,9 @@ void app_main(void)
         display_blit();
         return;
     }
+    /* After BLE, which is where NVS gets initialised. */
+    settings_load(&s_settings);
+    apply_settings();
 
     int64_t last_beat = 0;
     /* The merged view is a few kilobytes; the main task's stack is not. */
@@ -201,14 +226,25 @@ void app_main(void)
         int64_t now = esp_timer_get_time();
 
         if (touch && gt911_tapped()) {
+            int tx, ty, row, choice;
+            gt911_point(&tx, &ty);
             if (s_saver) {
                 /* The first tap dismisses the saver rather than also changing
                    the page, which would be a surprise. */
                 s_pages.last_activity_us = now;
-                ESP_LOGI(TAG, "tap -> wake");
+                ESP_LOGI(TAG, "tap at %d,%d -> wake", tx, ty);
+            } else if (s_pages.current == PAGE_SETTINGS
+                       && views_settings_hit(c, tx, ty, &row, &choice)) {
+                if (settings_select(&s_settings, row, choice)) {
+                    settings_save(&s_settings);
+                    apply_settings();
+                }
+                s_pages.last_activity_us = now;
+                s_drawn_page = PAGE_COUNT;
+                ESP_LOGI(TAG, "tap at %d,%d -> setting %d = %d", tx, ty, row, choice);
             } else {
                 page_t p = pages_advance(&s_pages, now);
-                ESP_LOGI(TAG, "tap -> page %d", (int)p);
+                ESP_LOGI(TAG, "tap at %d,%d -> page %d", tx, ty, (int)p);
             }
         }
 
@@ -218,8 +254,11 @@ void app_main(void)
             s_drawn_page = PAGE_COUNT;      /* force a full redraw either way */
             s_drawn_second = -1;
             s_saver_minute = -1;
+            s_cycle_last = now;
+            /* Start the slideshow by moving on, so it is visibly a saver. */
+            if (s_saver && s_settings.saver_cycle) pages_step(&s_pages, cycle_skip());
         }
-        if (s_saver) {
+        if (s_saver && !s_settings.saver_cycle) {
             uint32_t secs = timecalc_advance(s_base_secs,
                                              (uint64_t)(now - s_base_us));
             if ((int)secs != s_drawn_second) {
@@ -227,6 +266,12 @@ void app_main(void)
                 s_drawn_second = (int)secs;
             }
             continue;
+        }
+        if (s_saver && now - s_cycle_last > (int64_t)s_settings.dwell_s * 1000000LL) {
+            /* Cycling: step without touching the activity clock, so the
+               saver stays on, and let the ordinary drawing below show it. */
+            s_cycle_last = now;
+            pages_step(&s_pages, cycle_skip());
         }
 
         /* Once idle, cycle the pages so no image sits long enough to burn in. */
@@ -247,6 +292,10 @@ void app_main(void)
             case PAGE_YEAR:
                 usagedata_merge(&s_data, &v);
                 views_year(c, &v, now);
+                display_blit();
+                break;
+            case PAGE_SETTINGS:
+                views_settings(c, &s_settings);
                 display_blit();
                 break;
             default: break;

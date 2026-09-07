@@ -11,6 +11,7 @@
    region", and those are what is asserted. */
 #include "canvas.h"
 #include "palette.h"
+#include "settings.h"
 #include "usagedata.h"
 #include "views.h"
 
@@ -197,6 +198,57 @@ int main(int argc, char **argv)
            lit_in(W - 12, 24, W, H) == 0);
     views_cost(&cv, &empty, 1.0f, now);
     expect("empty cost page shows a message", lit_in(0, 48, W, 72) > 0);
+
+    /* The settings page, and whether its buttons can be hit. */
+    settings_t st;
+    settings_defaults(&st);
+    views_settings(&cv, &st);
+    save(prefix, "settings");
+    expect("settings labels drawn", lit_in(12, 2 * 24, W, 3 * 24) > 0);
+    expect("the chosen button is lit amber", count_colour(PAL_A1) > 500);
+    expect("settings text stops short of the right edge",
+           lit_in(W - 12, 24, W, H) == 0);
+
+    int hits = 0, total = 0, wrong = 0;
+    for (int r = 0; r < SETTINGS_ROWS; r++) {
+        const settings_row_t *row = settings_row(r);
+        for (int i = 0; i < row->count; i++) {
+            /* Find the button by scanning for its plate on its first row. */
+            int y = (2 + r * 4 + 1) * 24 + 12;
+            int x_start = -1, seen = 0;
+            for (int x = 0; x < W; x++) {
+                uint16_t p = fb[y * W + x];
+                int plate = p == PAL_A1 || p == 0x2124;
+                if (plate && x_start < 0) x_start = x;
+                if (!plate && x_start >= 0) {
+                    if (seen == i) break;
+                    seen++;
+                    x_start = -1;
+                }
+            }
+            total++;
+            int hr, hc;
+            if (x_start >= 0 && views_settings_hit(&cv, x_start + 14, y + 20, &hr, &hc)) {
+                hits++;
+                if (hr != r || hc != i) wrong++;
+            }
+        }
+    }
+    expect("every button can be hit at its centre", hits == total && total > 0);
+    expect("and reports the right row and choice", wrong == 0);
+    {
+        int hr, hc;
+        expect("a tap on a label row misses",
+               !views_settings_hit(&cv, 30, 2 * 24 + 12, &hr, &hc));
+        expect("a tap in the title bar misses",
+               !views_settings_hit(&cv, 400, 10, &hr, &hc));
+        expect("a tap far right of the buttons misses",
+               !views_settings_hit(&cv, W - 5, 3 * 24 + 24, &hr, &hc));
+        expect("a tap just below a button row still hits it (third row)",
+               views_settings_hit(&cv, 30, (2 + 3) * 24 + 12, &hr, &hc) && hr == 0);
+        expect("a tap in the footer misses",
+               !views_settings_hit(&cv, 30, 19 * 24 + 12, &hr, &hc));
+    }
 
     views_models(&cv, &view, 0.0f, now);
     expect("at t=0 the lines lie on the baseline",

@@ -20,7 +20,10 @@ static bool s_present;
 static int s_x, s_y;          /* where the last press was seen */
 static bool s_was_down;
 
-/* Instrumentation, because the serial console on this board is unreadable. */
+/* Instrumentation for the screen. The CrowPanel's console is in fact readable
+   over its CH340 at 115200 (idf.py monitor, or any serial terminal on the
+   usbserial port), which is how the coordinate bug below was found; this
+   stays because it works without a cable. */
 static uint8_t s_addr;
 static uint8_t s_last_status;
 static int s_reads_ok;
@@ -41,17 +44,20 @@ static esp_err_t read_status(uint8_t *status)
     return i2c_master_transmit_receive(s_dev, reg, sizeof reg, status, 1, 50);
 }
 
-/* Point 1 is seven bytes at 0x8150: track id, x low/high, y low/high,
-   size low/high. */
+/* Point 1: the track id is at 0x814F and the coordinates start at 0x8150,
+   x low/high then y low/high, then the touch size. An earlier version read
+   from 0x8150 but skipped a byte as if the id were there too, so "x" was the
+   high byte of x glued to the low byte of y, and every tap missed every
+   button. The values then looked like 4097,7169 -- the giveaway. */
 static void read_point(void)
 {
     uint8_t reg[2] = { REG_POINT1 >> 8, REG_POINT1 & 0xFF };
-    uint8_t buf[7] = {0};
+    uint8_t buf[6] = {0};
     if (i2c_master_transmit_receive(s_dev, reg, sizeof reg, buf, sizeof buf,
                                     50) != ESP_OK)
         return;
-    s_x = buf[1] | (buf[2] << 8);
-    s_y = buf[3] | (buf[4] << 8);
+    s_x = buf[0] | (buf[1] << 8);
+    s_y = buf[2] | (buf[3] << 8);
 }
 
 void gt911_point(int *x, int *y)

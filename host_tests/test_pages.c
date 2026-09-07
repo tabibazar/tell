@@ -14,7 +14,8 @@ static void expect(const char *what, int cond)
 #define ALL (PAGE_BIT(PAGE_CLOCK) | PAGE_BIT(PAGE_STATS) \
              | PAGE_BIT(PAGE_DAILY) | PAGE_BIT(PAGE_MESSAGE) \
              | PAGE_BIT(PAGE_TODAY) | PAGE_BIT(PAGE_MODELS) \
-             | PAGE_BIT(PAGE_YEAR) | PAGE_BIT(PAGE_COST))
+             | PAGE_BIT(PAGE_YEAR) | PAGE_BIT(PAGE_COST) \
+             | PAGE_BIT(PAGE_SETTINGS))
 #define FEATHER (PAGE_BIT(PAGE_CLOCK) | PAGE_BIT(PAGE_MESSAGE))
 
 int main(void)
@@ -29,7 +30,8 @@ int main(void)
     expect("then the year", pages_advance(&p, 4000) == PAGE_YEAR);
     expect("then the cost", pages_advance(&p, 4500) == PAGE_COST);
     expect("then message", pages_advance(&p, 4800) == PAGE_MESSAGE);
-    expect("then daily, last before the clock", pages_advance(&p, 4900) == PAGE_DAILY);
+    expect("then daily", pages_advance(&p, 4900) == PAGE_DAILY);
+    expect("then settings, last of all", pages_advance(&p, 4950) == PAGE_SETTINGS);
     expect("then wraps to clock", pages_advance(&p, 5000) == PAGE_CLOCK);
 
     pages_init(&p, FEATHER);
@@ -114,6 +116,29 @@ int main(void)
     expect("a touch dismisses the saver", !pages_saver_active(&p, 2000001));
     expect("and it returns after the delay",
            pages_saver_active(&p, 2000000 + PAGES_SAVER_US + 1));
+
+    /* The delay is a setting. */
+    expect("the default delay is the constant", p.saver_us == PAGES_SAVER_US);
+    pages_set_saver(&p, 60 * 1000000LL);
+    expect("a shorter delay brings the saver sooner",
+           pages_saver_active(&p, 2000000 + 60 * 1000000LL + 1)
+           && !pages_saver_active(&p, 2000000 + 60 * 1000000LL));
+    pages_set_saver(&p, 0);
+    expect("zero means never", !pages_saver_active(&p, 2000000 + PAGES_SAVER_US * 100));
+    pages_set_saver(&p, -5);
+    expect("a negative delay is treated as never",
+           p.saver_us == 0 && !pages_saver_active(&p, 2000000 + PAGES_SAVER_US * 100));
+
+    /* Stepping, which the cycling saver uses: it moves without waking. */
+    pages_init(&p, ALL);
+    pages_show(&p, PAGE_COST, 1000);
+    expect("step moves to the next page",
+           pages_step(&p, 0) == PAGE_MESSAGE);
+    expect("step is not activity", p.last_activity_us == 1000);
+    expect("step skips masked pages",
+           pages_step(&p, PAGE_BIT(PAGE_DAILY) | PAGE_BIT(PAGE_SETTINGS)) == PAGE_CLOCK);
+    expect("step with everything masked stays put",
+           pages_step(&p, ALL) == PAGE_CLOCK);
 
     if (failures == 0) { printf("all tests passed\n"); return 0; }
     printf("%d test(s) failed\n", failures);

@@ -2,6 +2,7 @@
 #define VIEWS_H
 
 #include "canvas.h"
+#include "settings.h"
 #include "usagedata.h"
 
 #include <stdbool.h>
@@ -24,6 +25,15 @@ void views_year(canvas_t *c, const ud_view_t *d, int64_t now_us);
 /* What the usage would have cost on the API: totals, a bar per model, and
    a bar per day for the last two months. `t` grows the bars. */
 void views_cost(canvas_t *c, const ud_view_t *d, float t, int64_t now_us);
+
+/* The settings page: each setting as a row of buttons, the current choice
+   lit. Touch only, so it is not offered on the Feather. */
+void views_settings(canvas_t *c, const settings_t *s);
+
+/* True when a tap at display pixel (x, y) landed on a settings button, with
+   which one. Buttons are hit-tested taller than they are drawn: a text row
+   is 4mm on this panel, smaller than a fingertip. */
+bool views_settings_hit(canvas_t *c, int x, int y, int *row, int *choice);
 
 /* The almanac page: moon, sun, the day's numbers and the next holiday. */
 void views_today(canvas_t *c, const usagedata_t *d);

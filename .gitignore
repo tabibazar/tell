@@ -12,6 +12,7 @@ host_tests/test_textwrap
 host_tests/test_timecalc
 host_tests/test_usagedata
 host_tests/test_views
+host_tests/test_settings
 mac/tell
 sdkconfig
 sdkconfig.crowpanel

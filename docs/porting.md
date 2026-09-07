@@ -131,8 +131,16 @@ data  B0-B4  15, 7, 6, 5, 4
 
 **Touch also needs the secondary USB console disabled.** GPIO19 and GPIO20 are
 USB D- and D+ on the ESP32-S3, and the touch I2C is wired to exactly those
-pins, so `CONFIG_ESP_CONSOLE_SECONDARY_NONE=y` is required. This board has no
-usable USB console anyway.
+pins, so `CONFIG_ESP_CONSOLE_SECONDARY_NONE=y` is required. The board's console
+is UART0 through the CH340, readable at 115200 on the `usbserial` port; the
+USB-JTAG console of the Feather does not exist here.
+
+**Touch coordinates.** The GT911 reports in display pixels with no rotation on
+this panel. The point record starts at `0x8150` with X low/high then Y
+low/high; the track id is the byte *before* it. Reading as if the id were at
+`0x8150` shifts everything by one and yields coordinates like `4097,7169`,
+which is what the first driver did, and why no on-screen button responded until
+it was fixed.
 
 ## What went wrong, and what did not
 

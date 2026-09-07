@@ -12,7 +12,14 @@ When nothing is being displayed, the screen shows a clock. On the big panel
 there are also pages of Claude Code usage: bars per model, bars per day, a
 line per model over the last two months, a heatmap of the last year in the
 style of Claude Code's own `/stats` screen, and what it all would have cost
-at API list prices, plus an almanac.
+at API list prices, plus an almanac and a Settings page.
+
+After ten minutes with no tap and no message the screensaver cycles through
+the pages, twenty seconds each, so nothing sits still long enough to burn in;
+a tap brings back whatever page is showing. The Settings page (last in the
+tap order, touch boards only) changes the delay, from one minute to never,
+switches the saver to a drifting clock instead, and sets the seconds per
+page. Settings are kept in flash across power cycles.
 
 ---
 
