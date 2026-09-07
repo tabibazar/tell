@@ -25,7 +25,7 @@ typedef enum {
 
 /* After this long with no touch and no message, the screensaver takes over:
    a drifting clock, so nothing sits still long enough to burn in. */
-#define PAGES_SAVER_US (60 * 1000000LL)
+#define PAGES_SAVER_US (5 * 60 * 1000000LL)
 
 typedef struct {
     unsigned available;      /* bitmask of PAGE_BIT(...) */

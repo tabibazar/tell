@@ -92,20 +92,21 @@ int main(void)
     expect("and the page does not move", p.current == PAGE_CLOCK);
 #endif
 
-    /* Screensaver: on after a minute of nothing, off the moment anything
-       happens. */
+    /* Screensaver: on after PAGES_SAVER_US of nothing, off the moment
+       anything happens. The assertions track the constant, not a fixed
+       delay, so changing it does not silently invalidate them. */
     pages_init(&p, ALL);
     pages_show(&p, PAGE_CLOCK, 1000);
     expect("saver off straight after activity",
            !pages_saver_active(&p, 1000 + 1));
-    expect("saver off just under a minute",
+    expect("saver off just under the delay",
            !pages_saver_active(&p, 1000 + PAGES_SAVER_US));
-    expect("saver on past a minute",
+    expect("saver on past the delay",
            pages_saver_active(&p, 1000 + PAGES_SAVER_US + 1));
 
     pages_advance(&p, 2000000);
     expect("a touch dismisses the saver", !pages_saver_active(&p, 2000001));
-    expect("and it returns after another minute",
+    expect("and it returns after the delay",
            pages_saver_active(&p, 2000000 + PAGES_SAVER_US + 1));
 
     if (failures == 0) { printf("all tests passed\n"); return 0; }
