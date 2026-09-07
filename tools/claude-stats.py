@@ -172,17 +172,45 @@ def render(stats, cols=64, rows=20):
     return [head] + middle + [summary[:cols], "+" + "-" * (cols - 2) + "+"]
 
 
+def host_name():
+    """A short label for this machine, so the board keeps each Mac's data
+    apart. socket.gethostname() is a MAC address on a stock Mac, so prefer
+    the Bonjour name; override with CLAUDE_SCREEN_HOST."""
+    import re
+    import socket
+    import subprocess
+
+    name = os.environ.get("CLAUDE_SCREEN_HOST")
+    if not name:
+        try:
+            name = subprocess.run(["scutil", "--get", "LocalHostName"],
+                                  capture_output=True, text=True,
+                                  timeout=5).stdout.strip()
+        except Exception:                       # noqa: BLE001
+            name = ""
+    if not name:
+        name = socket.gethostname()
+
+    # Trim the usual "-MacBook-Pro" tail; the panel is only 64 columns.
+    name = name.split(".")[0]
+    name = re.sub(r"[-_]?MacBook[-_]?(Pro|Air)?", "", name, flags=re.I)
+    name = re.sub(r"[^A-Za-z0-9-]", "", name).strip("-")
+    return (name or "mac")[:15]
+
+
 def render_data(stats, section):
     """Marker-prefixed lines for the firmware to parse."""
     lines = []
     if section == "stats":
         lines.append("!stats")
+        lines.append("host %s" % host_name())
         ranked = sorted(stats["models"].items(),
                         key=lambda kv: -(kv[1]["cread"] + kv[1]["out"]))
         for name, m in ranked[:8]:
             lines.append("m %s %d %d" % (name[:15], m["out"], m["cread"]))
     else:
         lines.append("!daily")
+        lines.append("host %s" % host_name())
         for day, total in sorted(stats["daily"].items())[-14:]:
             lines.append("d %s %d" % (day[5:], total))
     return lines

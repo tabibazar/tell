@@ -173,8 +173,20 @@ void app_main(void)
             s_drawn_page = s_pages.current;
             s_drawn_second = -1;
             switch (s_pages.current) {
-            case PAGE_STATS:   views_stats(c, &s_data); display_blit(); break;
-            case PAGE_DAILY:   views_daily(c, &s_data); display_blit(); break;
+            case PAGE_STATS: {
+                ud_view_t v;
+                usagedata_merge(&s_data, &v);
+                views_stats(c, &v);
+                display_blit();
+                break;
+            }
+            case PAGE_DAILY: {
+                ud_view_t v;
+                usagedata_merge(&s_data, &v);
+                views_daily(c, &v);
+                display_blit();
+                break;
+            }
             case PAGE_MESSAGE: draw_log(c); display_blit(); break;
             default: break;
             }

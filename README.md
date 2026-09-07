@@ -77,6 +77,23 @@ With more than one board powered up, `tell` connects to whichever answers
 first. Give each board its own name (`CONFIG_SCREEN_DEVICE_NAME` in
 menuconfig) and address it with `--device`.
 
+## Several Macs
+
+Nothing is paired, so any Mac in range can drive the boards. To have a second
+Mac contribute its usage to the charts as well, clone this repo there and:
+
+```sh
+./tools/install-agent.sh big
+```
+
+Each machine tags its data with its own name, and the board keeps them apart:
+a push from one Mac replaces only its own share, and the charts show the sum
+with a "2 machines" note. Set `CLAUDE_SCREEN_HOST` to choose the label.
+
+The board accepts one BLE connection at a time. Sends on the same machine take
+a shared lock; across machines the client simply retries, five times, ten
+seconds apart.
+
 The screen is **20 characters by 5 lines** on the Feather, **64 by 20** on the
 CrowPanel. Text wraps at word boundaries; a
 word longer than a line is broken mid-word. Content past five lines is truncated

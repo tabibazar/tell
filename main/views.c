@@ -35,7 +35,7 @@ static void right_text(canvas_t *c, int row, int right_col, const char *s,
     canvas_puts(c, right_col - (int)strlen(s), row, s, colour);
 }
 
-void views_stats(canvas_t *c, const usagedata_t *d)
+void views_stats(canvas_t *c, const ud_view_t *d)
 {
     canvas_clear(c);
     title(c, "USAGE BY MODEL", "tokens");
@@ -85,15 +85,20 @@ void views_stats(canvas_t *c, const usagedata_t *d)
         right_text(c, row, c->cols - 1, value, PAL_FG);
     }
 
-    char note[96], total[16];
+    char note[128], total[16];
     human(grand, total, sizeof total);
-    snprintf(note, sizeof note,
-             "bar = output + cache-read tokens   %d models   %s total",
-             d->model_count, total);
+    if (d->host_count > 1)
+        snprintf(note, sizeof note,
+                 "bar = output + cache-read tokens   %d models   %s total"
+                 "   %d machines", d->model_count, total, d->host_count);
+    else
+        snprintf(note, sizeof note,
+                 "bar = output + cache-read tokens   %d models   %s total",
+                 d->model_count, total);
     footer(c, note);
 }
 
-void views_daily(canvas_t *c, const usagedata_t *d)
+void views_daily(canvas_t *c, const ud_view_t *d)
 {
     canvas_clear(c);
 
@@ -167,9 +172,15 @@ void views_daily(canvas_t *c, const usagedata_t *d)
     human(grand, total, sizeof total);
     canvas_puts(c, 38, row, "bar = in+out+cache tokens", PAL_DIM);
 
-    char note[96];
-    snprintf(note, sizeof note,
-             "peak %s on %s   avg %s/day   %s over %d days",
-             peak_lab, d->days[peak_i].label, avg, total, d->day_count);
+    char note[128];
+    if (d->host_count > 1)
+        snprintf(note, sizeof note,
+                 "peak %s on %s   avg %s/day   %s over %d days   %d machines",
+                 peak_lab, d->days[peak_i].label, avg, total, d->day_count,
+                 d->host_count);
+    else
+        snprintf(note, sizeof note,
+                 "peak %s on %s   avg %s/day   %s over %d days",
+                 peak_lab, d->days[peak_i].label, avg, total, d->day_count);
     footer(c, note);
 }

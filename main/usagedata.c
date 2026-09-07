@@ -28,6 +28,40 @@ static int starts_with(const char *s, const char *prefix)
     return strncmp(s, prefix, strlen(prefix)) == 0;
 }
 
+/* The slot for a machine, reusing its existing one so a re-push replaces
+   rather than accumulates. Falls back to the last slot when full, which is
+   better than dropping the newest machine silently. */
+static ud_host_t *host_slot(usagedata_t *d, const char *name)
+{
+    for (int i = 0; i < UD_MAX_HOSTS; i++)
+        if (d->hosts[i].used && strcmp(d->hosts[i].host, name) == 0)
+            return &d->hosts[i];
+
+    for (int i = 0; i < UD_MAX_HOSTS; i++) {
+        if (!d->hosts[i].used) {
+            memset(&d->hosts[i], 0, sizeof d->hosts[i]);
+            strncpy(d->hosts[i].host, name, UD_HOST_MAX);
+            d->hosts[i].used = true;
+            return &d->hosts[i];
+        }
+    }
+    return &d->hosts[UD_MAX_HOSTS - 1];
+}
+
+/* Scans the payload for its "host <name>" line before parsing rows, since it
+   decides which machine's data is being replaced. */
+static void find_host(const char *payload, char *out)
+{
+    strcpy(out, "mac");
+    for (const char *p = next_line(payload); *p; p = next_line(p)) {
+        char tag[8];
+        const char *q = token(p, tag, 7);
+        if (q == NULL) continue;
+        if (strcmp(tag, "host") == 0 && token(q, out, UD_HOST_MAX) != NULL)
+            return;
+    }
+}
+
 ud_kind_t usagedata_parse(usagedata_t *d, const char *payload)
 {
     if (d == NULL || payload == NULL) return UD_NONE;
@@ -38,18 +72,29 @@ ud_kind_t usagedata_parse(usagedata_t *d, const char *payload)
     else if (starts_with(payload, "!clock")) kind = UD_CLOCK;
     else return UD_NONE;
 
-    /* A section replaces its rows wholesale: no merge, so no stale rows. */
-    if (kind == UD_STATS) d->model_count = 0;
-    else if (kind == UD_DAILY) d->day_count = 0;
-    else { d->date[0] = '\0'; d->weather[0] = '\0'; }
+    if (kind == UD_CLOCK) {
+        d->date[0] = '\0';
+        d->weather[0] = '\0';
+    }
+
+    ud_host_t *h = NULL;
+    if (kind == UD_STATS || kind == UD_DAILY) {
+        char name[UD_HOST_MAX + 1];
+        find_host(payload, name);
+        h = host_slot(d, name);
+        /* A section replaces this machine's rows wholesale: no merge, so no
+           stale rows, and the other machine's data is untouched. */
+        if (kind == UD_STATS) h->model_count = 0;
+        else h->day_count = 0;
+    }
 
     for (const char *p = next_line(payload); *p; p = next_line(p)) {
         char tag[8];
         const char *q = token(p, tag, 7);
         if (q == NULL) continue;
 
-        if (kind == UD_STATS && tag[0] == 'm' && tag[1] == '\0') {
-            if (d->model_count >= UD_MAX_MODELS) continue;
+        if (kind == UD_STATS && strcmp(tag, "m") == 0) {
+            if (h->model_count >= UD_MAX_MODELS) continue;
             ud_model_t m;
             char num[24];
             q = token(q, m.name, UD_NAME_MAX);
@@ -60,7 +105,17 @@ ud_kind_t usagedata_parse(usagedata_t *d, const char *payload)
             q = token(q, num, sizeof num - 1);
             m.cread = (q == NULL) ? 0 : strtoull(num, NULL, 10);
             /* Incremented last, so an abandoned row leaves no trace. */
-            d->models[d->model_count++] = m;
+            h->models[h->model_count++] = m;
+        } else if (kind == UD_DAILY && strcmp(tag, "d") == 0) {
+            if (h->day_count >= UD_MAX_DAYS) continue;
+            ud_day_t day;
+            char num[24];
+            q = token(q, day.label, UD_LABEL_MAX);
+            if (q == NULL) continue;
+            q = token(q, num, sizeof num - 1);
+            if (q == NULL) continue;
+            day.tokens = strtoull(num, NULL, 10);
+            h->days[h->day_count++] = day;
         } else if (kind == UD_CLOCK) {
             /* The rest of the line is free text, so take it verbatim. */
             char *dest = NULL;
@@ -73,17 +128,68 @@ ud_kind_t usagedata_parse(usagedata_t *d, const char *payload)
             while (q[n] && q[n] != '\n' && q[n] != '\r' && n < UD_TEXT_MAX) n++;
             memcpy(dest, q, (size_t)n);
             dest[n] = '\0';
-        } else if (kind == UD_DAILY && tag[0] == 'd' && tag[1] == '\0') {
-            if (d->day_count >= UD_MAX_DAYS) continue;
-            ud_day_t day;
-            char num[24];
-            q = token(q, day.label, UD_LABEL_MAX);
-            if (q == NULL) continue;
-            q = token(q, num, sizeof num - 1);
-            if (q == NULL) continue;
-            day.tokens = strtoull(num, NULL, 10);
-            d->days[d->day_count++] = day;
         }
     }
     return kind;
+}
+
+static void add_model(ud_view_t *v, const ud_model_t *m)
+{
+    for (int i = 0; i < v->model_count; i++) {
+        if (strcmp(v->models[i].name, m->name) == 0) {
+            v->models[i].out += m->out;
+            v->models[i].cread += m->cread;
+            return;
+        }
+    }
+    if (v->model_count >= UD_MAX_MODELS) return;
+    v->models[v->model_count++] = *m;
+}
+
+static void add_day(ud_view_t *v, const ud_day_t *day)
+{
+    for (int i = 0; i < v->day_count; i++) {
+        if (strcmp(v->days[i].label, day->label) == 0) {
+            v->days[i].tokens += day->tokens;
+            return;
+        }
+    }
+    if (v->day_count >= UD_MAX_DAYS) return;
+    v->days[v->day_count++] = *day;
+}
+
+void usagedata_merge(const usagedata_t *d, ud_view_t *out)
+{
+    memset(out, 0, sizeof *out);
+
+    for (int i = 0; i < UD_MAX_HOSTS; i++) {
+        const ud_host_t *h = &d->hosts[i];
+        if (!h->used) continue;
+        if (h->model_count || h->day_count) out->host_count++;
+        for (int m = 0; m < h->model_count; m++) add_model(out, &h->models[m]);
+        for (int k = 0; k < h->day_count; k++) add_day(out, &h->days[k]);
+    }
+
+    /* Models largest first, so the bars rank sensibly after summing. */
+    for (int i = 1; i < out->model_count; i++) {
+        ud_model_t key = out->models[i];
+        uint64_t kt = key.out + key.cread;
+        int j = i - 1;
+        while (j >= 0 && out->models[j].out + out->models[j].cread < kt) {
+            out->models[j + 1] = out->models[j];
+            j--;
+        }
+        out->models[j + 1] = key;
+    }
+
+    /* Days oldest first: the labels are MM-DD, which sorts correctly. */
+    for (int i = 1; i < out->day_count; i++) {
+        ud_day_t key = out->days[i];
+        int j = i - 1;
+        while (j >= 0 && strcmp(out->days[j].label, key.label) > 0) {
+            out->days[j + 1] = out->days[j];
+            j--;
+        }
+        out->days[j + 1] = key;
+    }
 }
