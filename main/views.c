@@ -139,20 +139,49 @@ void views_daily(canvas_t *c, const ud_view_t *d, float t)
     int slot = plot_w / d->day_count;
     int bar_w = slot > 4 ? slot - 4 : slot;
     int last = d->day_count - 1;
+    uint64_t mean = grand / (uint64_t)d->day_count;
 
     for (int i = 0; i < d->day_count; i++) {
         int h = (int)((double)d->days[i].tokens / (double)peak * plot_h * t);
         if (h < 2 && d->days[i].tokens > 0 && t >= 1.0f) h = 2;
-        /* One colour for every day: cycling accents implied categories that
-           do not exist. Today and the peak are the only distinctions. */
-        uint16_t colour = PAL_A0;
-        if (i == last) colour = PAL_A3;
-        else if (i == peak_i) colour = PAL_A2;
-        canvas_fill_rect(c, gutter + i * slot + 2, bottom - h, bar_w, h, colour);
 
+        /* One colour for an ordinary day: cycling accents implied categories
+           that do not exist. The peak and the latest day are the only
+           distinctions, and each is marked with a symbol too, so the meaning
+           survives if the hues cannot be told apart. */
+        uint16_t colour = PAL_A0;
+        if (i == last) colour = PAL_LATEST;
+        else if (i == peak_i) colour = PAL_PEAK;
+
+        int bx = gutter + i * slot + 2;
+        canvas_fill_rect(c, bx, bottom - h, bar_w, h, colour);
+        if (h >= 3)
+            canvas_fill_rect(c, bx, bottom - h, bar_w, 2, pal_lighten(colour));
+
+        int label_col = (gutter + i * slot) / c->cell_w;
         if (slot >= 6 * c->cell_w || (i % 2) == 0)
-            canvas_puts(c, (gutter + i * slot) / c->cell_w, c->rows - 3,
-                        d->days[i].label, PAL_DIM);
+            canvas_puts(c, label_col, c->rows - 3, d->days[i].label, PAL_DIM);
+        /* Redundant, non-colour marking of the notable bars. */
+        if (i == peak_i)
+            canvas_puts(c, label_col + 2, c->rows - 4, "^", PAL_PEAK);
+        if (i == last)
+            canvas_puts(c, label_col + 2, c->rows - 4, ">", PAL_LATEST);
+    }
+
+    /* A dashed average line, so a bar reads as above or below typical. */
+    int mean_y = bottom - (int)((double)mean / (double)peak * plot_h);
+    for (int x = gutter; x < gutter + plot_w; x += 12)
+        canvas_fill_rect(c, x, mean_y, 6, 1, PAL_FG);
+    canvas_puts(c, (gutter + plot_w) / c->cell_w - 3, mean_y / c->cell_h,
+                "avg", PAL_FG);
+
+    /* The peak is the number people look for, so put it on the bar. */
+    {
+        char plab[16];
+        human(peak, plab, sizeof plab);
+        int col = (gutter + peak_i * slot) / c->cell_w - 1;
+        if (col < 0) col = 0;
+        canvas_puts(c, col, top / c->cell_h - 1, plab, PAL_PEAK);
     }
 
     /* Legend: swatches, so the three colours are not left to guess at. */
@@ -161,16 +190,16 @@ void views_daily(canvas_t *c, const ud_view_t *d, float t)
     int sw = c->cell_w;
     canvas_fill_rect(c, 1 * c->cell_w, y, sw, c->cell_h / 2, PAL_A0);
     canvas_puts(c, 3, row, "a day", PAL_DIM);
-    canvas_fill_rect(c, 10 * c->cell_w, y, sw, c->cell_h / 2, PAL_A2);
-    canvas_puts(c, 12, row, "busiest", PAL_DIM);
-    canvas_fill_rect(c, 22 * c->cell_w, y, sw, c->cell_h / 2, PAL_A3);
-    canvas_puts(c, 24, row, "most recent", PAL_DIM);
+    canvas_fill_rect(c, 10 * c->cell_w, y, sw, c->cell_h / 2, PAL_PEAK);
+    canvas_puts(c, 12, row, "^ busiest", PAL_DIM);
+    canvas_fill_rect(c, 24 * c->cell_w, y, sw, c->cell_h / 2, PAL_LATEST);
+    canvas_puts(c, 26, row, "> most recent", PAL_DIM);
 
     char peak_lab[16], avg[16], total[16];
     human(peak, peak_lab, sizeof peak_lab);
     human(grand / (uint64_t)d->day_count, avg, sizeof avg);
     human(grand, total, sizeof total);
-    canvas_puts(c, 38, row, "bar = in+out+cache tokens", PAL_DIM);
+    canvas_puts(c, 41, row, "bar = in+out+cache", PAL_DIM);
 
     char note[128];
     if (d->host_count > 1)
