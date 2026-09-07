@@ -77,14 +77,23 @@ With more than one board powered up, `tell` connects to whichever answers
 first. Give each board its own name (`CONFIG_SCREEN_DEVICE_NAME` in
 menuconfig) and address it with `--device`.
 
-## Several Macs
+## Setting up a Mac
 
-Nothing is paired, so any Mac in range can drive the boards. To have a second
-Mac contribute its usage to the charts as well, clone this repo there and:
+Nothing is paired, so any Mac in range can drive the boards:
 
 ```sh
-./tools/install-agent.sh big
+git clone git@github.com:tabibazar/tell.git
+cd tell
+./install.sh
 ```
+
+That checks the prerequisites, builds the client, links it onto your PATH,
+looks for the boards, and starts the agents that keep the clock, charts and
+almanac fresh. `./install.sh big --no-agents` sets up the client alone.
+
+macOS asks your **terminal** for Bluetooth permission the first time; if no
+board is found, grant it under System Settings > Privacy & Security >
+Bluetooth and run the script again.
 
 Each machine tags its data with its own name, and the board keeps them apart:
 a push from one Mac replaces only its own share, and the charts show the sum
