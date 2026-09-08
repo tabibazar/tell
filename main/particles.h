@@ -51,6 +51,11 @@ void particles_step(particles_t *s, float gx, float gy, float dt);
 /* Adds a tangential nudge about the centre, for the gyroscope's twist. */
 void particles_swirl(particles_t *s, float rate);
 
+/* Scatters every grain by up to `speed` pixels per second in a random
+   direction. This is what a shake does: gravity says which way is down, and
+   shaking is not a direction at all, it is energy. */
+void particles_agitate(particles_t *s, float speed);
+
 /* Draws each particle as a small block. Clears the canvas first. */
 void particles_draw(const particles_t *s, canvas_t *c);
 

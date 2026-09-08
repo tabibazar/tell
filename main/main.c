@@ -2,6 +2,7 @@
 #include "ble_uart.h"
 #include "gt911.h"
 #include "i2cbus.h"
+#include "bmp280.h"
 #include "particles.h"
 #include "qmi8658.h"
 #include "pages.h"
@@ -17,6 +18,7 @@
 #include "freertos/task.h"
 #include "sdkconfig.h"
 
+#include <math.h>
 #include <stdbool.h>
 #include <string.h>
 
@@ -76,22 +78,47 @@ static float s_gx, s_gy;      /* low-passed gravity, panel coordinates */
 #define SWIRL_SCALE 0.00015f
 
 /*
- * An accelerometer at rest reads +1 g on the axis pointing UP, so gravity is
- * the negative of what it reports.
+ * Shaking is not a direction, it is energy, so it must not go through the
+ * filter above. That filter has a corner around 1 Hz, which is what stops the
+ * settled heap shivering on sensor noise -- but a real shake is five to ten
+ * times faster, so the filter removes precisely the thing we want, and the
+ * board ends up moving less the harder it is shaken.
  *
- * At rest this sensor reads roughly (+0.5, +0.1, -1.0), so Z is the axis
- * normal to the board and X and Y are the two lying in the panel's plane.
- * Which of those is across the screen, and which way round, depends on how
- * the breakout is mounted. If the particles run the wrong way, flip the sign
- * of AXIS_X or AXIS_Y below; if they run sideways, swap ax and ay.
+ * The residual is the other half of the same filter and has the opposite
+ * response: near zero when the board is still, and near the full amplitude
+ * when the reading is changing faster than the filter can follow. Feeding it
+ * in as agitation scatters the pile instead of tilting it.
  */
-#define AXIS_X (-1.0f)      /* panel +x is right */
-#define AXIS_Y (-1.0f)      /* panel +y is down */
+#define SHAKE_FLOOR 250.0f     /* residual below this is noise, not a shake */
+#define SHAKE_GAIN  0.06f      /* residual px/s^2 -> scatter px/s */
+#define SHAKE_MAX   200.0f     /* enough to lift the pile, not to blur it */
+
+/*
+ * Which sensor axis is which on the panel, measured on the board rather than
+ * assumed. An accelerometer at rest reads +1 g along the axis pointing UP, so
+ * the gravity vector is minus the reading: G = -a.
+ *
+ * Standing on its long edge, screen upright, the board reads
+ * (+0.99, +0.15, -0.20). So sensor +X points up, and the panel's down axis is
+ * -X. That makes the downward component G . y = (-a) . (-X) = +ax.
+ *
+ * Laid flat instead, it read (+0.50, +0.12, -0.96): X and Z traded places
+ * while Y barely moved, so Y is the axis it was rotated about -- the board's
+ * long edge, which is the panel's horizontal. Z is therefore the screen's
+ * normal and takes no part in this.
+ *
+ * That fixes both axes and the sign of the vertical one. The sign of the
+ * horizontal is the one thing two still readings cannot give, since gravity
+ * had no component along it either time: if the sand runs to the wrong side
+ * when the board is tipped left, negate AXIS_X and nothing else.
+ */
+#define AXIS_X ( 1.0f)      /* panel +x, to the right, is sensor +y */
+#define AXIS_Y ( 1.0f)      /* panel +y, downwards,    is sensor +x */
 
 static void gravity_from(const qmi8658_sample_t *s, float *gx, float *gy)
 {
-    *gx = AXIS_X * s->ax;
-    *gy = AXIS_Y * s->ay;
+    *gx = AXIS_X * s->ay;
+    *gy = AXIS_Y * s->ax;
 }
 
 static void draw_particles(canvas_t *c, int64_t now)
@@ -105,8 +132,21 @@ static void draw_particles(canvas_t *c, int64_t now)
     if (qmi8658_read(&sample) == ESP_OK) {
         float gx, gy;
         gravity_from(&sample, &gx, &gy);
-        s_gx += (gx * GRAVITY_PX - s_gx) * GRAVITY_ALPHA;
-        s_gy += (gy * GRAVITY_PX - s_gy) * GRAVITY_ALPHA;
+
+        /* The filter's own error, before it is applied: how far the board is
+           from where the slow view of gravity thinks it is. */
+        float rx = gx * GRAVITY_PX - s_gx;
+        float ry = gy * GRAVITY_PX - s_gy;
+
+        s_gx += rx * GRAVITY_ALPHA;
+        s_gy += ry * GRAVITY_ALPHA;
+
+        float shake = sqrtf(rx * rx + ry * ry) - SHAKE_FLOOR;
+        if (shake > 0.0f) {
+            float scatter = shake * SHAKE_GAIN;
+            if (scatter > SHAKE_MAX) scatter = SHAKE_MAX;
+            particles_agitate(&s_particles, scatter);
+        }
         /* Spinning the board stirs the pile. Garnish; nothing depends on it. */
         particles_swirl(&s_particles, sample.gz * SWIRL_SCALE);
     }
@@ -265,7 +305,15 @@ void app_main(void)
     s_imu = qmi8658_init() == ESP_OK;
     if (s_imu) {
         available |= PAGE_BIT(PAGE_PARTICLES);
-        particles_init(&s_particles, 800, c->w, c->h, 0xC0FFEEu);
+        /* Seeded from the pressure sensor's noise rather than a constant, so
+           the grains do not land in the same places every boot. Its bottom
+           bits wander on their own; the boot timer, by contrast, reads much
+           the same every time the board is reset the same way. */
+        uint32_t seed = 0;
+        if (bmp280_init() == ESP_OK) seed = bmp280_entropy();
+        if (seed == 0) seed = (uint32_t)esp_timer_get_time() | 1u;
+        ESP_LOGI(TAG, "particles seeded with 0x%08X", (unsigned)seed);
+        particles_init(&s_particles, 800, c->w, c->h, seed);
     }
 #endif
     pages_init(&s_pages, available);

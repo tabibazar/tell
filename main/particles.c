@@ -12,8 +12,10 @@
 /* How hard a crowded cell pushes its neighbours away, in pixels per second
    squared per surplus grain. This is what gives the pile depth: without it
    every grain settles onto the same boundary line and nothing moves again.
-   Against GRAVITY_PX in main.c it sets how deep the heap stands. */
-#define PRESSURE 90.0f
+   Against GRAVITY_PX in main.c it sets how deep the heap stands: higher fills
+   more of the bottle, but past about 500 the pile stops settling and starts
+   boiling, because the grid is coarse enough that the term fights itself. */
+#define PRESSURE 350.0f
 /* A per-frame nudge, in pixels per second. Small: the drag above turns it
    into a shimmer of about ten pixels a second, so a settled heap keeps
    shifting instead of freezing, which is both nicer to watch and better for
@@ -166,6 +168,15 @@ void particles_swirl(particles_t *s, float rate)
         float ry = s->p[i].y - cy;
         s->p[i].vx += -ry * rate;
         s->p[i].vy +=  rx * rate;
+    }
+}
+
+void particles_agitate(particles_t *s, float speed)
+{
+    if (speed <= 0.0f) return;
+    for (int i = 0; i < s->n; i++) {
+        s->p[i].vx += frand(s, -speed, speed);
+        s->p[i].vy += frand(s, -speed, speed);
     }
 }
 
