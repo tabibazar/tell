@@ -72,6 +72,9 @@ int main(void)
     parse("!stats\n");
     expect("empty section yields no rows", v.model_count == 0);
 
+    expect("particles marker recognised", parse("!particles\n") == UD_PARTICLES);
+    expect("an unknown marker is still nothing", parse("!nope\n") == UD_NONE);
+
     expect("clock marker recognised",
            parse("!clock\ndate Sunday 06 September 2026\n"
                                "wx Moderate rain  18C feels 19C\n") == UD_CLOCK);

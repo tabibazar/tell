@@ -1,6 +1,9 @@
 #include "display.h"
 #include "ble_uart.h"
 #include "gt911.h"
+#include "i2cbus.h"
+#include "particles.h"
+#include "qmi8658.h"
 #include "pages.h"
 #include "timecalc.h"
 #include "usagedata.h"
@@ -20,6 +23,14 @@
 static const char *TAG = "main";
 
 #define TICK_MS 50            /* also the touch poll interval */
+
+/* True only where the screensaver draws something that does not need a
+   synced clock. Defined here because the saver condition below uses it. */
+#ifdef CONFIG_SCREEN_BOARD_FEATHER_S3_TFT
+#define SAVER_NEEDS_NO_CLOCK s_imu
+#else
+#define SAVER_NEEDS_NO_CLOCK false
+#endif
 
 static uint32_t s_base_secs;
 static int64_t  s_base_us;
@@ -44,6 +55,70 @@ static bool s_saver = false;
 static int s_saver_minute = -1;
 static int s_saver_x, s_saver_y;
 
+/* Particles, on the Feather only, driven by its QMI8658. They are the
+   screensaver there: a field in constant motion protects the panel better
+   than a clock that moves once a minute. */
+#ifdef CONFIG_SCREEN_BOARD_FEATHER_S3_TFT
+#define HAVE_PARTICLES 1
+static particles_t s_particles;
+static bool s_imu;
+static int64_t s_particles_last_us;
+static float s_gx, s_gy;      /* low-passed gravity, panel coordinates */
+
+/* Gravity in pixels per second squared. A full 1 g tilt crosses the short
+   axis of the panel in about half a second, which reads as sand rather than
+   as a screensaver. */
+#define GRAVITY_PX 900.0f
+/* First-order low pass, roughly a 150 ms time constant at 20 fps. Raw
+   accelerometer output at rest is noisy enough to make a heap shiver. */
+#define GRAVITY_ALPHA 0.25f
+/* Degrees per second of twist, converted to a tangential nudge. */
+#define SWIRL_SCALE 0.00015f
+
+/*
+ * An accelerometer at rest reads +1 g on the axis pointing UP, so gravity is
+ * the negative of what it reports.
+ *
+ * At rest this sensor reads roughly (+0.5, +0.1, -1.0), so Z is the axis
+ * normal to the board and X and Y are the two lying in the panel's plane.
+ * Which of those is across the screen, and which way round, depends on how
+ * the breakout is mounted. If the particles run the wrong way, flip the sign
+ * of AXIS_X or AXIS_Y below; if they run sideways, swap ax and ay.
+ */
+#define AXIS_X (-1.0f)      /* panel +x is right */
+#define AXIS_Y (-1.0f)      /* panel +y is down */
+
+static void gravity_from(const qmi8658_sample_t *s, float *gx, float *gy)
+{
+    *gx = AXIS_X * s->ax;
+    *gy = AXIS_Y * s->ay;
+}
+
+static void draw_particles(canvas_t *c, int64_t now)
+{
+    float dt = s_particles_last_us
+             ? (float)(now - s_particles_last_us) / 1000000.0f : 0.05f;
+    s_particles_last_us = now;
+    if (dt > 0.2f) dt = 0.2f;     /* a long stall must not teleport anything */
+
+    qmi8658_sample_t sample;
+    if (qmi8658_read(&sample) == ESP_OK) {
+        float gx, gy;
+        gravity_from(&sample, &gx, &gy);
+        s_gx += (gx * GRAVITY_PX - s_gx) * GRAVITY_ALPHA;
+        s_gy += (gy * GRAVITY_PX - s_gy) * GRAVITY_ALPHA;
+        /* Spinning the board stirs the pile. Garnish; nothing depends on it. */
+        particles_swirl(&s_particles, sample.gz * SWIRL_SCALE);
+    }
+
+    particles_step(&s_particles, s_gx, s_gy, dt);
+    particles_draw(&s_particles, c);
+    display_blit();
+}
+#else
+#define HAVE_PARTICLES 0
+#endif
+
 static void on_time(uint32_t secs)
 {
     s_base_secs = secs;
@@ -57,6 +132,15 @@ static void on_message(const char *text, size_t len)
     int64_t now = esp_timer_get_time();
 
     ud_kind_t kind = usagedata_parse(&s_data, text, now);
+    if (kind == UD_PARTICLES) {
+#if HAVE_PARTICLES
+        /* Unlike the data markers this is a request, so it does take the
+           view: someone asked to see it. */
+        pages_show(&s_pages, PAGE_PARTICLES, now);
+        s_drawn_page = PAGE_COUNT;
+#endif
+        return;
+    }
     if (kind == UD_TODAY) {
         if (s_pages.current == PAGE_TODAY) s_drawn_page = PAGE_COUNT;
         return;
@@ -168,6 +252,8 @@ void app_main(void)
         return;
     }
 
+    canvas_t *c = display_canvas();
+
     unsigned available = PAGE_BIT(PAGE_CLOCK) | PAGE_BIT(PAGE_MESSAGE);
     bool touch = false;
 #ifdef CONFIG_SCREEN_BOARD_CROWPANEL_7
@@ -175,9 +261,14 @@ void app_main(void)
                | PAGE_BIT(PAGE_TODAY);
     touch = gt911_init() == ESP_OK;
 #endif
+#if HAVE_PARTICLES
+    s_imu = qmi8658_init() == ESP_OK;
+    if (s_imu) {
+        available |= PAGE_BIT(PAGE_PARTICLES);
+        particles_init(&s_particles, 200, c->w, c->h, 0xC0FFEEu);
+    }
+#endif
     pages_init(&s_pages, available);
-
-    canvas_t *c = display_canvas();
 
     if (ble_uart_start(on_message, on_time) != ESP_OK) {
         ESP_LOGE(TAG, "ble start failed");
@@ -189,7 +280,16 @@ void app_main(void)
     int64_t last_beat = 0;
 
     for (;;) {
+#if HAVE_PARTICLES
+        /* Particles read better at 30 fps. A frame is 240*135*2 = 65 KB over
+           a 40 MHz bus, so the transfer is a fraction of the budget; nothing
+           else on the board is made busier, because this only shortens the
+           delay while the animation is what is showing. */
+        bool animating = s_imu && (s_saver || s_pages.current == PAGE_PARTICLES);
+        vTaskDelay(pdMS_TO_TICKS(animating ? 33 : TICK_MS));
+#else
         vTaskDelay(pdMS_TO_TICKS(TICK_MS));
+#endif
         int64_t now = esp_timer_get_time();
 
         if (touch && gt911_tapped()) {
@@ -204,7 +304,11 @@ void app_main(void)
             }
         }
 
-        bool saver_now = s_synced && pages_saver_active(&s_pages, now);
+        /* The clock screensaver needs the time; the particles do not, so on
+           a board with an IMU the saver runs whether or not a Mac has ever
+           connected. */
+        bool saver_now = pages_saver_active(&s_pages, now)
+                       && (s_synced || SAVER_NEEDS_NO_CLOCK);
         if (saver_now != s_saver) {
             s_saver = saver_now;
             s_drawn_page = PAGE_COUNT;      /* force a full redraw either way */
@@ -212,6 +316,9 @@ void app_main(void)
             s_saver_minute = -1;
         }
         if (s_saver) {
+#if HAVE_PARTICLES
+            if (s_imu) { draw_particles(c, now); continue; }
+#endif
             uint32_t secs = timecalc_advance(s_base_secs,
                                              (uint64_t)(now - s_base_us));
             if ((int)secs != s_drawn_second) {
@@ -255,6 +362,9 @@ void app_main(void)
         }
 
         if (s_pages.current == PAGE_CLOCK) draw_clock(c, now);
+#if HAVE_PARTICLES
+        if (s_pages.current == PAGE_PARTICLES && s_imu) draw_particles(c, now);
+#endif
 
         /* USB-Serial-JTAG drops output when no host is attached, so the boot
            log is often missed. A heartbeat makes liveness observable. */

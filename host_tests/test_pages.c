@@ -28,6 +28,18 @@ int main(void)
     expect("then today", pages_advance(&p, 4000) == PAGE_TODAY);
     expect("then wraps to clock", pages_advance(&p, 5000) == PAGE_CLOCK);
 
+    /* The Feather with an IMU: clock, message, particles. */
+    pages_init(&p, FEATHER | PAGE_BIT(PAGE_PARTICLES));
+    expect("feather+imu starts on the clock", p.current == PAGE_CLOCK);
+    expect("advance reaches message", pages_advance(&p, 1000) == PAGE_MESSAGE);
+    expect("then particles", pages_advance(&p, 2000) == PAGE_PARTICLES);
+    expect("then wraps to the clock", pages_advance(&p, 3000) == PAGE_CLOCK);
+
+    /* A board without one never lands there. */
+    pages_init(&p, FEATHER);
+    pages_show(&p, PAGE_PARTICLES, 1000);
+    expect("particles ignored when unavailable", p.current == PAGE_CLOCK);
+
     pages_init(&p, FEATHER);
     expect("feather starts on the clock", p.current == PAGE_CLOCK);
     expect("feather skips absent pages", pages_advance(&p, 1000) == PAGE_MESSAGE);

@@ -17,6 +17,10 @@ resets the board back into its application when it finishes.
 | Display pins | POWER 21, CS 7, DC 39, RST 40, BACKLITE 45, SCK 36, MOSI 35 |
 | Text layout | 12×24 font → 20 columns × 5 rows |
 | Bootloader | Adafruit TinyUF2 in the `factory` slot; double-tap RESET for recovery |
+| I2C bus | SDA 42, SCL 41 (STEMMA QT), powered from GPIO21 with the panel |
+| IMU | QMI8658 at `0x6B`, WHO_AM_I `0x05`, revision `0x7B` |
+| Also on the bus | Something at `0x77`, a BMP280/BME280 family part. Unused. |
+| IMU orientation | Z is normal to the board; X and Y lie in the panel's plane |
 
 ## What to compare on a new board
 

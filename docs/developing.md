@@ -95,7 +95,9 @@ the board a battery-backed clock. Today it starts at `--:--:--` after every
 power cycle and drifts until a `tell` re-syncs it; the DS3231 is
 temperature-compensated to about a minute a year.
 
-**Wiring:** the same I²C bus as the touch controller — **SDA 19, SCL 20**,
+**Wiring:** the same I²C bus as the touch controller. The pins are now board
+dependent, set by `CONFIG_SCREEN_I2C_SDA`/`_SCL` — on the CrowPanel **SDA 19,
+SCL 20**,
 3V3 and GND. DS3231 answers at `0x68` and the AT24C32 EEPROM at `0x50`–`0x57`;
 the GT911 is at `0x5D`, so nothing collides.
 
@@ -123,3 +125,20 @@ from nRF Connect to tell firmware bugs from client bugs. `usagedata`,
 ```sh
 make -C host_tests && for t in host_tests/test_*; do [ -x "$t" ] && "$t"; done
 ```
+
+## The Feather's IMU
+
+The small board has a QMI8658 on its STEMMA QT bus at `0x6B`, left over from
+its stock firmware. `main/qmi8658.c` drives it and `main/particles.c` turns its
+accelerometer into a few hundred falling specks, which are that board's
+screensaver: a field in constant motion protects the panel better than a clock
+that moves once a minute. `tell --device small "!particles"` summons the page.
+
+`particles.c` is pure C and takes a gravity vector, so it is tested on the host
+like everything else here; only the axis mapping needed the board. That mapping
+lives in `AXIS_X`/`AXIS_Y` in `main.c` — if the particles ever run the wrong
+way after the sensor is remounted, flip a sign there rather than touching the
+physics.
+
+There is also an unused device at `0x77`, a BMP280/BME280 family pressure and
+temperature part. That is where the stock firmware's temperature came from.

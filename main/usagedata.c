@@ -72,6 +72,9 @@ ud_kind_t usagedata_parse(usagedata_t *d, const char *payload,
     else if (starts_with(payload, "!daily")) kind = UD_DAILY;
     else if (starts_with(payload, "!clock")) kind = UD_CLOCK;
     else if (starts_with(payload, "!today")) kind = UD_TODAY;
+    /* Returns straight away: unlike the others this is a request, not
+       data, so there is nothing to store. */
+    else if (starts_with(payload, "!particles")) return UD_PARTICLES;
     else return UD_NONE;
 
     if (kind == UD_CLOCK) {

@@ -67,7 +67,8 @@ typedef struct {
     int64_t updated_us;      /* the most recent machine's update, 0 if none */
 } ud_view_t;
 
-typedef enum { UD_NONE = 0, UD_STATS, UD_DAILY, UD_CLOCK, UD_TODAY } ud_kind_t;
+typedef enum { UD_NONE = 0, UD_STATS, UD_DAILY, UD_CLOCK, UD_TODAY,
+               UD_PARTICLES } ud_kind_t;
 
 /* Parses one payload. "!stats" and "!daily" replace that section for the
    sending machine, named by a "host <name>" line and defaulting to "mac".

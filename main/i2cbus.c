@@ -1,10 +1,12 @@
 #include "i2cbus.h"
 
 #include "esp_log.h"
+#include "sdkconfig.h"
 
-/* Shared by the GT911 touch controller and the DS3231 clock. */
-#define PIN_SCL 20
-#define PIN_SDA 19
+/* Board dependent: the CrowPanel wires its GT911 to GPIO19/20, the Feather's
+   STEMMA QT port is GPIO42/41. Defaults live in Kconfig.projbuild. */
+#define PIN_SDA CONFIG_SCREEN_I2C_SDA
+#define PIN_SCL CONFIG_SCREEN_I2C_SCL
 
 static const char *TAG = "i2cbus";
 static i2c_master_bus_handle_t s_bus;

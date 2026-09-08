@@ -127,6 +127,27 @@ Time is sent as **seconds since your local midnight**, not a Unix timestamp.
 That way the firmware never needs to know about timezones or leap seconds — it
 counts seconds and formats `HH:MM:SS`.
 
+## Particles, on the small board
+
+The Feather has a QMI8658 accelerometer left over from its stock firmware, so
+that board pours: a few hundred coloured specks that fall whichever way you
+tilt it, bounce off the edges and settle into a heap. Spin the board and they
+stir.
+
+They are also its screensaver. A field in constant motion protects an LCD
+better than a clock that hops to a new spot once a minute, and unlike the clock
+it does not need a Mac to have set the time first — so the board does something
+worth looking at even if nothing has ever connected to it.
+
+```sh
+tell --device small "!particles"
+```
+
+The physics is `main/particles.c`: pure C, taking a gravity vector, so it is
+tested on the host with the rest of the project. The board is only needed for
+the one thing a datasheet cannot tell you, which is which way up the sensor is
+mounted.
+
 ## How it works
 
 ```
