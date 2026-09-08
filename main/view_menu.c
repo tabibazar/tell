@@ -41,7 +41,9 @@ static void menu_tile_rect(canvas_t *c, int n, int *x, int *y, int *w, int *h)
 void views_menu(canvas_t *c, const pages_t *p)
 {
     canvas_clear(c);
-    vw_title(c, "MENU", "tap a page");
+    canvas_fill_rect(c, 0, 0, c->w, c->cell_h, PAL_TITLE_BG);
+    canvas_puts(c, 1, 0, "MENU", PAL_FG);
+    vw_right_text(c, 0, c->cols - 1, "tap a page", PAL_DIM);
     for (int n = 0; ; n++) {
         page_t page = menu_tile_page(p, n);
         if (page == PAGE_COUNT) break;

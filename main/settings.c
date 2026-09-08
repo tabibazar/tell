@@ -13,6 +13,7 @@ static const settings_row_t ROWS[SETTINGS_ROWS] = {
     { "Screensaver shows", { "cycling pages", "drifting clock" }, 2 },
     { "Seconds per page",  { "10", "20", "30", "60" }, 4 },
     { "When Claude is busy", { "show today, live", "stay put" }, 2 },
+    { "Home page", { "clock", "today, live" }, 2 },
 };
 
 void settings_defaults(settings_t *s)
@@ -21,6 +22,7 @@ void settings_defaults(settings_t *s)
     s->saver_cycle = true;
     s->dwell_s = 20;
     s->auto_now = true;
+    s->home_now = false;
 }
 
 const settings_row_t *settings_row(int row)
@@ -43,6 +45,7 @@ int settings_choice(const settings_t *s, int row)
     case 1: return s->saver_cycle ? 0 : 1;
     case 2: return index_of(DWELL_S, ROWS[2].count, s->dwell_s);
     case 3: return s->auto_now ? 0 : 1;
+    case 4: return s->home_now ? 1 : 0;
     default: return 0;
     }
 }
@@ -57,6 +60,7 @@ bool settings_select(settings_t *s, int row, int choice)
     case 1: s->saver_cycle = choice == 0; break;
     case 2: s->dwell_s = DWELL_S[choice]; break;
     case 3: s->auto_now = choice == 0; break;
+    case 4: s->home_now = choice == 1; break;
     }
     return memcmp(&before, s, sizeof *s) != 0;
 }
@@ -88,6 +92,7 @@ void settings_load(settings_t *s)
             if (DWELL_S[i] == (int)v) s->dwell_s = (int)v;
     }
     if (nvs_get_u8(h, "auto_now", &v) == ESP_OK) s->auto_now = v != 0;
+    if (nvs_get_u8(h, "home_now", &v) == ESP_OK) s->home_now = v != 0;
     nvs_close(h);
     ESP_LOGI(TAG, "saver %dm, %s, %ds/page", s->saver_min,
              s->saver_cycle ? "cycle" : "drift", s->dwell_s);
@@ -104,6 +109,7 @@ bool settings_save(const settings_t *s)
            && nvs_set_u8(h, "saver_cycle", s->saver_cycle ? 1 : 0) == ESP_OK
            && nvs_set_u8(h, "dwell_s", (uint8_t)s->dwell_s) == ESP_OK
            && nvs_set_u8(h, "auto_now", s->auto_now ? 1 : 0) == ESP_OK
+           && nvs_set_u8(h, "home_now", s->home_now ? 1 : 0) == ESP_OK
            && nvs_commit(h) == ESP_OK;
     nvs_close(h);
     if (!ok) ESP_LOGE(TAG, "nvs write failed; setting not kept");

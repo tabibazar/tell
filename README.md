@@ -22,15 +22,18 @@ almanac and a Settings page. While Claude is busy the board shows the live page 
 returns to the clock when the work stops; Settings can turn that off.
 
 On the touch panel a tap on the right half of the screen goes to the next
-page and one on the left half to the previous; the first page after the clock
-is a menu with a tile per page, so any page is two taps away. After ten minutes with no tap
+page and one on the left half to the previous; the amber MENU tab at the top
+left of every page opens a menu with a tile per page, so any page is two taps
+away. After ten minutes with no tap
 and no message the screensaver cycles through the pages, twenty seconds each,
 so nothing sits still long enough to burn in; a tap brings back whatever page
 is showing. The Settings page (last in the
 tap order, touch boards only) changes the delay, from one minute to never,
 switches the saver to a drifting clock instead, sets the seconds per page,
-and chooses whether the board jumps to the live page while Claude is busy.
-Settings are kept in flash across power cycles.
+chooses whether the board jumps to the live page while Claude is busy, and
+picks the home page: the clock, or the live page, which then stays up all day
+if the screensaver is set to never. Settings are kept in flash across power
+cycles.
 
 ---
 
@@ -241,7 +244,10 @@ step without buying meaningful security.
 **Message framing.** BLE's default MTU is 23 bytes — 20 bytes of payload per
 write. macOS negotiates upward on connect, but a long message still arrives as
 several writes. The firmware appends them to a buffer and completes the message
-after **250 ms** with no further write. This is the part most likely to break, so
+after **250 ms** with no further write, or **1.5 s** for a data payload (one
+starting with `!`), since a stall in the Mac's Bluetooth stack mid-payload
+otherwise closes it early and the tail shows up as a text message with no
+marker. This is the part most likely to break, so
 it has an explicit test: a 512-byte message crosses three writes at MTU 256 and
 reassembles correctly.
 

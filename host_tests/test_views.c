@@ -425,6 +425,14 @@ int main(int argc, char **argv)
     views_story(&cv, &empty, 1.0f, now);
     expect("empty story page shows a message", lit_in(0, 48, W, 72) > 0);
 
+    /* The MENU tab: drawn in every title bar, hit over a fingertip's area. */
+    views_year(&cv, &view, 1.0f, now);
+    expect("menu tab drawn top left", count_colour(PAL_A1) > 500 && lit_in(0, 0, 72, 24) > 100);
+    expect("tab hit at its centre", vw_menu_tab_hit(&cv, 36, 12));
+    expect("tab hit just below it too", vw_menu_tab_hit(&cv, 80, 60));
+    expect("no tab hit further right", !vw_menu_tab_hit(&cv, 120, 12));
+    expect("no tab hit further down", !vw_menu_tab_hit(&cv, 36, 80));
+
     /* The clock strip in the title bar: absent until set, then on every page. */
     {
         vw_set_clock(true, 7 * 3600 + 31 * 60, -240, "EDT");
@@ -512,11 +520,12 @@ int main(int argc, char **argv)
     for (int r = 0; r < SETTINGS_ROWS; r++) {
         const settings_row_t *row = settings_row(r);
         for (int i = 0; i < row->count; i++) {
-            /* Find the button by scanning for its plate on its first row. */
-            if ((2 + r * 4 + 1) * 24 + 12 >= H) break;
-            int y = (2 + r * 4 + 1) * 24 + 12;
+            /* Find the button by scanning for its plate on its first row,
+               right of the label column. */
+            if ((2 + r * 3) * 24 + 12 >= H) break;
+            int y = (2 + r * 3) * 24 + 12;
             int x_start = -1, seen = 0;
-            for (int x = 0; x < W; x++) {
+            for (int x = 21 * 12; x < W; x++) {
                 uint16_t p = fb[y * W + x];
                 int plate = p == PAL_A1 || p == 0x2124;
                 if (plate && x_start < 0) x_start = x;
@@ -538,14 +547,14 @@ int main(int argc, char **argv)
     expect("and reports the right row and choice", wrong == 0);
     {
         int hr, hc;
-        expect("a tap on a label row misses",
+        expect("a tap on a label misses",
                !views_settings_hit(&cv, 30, 2 * 24 + 12, &hr, &hc));
         expect("a tap in the title bar misses",
                !views_settings_hit(&cv, 400, 10, &hr, &hc));
         expect("a tap far right of the buttons misses",
                !views_settings_hit(&cv, W - 5, 3 * 24 + 24, &hr, &hc));
         expect("a tap just below a button row still hits it (third row)",
-               views_settings_hit(&cv, 30, (2 + 3) * 24 + 12, &hr, &hc) && hr == 0);
+               views_settings_hit(&cv, 21 * 12 + 20, (2 + 2) * 24 + 12, &hr, &hc) && hr == 0);
         expect("a tap in the footer misses",
                !views_settings_hit(&cv, 30, 19 * 24 + 12, &hr, &hc));
     }

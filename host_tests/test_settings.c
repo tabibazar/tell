@@ -59,6 +59,10 @@ int main(void)
     expect("selecting stay put",
            settings_select(&s, 3, 1) && !s.auto_now && settings_choice(&s, 3) == 1);
 
+    expect("default home is the clock", !s.home_now && settings_choice(&s, 4) == 0);
+    expect("selecting today, live as home",
+           settings_select(&s, 4, 1) && s.home_now && settings_choice(&s, 4) == 1);
+
     settings_t before = s;
     expect("an out-of-range row is ignored", !settings_select(&s, 7, 0));
     expect("an out-of-range choice is ignored", !settings_select(&s, 0, 99));

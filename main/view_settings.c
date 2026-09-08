@@ -9,11 +9,17 @@
    two rows of buttons, a gap -- so three fit with room for a footer. Buttons
    are drawn two rows tall and hit-tested over three: one row is 24px, about
    4mm on this panel, and taps that missed it used to advance the page. */
+/* Settings layout: each setting is a block of two text rows -- the label on
+   the left, its buttons from SET_BTN_COL -- with one row of gap, so five fit
+   above the footer. Buttons are two rows tall and hit-tested over three: one
+   row is 24px, about 4mm on this panel, and taps that missed it used to
+   advance the page. */
 #define SET_TOP_ROW     2
-#define SET_BLOCK_ROWS  4
+#define SET_BLOCK_ROWS  3
 #define SET_BUTTON_ROWS 2
 #define SET_HIT_ROWS    3
 #define SET_LEFT_COL    1
+#define SET_BTN_COL     21
 #define SET_GAP_COLS    1
 
 /* A button's text column and width in columns; the text sits inside one
@@ -21,7 +27,7 @@
 static void set_button_span(int row, int choice, int *col, int *cols)
 {
     const settings_row_t *r = settings_row(row);
-    int at = SET_LEFT_COL;
+    int at = SET_BTN_COL;
     for (int i = 0; i < choice; i++)
         at += (int)strlen(r->choices[i]) + 2 + SET_GAP_COLS;
     *col = at;
@@ -35,12 +41,13 @@ void views_settings(canvas_t *c, const settings_t *s)
 
     for (int row = 0; row < SETTINGS_ROWS; row++) {
         const settings_row_t *r = settings_row(row);
-        int label_row = SET_TOP_ROW + row * SET_BLOCK_ROWS;
-        canvas_puts(c, SET_LEFT_COL, label_row, r->label, PAL_DIM);
+        int top_row = SET_TOP_ROW + row * SET_BLOCK_ROWS;
+        int y = top_row * c->cell_h;
+        int h = SET_BUTTON_ROWS * c->cell_h;
+        /* The label sits level with the middle of its buttons. */
+        canvas_puts_px(c, SET_LEFT_COL * c->cell_w, y + (h - c->cell_h) / 2, r->label, PAL_DIM);
 
         int chosen = settings_choice(s, row);
-        int y = (label_row + 1) * c->cell_h;
-        int h = SET_BUTTON_ROWS * c->cell_h;
         for (int i = 0; i < r->count; i++) {
             int col, cols;
             set_button_span(row, i, &col, &cols);
@@ -68,7 +75,7 @@ void views_settings(canvas_t *c, const settings_t *s)
 bool views_settings_hit(canvas_t *c, int x, int y, int *row, int *choice)
 {
     for (int r = 0; r < SETTINGS_ROWS; r++) {
-        int top = (SET_TOP_ROW + r * SET_BLOCK_ROWS + 1) * c->cell_h;
+        int top = (SET_TOP_ROW + r * SET_BLOCK_ROWS) * c->cell_h;
         if (y < top || y >= top + SET_HIT_ROWS * c->cell_h) continue;
         const settings_row_t *sr = settings_row(r);
         for (int i = 0; i < sr->count; i++) {

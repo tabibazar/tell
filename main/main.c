@@ -90,6 +90,15 @@ static void apply_settings(void)
     pages_set_saver(&s_pages, (int64_t)s_settings.saver_min * 60 * 1000000LL);
 }
 
+/* Where the board rests: the clock, or the live page if that was chosen and
+   this board has it. Boot, an expired message and the end of a busy spell
+   all land here. */
+static page_t home_page(void)
+{
+    if (s_settings.home_now && (s_pages.available & PAGE_BIT(PAGE_NOW))) return PAGE_NOW;
+    return PAGE_CLOCK;
+}
+
 /* The pages the cycling saver leaves out: settings, because a slideshow
    should not land on a control panel, and the message page when nothing
    has been sent, because "nothing sent yet" is not worth twenty seconds. */
@@ -138,7 +147,7 @@ static void on_message(const char *text, size_t len)
     }
     if (len == 0) {
         s_message[0] = '\0';
-        pages_show(&s_pages, PAGE_CLOCK, now);
+        pages_show(&s_pages, home_page(), now);
     } else {
         size_t n = len < MESSAGE_MAX ? len : MESSAGE_MAX;
         memcpy(s_message, text, n);
@@ -161,6 +170,7 @@ static void draw_message(canvas_t *c)
         return;
     }
     canvas_text(c, s_message);
+    vw_menu_tab(c);
 }
 
 /* Date above the digits, weather below, both sent from the Mac. Centred so
@@ -209,6 +219,7 @@ static void draw_clock(canvas_t *c, int64_t now)
             s_drawn_second = -2;
             canvas_big(c, "--:--:--");
             draw_clock_extras(c);
+            vw_menu_tab(c);
             display_blit();
         }
         return;
@@ -219,6 +230,7 @@ static void draw_clock(canvas_t *c, int64_t now)
     timecalc_format_hms(secs, buf);
     canvas_big(c, buf);
     draw_clock_extras(c);
+    vw_menu_tab(c);
     display_blit();
     s_drawn_second = (int)secs;
 }
@@ -274,6 +286,7 @@ void app_main(void)
        any Mac has spoken this boot. */
     if (settings_load_zone(&s_data.utc_offset_min, s_data.tz, (int)sizeof s_data.tz))
         s_data.have_utc = true;
+    pages_show(&s_pages, home_page(), esp_timer_get_time());
 
     int64_t last_beat = 0;
     /* The merged view is a few kilobytes; the main task's stack is not. */
@@ -324,6 +337,10 @@ void app_main(void)
                    the page, which would be a surprise. */
                 s_pages.last_activity_us = now;
                 ESP_LOGI(TAG, "tap at %d,%d -> wake", tx, ty);
+            } else if (s_pages.current != PAGE_MENU && vw_menu_tab_hit(c, tx, ty)) {
+                pages_show(&s_pages, PAGE_MENU, now);
+                s_drawn_page = PAGE_COUNT;
+                ESP_LOGI(TAG, "tap at %d,%d -> menu tab", tx, ty);
             } else if (s_pages.current == PAGE_MENU
                        && views_menu_hit(c, &s_pages, tx, ty, &target)) {
                 pages_show(&s_pages, target, now);
@@ -355,15 +372,16 @@ void app_main(void)
             usagedata_merge(&s_data, &v);
             bool busy = claude_busy(&v, now);
             if (busy && !s_busy && s_settings.auto_now
-                && (s_pages.current == PAGE_CLOCK || s_saver)
+                && (s_pages.current == home_page() || s_saver)
+                && s_pages.current != PAGE_NOW
                 && (s_pages.available & PAGE_BIT(PAGE_NOW))) {
                 pages_show(&s_pages, PAGE_NOW, now);
                 s_auto_jumped = true;
                 ESP_LOGI(TAG, "busy -> live page");
             } else if (!busy && s_busy && s_auto_jumped && s_pages.current == PAGE_NOW) {
-                pages_show(&s_pages, PAGE_CLOCK, now);
+                pages_show(&s_pages, home_page(), now);
                 s_auto_jumped = false;
-                ESP_LOGI(TAG, "idle -> clock");
+                ESP_LOGI(TAG, "idle -> home");
             }
             /* While busy on the live page, keep the saver away. */
             if (busy && s_auto_jumped && s_pages.current == PAGE_NOW)

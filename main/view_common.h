@@ -48,4 +48,11 @@ void vw_set_clock(bool known, uint32_t local_secs, int utc_offset_min,
 /* The strip itself, or an empty string when unknown; for tests and layout. */
 const char *vw_clock_strip(void);
 
+/* The MENU tab at the top left of a page, and whether a tap landed on it.
+   vw_title draws it; the clock and message pages, which have no title bar,
+   draw it themselves. The hit area is bigger than the tab (fingertips). */
+#define VW_TAB_COLS 6
+void vw_menu_tab(canvas_t *c);
+bool vw_menu_tab_hit(canvas_t *c, int x, int y);
+
 #endif /* VIEW_COMMON_H */

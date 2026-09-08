@@ -13,9 +13,10 @@ typedef struct {
     bool saver_cycle;    /* true: cycle the pages; false: drift the clock */
     int dwell_s;         /* seconds each page stays while cycling */
     bool auto_now;       /* jump to the live page while Claude is busy */
+    bool home_now;       /* the page the board rests on: today, live rather than the clock */
 } settings_t;
 
-#define SETTINGS_ROWS 4
+#define SETTINGS_ROWS 5
 #define SETTINGS_MAX_CHOICES 7
 
 typedef struct {
