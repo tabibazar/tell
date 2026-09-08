@@ -160,7 +160,10 @@ died reports that its oscillator stopped, and is then ignored until set again.
 
 Time is sent as **seconds since your local midnight**, not a Unix timestamp.
 That way the firmware never needs to know about timezones or leap seconds — it
-counts seconds and formats `HH:MM:SS`.
+counts seconds and formats `HH:MM:SS`. The one concession is the title bar on
+the big panel's pages, which shows the local time with its zone and UTC beside
+it; the offset and the zone's name (`utc -240`, `tz EDT`) ride along in the
+clock payload the `push-clock` agent sends every five minutes.
 
 ## How it works
 

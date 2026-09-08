@@ -11,6 +11,7 @@
    region", and those are what is asserted. */
 #include "canvas.h"
 #include "pagedefs.h"
+#include "view_common.h"
 #include "pages.h"
 #include "palette.h"
 #include "settings.h"
@@ -423,6 +424,22 @@ int main(int argc, char **argv)
     expect("story text stops short of the right edge", lit_in(W - 12, 24, W, H) == 0);
     views_story(&cv, &empty, 1.0f, now);
     expect("empty story page shows a message", lit_in(0, 48, W, 72) > 0);
+
+    /* The clock strip in the title bar: absent until set, then on every page. */
+    {
+        vw_set_clock(true, 7 * 3600 + 31 * 60, -240, "EDT");
+        expect("strip reads local time and UTC",
+               strcmp(vw_clock_strip(), "07:31 EDT  11:31 UTC") == 0);
+        views_year(&cv, &view, 1.0f, now);
+        expect("strip drawn at the right of the title bar", lit_in(W - 20 * 12, 0, W, 24) > 300);
+        views_models(&cv, &view, 1.0f, now);
+        expect("a long heading still gets the strip", lit_in(W - 20 * 12, 0, W, 24) > 300);
+        vw_set_clock(true, 30, 300, "X");
+        expect("UTC rolls back across midnight",
+               strcmp(vw_clock_strip(), "00:00 X  19:00 UTC") == 0);
+        vw_set_clock(false, 0, 0, NULL);
+        expect("unset again leaves the bar to the page", vw_clock_strip()[0] == '\0');
+    }
 
     /* The page table: every page named, every data page drawable, and the
        kinds it is fed by real. */

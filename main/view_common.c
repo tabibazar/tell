@@ -25,17 +25,45 @@ void vw_freshness(const ud_view_t *d, int64_t now_us, char *out, int size)
     else snprintf(out, size, "updated %ldh ago", secs / 3600);
 }
 
+static char s_strip[32];
+
+void vw_set_clock(bool known, uint32_t local_secs, int utc_offset_min,
+                  const char *tz)
+{
+    if (!known) { s_strip[0] = '\0'; return; }
+    uint32_t local = local_secs % SECS_PER_DAY;
+    /* UTC is the local time less the offset; it may sit on the other side
+       of midnight, which the modulo handles. */
+    long utc = ((long)local - (long)utc_offset_min * 60L) % (long)SECS_PER_DAY;
+    if (utc < 0) utc += SECS_PER_DAY;
+    snprintf(s_strip, sizeof s_strip, "%02lu:%02lu %s  %02ld:%02ld UTC",
+             (unsigned long)(local / 3600), (unsigned long)((local % 3600) / 60),
+             tz && tz[0] ? tz : "local", utc / 3600, (utc % 3600) / 60);
+}
+
+const char *vw_clock_strip(void)
+{
+    return s_strip;
+}
+
 void vw_title(canvas_t *c, const char *left, const char *right)
 {
     canvas_fill_rect(c, 0, 0, c->w, c->cell_h, PAL_TITLE_BG);
     canvas_puts(c, 1, 0, left, PAL_FG);
-    if (right == NULL) return;
 
-    /* Sit left of the button, and drop the note rather than overlap the
-       heading if there is no room. */
-    int col = c->cols - 1 - (int)strlen(right);
+    /* The clock strip takes the right edge when it is known; the page's own
+       note sits left of it, and is dropped rather than overlapped if the
+       heading leaves no room. */
+    int edge = c->cols - 1;
+    if (s_strip[0]) {
+        int col = edge - (int)strlen(s_strip);
+        canvas_puts(c, col, 0, s_strip, PAL_FG);
+        edge = col - 2;
+    }
+    if (right == NULL) return;
+    int col = edge - (int)strlen(right);
     if (col > (int)strlen(left) + 2)
-        canvas_puts(c, col, 0, right, PAL_FG);
+        canvas_puts(c, col, 0, right, PAL_DIM);
 }
 
 /* Warns in the build if a footer could ever be clipped at the right edge. */

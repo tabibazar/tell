@@ -19,8 +19,14 @@ if ! mkdir "$LOCK" 2>/dev/null; then exit 0; fi
 trap 'rmdir "$LOCK"' EXIT
 
 DATE=$(date '+%A %d %B %Y')
+# The board knows only seconds since local midnight, so the offset from UTC in
+# minutes and the zone's name come from here; they let it show UTC beside the
+# local time in every title bar.
+UTC_OFF=$(python3 -c 'import datetime as d; print(int(d.datetime.now().astimezone().utcoffset().total_seconds() // 60))')
+TZ_NAME=$(date '+%Z')
 
 WX=$(./tools/weather.py)
 
-printf '!clock\ndate %s\nwx %s\n' "$DATE" "$WX" | ./tools/tell-locked.sh --device "$DEVICE"
+printf '!clock\ndate %s\nutc %s\ntz %s\nwx %s\n' "$DATE" "$UTC_OFF" "$TZ_NAME" "$WX" \
+    | ./tools/tell-locked.sh --device "$DEVICE"
 echo "clock: $DATE | $WX"

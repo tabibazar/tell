@@ -84,6 +84,15 @@ int main(void)
     expect("a clock payload replaces both fields",
            strcmp(d.date, "only a date") == 0 && d.weather[0] == '\0');
 
+    parse("!clock\ndate Tuesday 08 September 2026\nutc -240\ntz EDT\nwx Clear 13C\n");
+    expect("clock offset and zone parsed",
+           d.have_utc && d.utc_offset_min == -240
+           && strcmp(d.tz, "EDT") == 0 && strcmp(d.weather, "Clear 13C") == 0);
+    parse("!clock\ndate x\nutc 99999\n");
+    expect("an absurd offset is ignored", !d.have_utc && d.utc_offset_min == 0);
+    parse("!clock\ntz AVeryLongZoneName\n");
+    expect("zone name is truncated, not overflowed", strlen(d.tz) <= 7);
+
     {
         char longp[256] = "!clock\nwx ";
         for (int i = 0; i < 100; i++) strncat(longp, "y", sizeof longp - strlen(longp) - 1);

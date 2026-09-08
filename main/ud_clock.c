@@ -9,11 +9,24 @@ static void begin_clock(usagedata_t *d, ud_host_t *h, int64_t now_us)
     (void)d; (void)h; (void)now_us;
     d->date[0] = '\0';
     d->weather[0] = '\0';
+    d->have_utc = false;
+    d->utc_offset_min = 0;
+    d->tz[0] = '\0';
 }
 
 static void line_clock(usagedata_t *d, ud_host_t *h, const char *tag, const char *q)
 {
     (void)d; (void)h;
+    char num[24];
+    if (strcmp(tag, "utc") == 0) {
+        if (ud_token(q, num, sizeof num - 1) == NULL) return;
+        int v = atoi(num);
+        /* Offsets run from -12 to +14 hours; anything else is a bad line. */
+        if (v >= -12 * 60 && v <= 14 * 60) { d->utc_offset_min = v; d->have_utc = true; }
+        return;
+    }
+    if (strcmp(tag, "tz") == 0) { ud_token(q, d->tz, (int)sizeof d->tz - 1); return; }
+
     /* The rest of the line is free text, so take it verbatim. */
     char *dest = NULL;
     if (strcmp(tag, "date") == 0) dest = d->date;

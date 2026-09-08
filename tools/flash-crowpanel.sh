@@ -8,11 +8,19 @@
 #
 # Refuses a screen.bin older than any source file: a failed build leaves the
 # previous binary in place, and flashing that means debugging a bug you have
-# already fixed. Pause the stats agent first if it is running, or its pushes
-# will collide with the flash:
-#   launchctl bootout gui/$(id -u)/com.tabibazar.tell-stats
+# already fixed. Pauses the stats agent while it works, so its pushes do not
+# collide with the flash, and starts it again whatever happens.
 set -e
 cd "$(dirname "$0")/.."
+
+AGENT="gui/$(id -u)/com.tabibazar.tell-stats"
+PLIST="$HOME/Library/LaunchAgents/com.tabibazar.tell-stats.plist"
+resume_agent() {
+    if [ -n "$PAUSED" ] && [ -f "$PLIST" ]; then
+        launchctl bootstrap "gui/$(id -u)" "$PLIST" 2>/dev/null && echo "stats agent resumed"
+    fi
+}
+trap resume_agent EXIT
 
 BIN=build-crowpanel/screen.bin
 [ -f "$BIN" ] || { echo "no $BIN; build first"; exit 1; }
@@ -25,6 +33,11 @@ done
 
 PORT="${1:-$(ls /dev/cu.wchusbserial* /dev/cu.usbserial* 2>/dev/null | head -1)}"
 [ -n "$PORT" ] || { echo "no serial port: is the board on USB?"; exit 1; }
+
+if launchctl print "$AGENT" >/dev/null 2>&1; then
+    launchctl bootout "$AGENT" && PAUSED=1 && echo "stats agent paused"
+    sleep 1
+fi
 
 . tools/idf-env.sh
 echo "flashing $BIN to $PORT"

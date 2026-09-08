@@ -38,4 +38,14 @@ void vw_dot(canvas_t *c, int col, int row, uint16_t colour);
 void vw_label_count(int64_t v, char *out, int size);
 void vw_label_pct(int64_t v, char *out, int size);
 
+/* What the title bars show on the right: the local time with its zone, and
+   UTC. main sets this every tick from the board's clock and the offset the
+   Mac's clock payload carries; until both are known the bars show nothing
+   there. */
+void vw_set_clock(bool known, uint32_t local_secs, int utc_offset_min,
+                  const char *tz);
+
+/* The strip itself, or an empty string when unknown; for tests and layout. */
+const char *vw_clock_strip(void);
+
 #endif /* VIEW_COMMON_H */

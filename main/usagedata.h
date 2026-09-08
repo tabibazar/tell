@@ -243,6 +243,12 @@ typedef struct {
        cannot work out a date, and it has no network to ask about weather. */
     char date[UD_TEXT_MAX + 1];
     char weather[UD_TEXT_MAX + 1];
+    /* Also from the Mac's clock payload: the local offset from UTC in
+       minutes and the zone's name, so the title bars can show UTC beside the
+       local time. have_utc is false until a Mac has said. */
+    bool have_utc;
+    int utc_offset_min;
+    char tz[8];
     /* Almanac, also computed on the Mac: the board has neither a calendar
        nor the ephemeris to work any of it out. */
     float moon_phase;                    /* 0 new, 0.5 full, 1 new again */

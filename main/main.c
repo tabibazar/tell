@@ -3,6 +3,7 @@
 #include "gt911.h"
 #include "pagedefs.h"
 #include "pages.h"
+#include "view_common.h"
 #include "ds3231.h"
 #include "settings.h"
 #include "timecalc.h"
@@ -17,6 +18,7 @@
 #include "freertos/task.h"
 #include "sdkconfig.h"
 
+#include <limits.h>
 #include <stdbool.h>
 #include <string.h>
 
@@ -48,6 +50,12 @@ static int s_drawn_second = -1;
 
 /* When the current page was last drawn, for pages that refresh on their own. */
 static int64_t s_page_drawn_us = 0;
+
+/* The title bars carry the time, so every page redraws when the minute
+   changes -- quietly, without replaying its grow-in animation. */
+static int s_drawn_minute = -1;
+static bool s_quiet_redraw = false;
+static bool s_zone_dirty = false;     /* a Mac sent a zone; keep it in flash */
 
 /* Auto-jump: while Claude is busy the live page shows itself, and when the
    work stops the clock comes back. Only from the clock or the saver, so a
@@ -117,6 +125,8 @@ static void on_message(const char *text, size_t len)
     if (kind == UD_CLOCK) {
         /* Arrives on a timer like the charts, so it must not steal the view. */
         if (s_pages.current == PAGE_CLOCK) s_drawn_second = -1;
+        else s_drawn_minute = -1;            /* redraw the title strip quietly */
+        if (s_data.have_utc) s_zone_dirty = true;
         return;
     }
     if (kind != UD_NONE) {
@@ -260,6 +270,10 @@ void app_main(void)
     /* After BLE, which is where NVS gets initialised. */
     settings_load(&s_settings);
     apply_settings();
+    /* The zone the Mac last reported, so UTC shows from the RTC's time before
+       any Mac has spoken this boot. */
+    if (settings_load_zone(&s_data.utc_offset_min, s_data.tz, (int)sizeof s_data.tz))
+        s_data.have_utc = true;
 
     int64_t last_beat = 0;
     /* The merged view is a few kilobytes; the main task's stack is not. */
@@ -269,6 +283,19 @@ void app_main(void)
         vTaskDelay(pdMS_TO_TICKS(TICK_MS));
         int64_t now = esp_timer_get_time();
 
+        if (s_zone_dirty) {
+            /* Written from here rather than the BLE task, like the RTC. */
+            s_zone_dirty = false;
+            static int saved_off = INT_MIN;
+            static char saved_tz[8];
+            if (s_data.utc_offset_min != saved_off || strcmp(s_data.tz, saved_tz) != 0) {
+                if (settings_save_zone(s_data.utc_offset_min, s_data.tz)) {
+                    saved_off = s_data.utc_offset_min;
+                    strncpy(saved_tz, s_data.tz, sizeof saved_tz - 1);
+                    ESP_LOGI(TAG, "zone %s (%d min) kept", s_data.tz, s_data.utc_offset_min);
+                }
+            }
+        }
         if (s_rtc && s_rtc_pending && s_synced) {
             /* A Mac just synced us; its clock is NTP-disciplined, so the chip
                takes that time and holds it through the next power cycle. */
@@ -373,14 +400,32 @@ void app_main(void)
         /* Once idle, cycle the pages so no image sits long enough to burn in. */
         pages_tick(&s_pages, now);
 
+        /* The strip in the title bars: local time and UTC, once both the
+           board's clock and the Mac's offset are known. */
+        {
+            uint32_t secs = s_synced ? now_secs(now) : 0;
+            vw_set_clock(s_synced && s_data.have_utc, secs, s_data.utc_offset_min, s_data.tz);
+            int minute = s_synced ? (int)(secs / 60) : -1;
+            if (minute != s_drawn_minute) {
+                s_drawn_minute = minute;
+                if (s_pages.current != PAGE_CLOCK && s_drawn_page == s_pages.current) {
+                    s_drawn_page = PAGE_COUNT;
+                    s_quiet_redraw = true;
+                }
+            }
+        }
+
         const page_def_t *pd = &page_defs[s_pages.current];
         if (s_pages.current != s_drawn_page) {
             s_drawn_page = s_pages.current;
             s_drawn_second = -1;
             s_page_drawn_us = now;
-            if (pd->draw && pd->animated) {
+            bool quiet = s_quiet_redraw;
+            s_quiet_redraw = false;
+            if (pd->draw && pd->animated && !quiet) {
                 s_anim_start = now;      /* drawn by the animation below */
             } else if (pd->draw) {
+                s_anim_start = 0;
                 usagedata_merge(&s_data, &v);
                 pd->draw(c, &v, 1.0f, now);
                 display_blit();

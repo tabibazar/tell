@@ -39,4 +39,10 @@ bool settings_select(settings_t *s, int row, int choice);
 void settings_load(settings_t *s);
 bool settings_save(const settings_t *s);
 
+/* The time zone the Mac last reported, kept so the title bars can show UTC
+   from the RTC's time straight after a power cycle, before any Mac speaks.
+   Not a setting anyone chooses, but the same flash and the same rules. */
+bool settings_load_zone(int *utc_offset_min, char *tz, int tz_size);
+bool settings_save_zone(int utc_offset_min, const char *tz);
+
 #endif /* SETTINGS_H */

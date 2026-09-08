@@ -109,7 +109,42 @@ bool settings_save(const settings_t *s)
     if (!ok) ESP_LOGE(TAG, "nvs write failed; setting not kept");
     return ok;
 }
+
+bool settings_load_zone(int *utc_offset_min, char *tz, int tz_size)
+{
+    nvs_handle_t h;
+    if (nvs_open(NAMESPACE, NVS_READONLY, &h) != ESP_OK) return false;
+    int32_t off;
+    size_t len = (size_t)tz_size;
+    bool ok = nvs_get_i32(h, "utc_off", &off) == ESP_OK
+           && nvs_get_str(h, "tz", tz, &len) == ESP_OK
+           && off >= -12 * 60 && off <= 14 * 60;
+    nvs_close(h);
+    if (ok) *utc_offset_min = (int)off;
+    return ok;
+}
+
+bool settings_save_zone(int utc_offset_min, const char *tz)
+{
+    nvs_handle_t h;
+    if (nvs_open(NAMESPACE, NVS_READWRITE, &h) != ESP_OK) return false;
+    bool ok = nvs_set_i32(h, "utc_off", (int32_t)utc_offset_min) == ESP_OK
+           && nvs_set_str(h, "tz", tz) == ESP_OK
+           && nvs_commit(h) == ESP_OK;
+    nvs_close(h);
+    return ok;
+}
 #else
 void settings_load(settings_t *s) { settings_defaults(s); }
 bool settings_save(const settings_t *s) { (void)s; return true; }
+bool settings_load_zone(int *utc_offset_min, char *tz, int tz_size)
+{
+    (void)utc_offset_min; (void)tz; (void)tz_size;
+    return false;
+}
+bool settings_save_zone(int utc_offset_min, const char *tz)
+{
+    (void)utc_offset_min; (void)tz;
+    return true;
+}
 #endif
