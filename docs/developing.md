@@ -130,8 +130,8 @@ make -C host_tests && for t in host_tests/test_*; do [ -x "$t" ] && "$t"; done
 
 The small board has a QMI8658 on its STEMMA QT bus at `0x6B`, left over from
 its stock firmware. `main/qmi8658.c` drives it and `main/particles.c` turns its
-accelerometer into a few hundred falling specks, which are that board's
-screensaver: a field in constant motion protects the panel better than a clock
+accelerometer into eight hundred grains of sand in a bottle, which are that
+board's screensaver: a field in constant motion protects the panel better than a clock
 that moves once a minute. `tell --device small "!particles"` summons the page.
 
 `particles.c` is pure C and takes a gravity vector, so it is tested on the host

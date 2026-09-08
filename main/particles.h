@@ -6,16 +6,25 @@
 #include <stdint.h>
 
 /*
- * A few hundred particles falling under a gravity vector supplied by the
- * caller. Knows nothing about accelerometers or panels, so it builds and runs
- * on the host like canvas and usagedata do.
+ * A bottle of particles: a few hundred grains that fall under a gravity
+ * vector supplied by the caller, pile up with real depth, and keep jostling.
+ * Knows nothing about accelerometers or panels, so it builds and runs on the
+ * host like canvas and usagedata do.
  *
- * Particles do not collide with each other. A few hundred of them at twenty
- * frames a second has no budget for it, and a heap that slumps under gravity
- * reads correctly without it.
+ * Grains do not collide pairwise -- that is O(n^2) and there is no budget for
+ * it. Instead they are counted into a coarse grid each step and pushed down
+ * the density gradient, which is enough to make the pile occupy volume rather
+ * than collapsing onto the boundary line. Without it every grain ends up at
+ * the same wall and the animation is over the moment they arrive.
  */
 
-#define PARTICLES_MAX 240
+#define PARTICLES_MAX 1024
+
+/* The density grid. One cell per CELL pixels square, sized for the largest
+   panel this runs on. */
+#define PARTICLES_CELL 10
+#define PARTICLES_GRID_W 40
+#define PARTICLES_GRID_H 24
 
 typedef struct {
     float x, y;        /* panel pixels */
@@ -28,6 +37,8 @@ typedef struct {
     int n;
     int w, h;
     uint32_t rng;
+    int gw, gh;                                    /* grid cells in use */
+    uint8_t grid[PARTICLES_GRID_W * PARTICLES_GRID_H];
 } particles_t;
 
 /* Scatters `n` particles over a w x h panel. `n` is clamped to PARTICLES_MAX. */

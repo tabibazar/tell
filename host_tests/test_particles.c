@@ -58,12 +58,32 @@ int main(void)
         expect("particles stay on the panel", inside);
     }
 
-    /* Damping is real: with no gravity, motion dies away. */
+    /* Damping is real: a hard shove dies away to the jitter floor. It does
+       not reach zero, and must not -- a bottle of grains that freezes solid
+       is the bug this replaced. */
     particles_init(&s, 200, W, H, 999u);
-    for (int i = 0; i < s.n; i++) { s.p[i].vx = 50.0f; s.p[i].vy = -30.0f; }
+    for (int i = 0; i < s.n; i++) { s.p[i].vx = 400.0f; s.p[i].vy = -300.0f; }
     float before = energy(&s);
     run(&s, 0, 0, 300);
-    expect("kinetic energy decays without gravity", energy(&s) < before * 0.5f);
+    expect("a shove decays to the jitter floor", energy(&s) < before * 0.2f);
+    expect("but the bottle never stops moving", energy(&s) > 0.0f);
+
+    /* The pile has depth. Under steady gravity the grains must not all end
+       up in the same row: that is the collapse that made the first version
+       drain and then do nothing. */
+    particles_init(&s, 400, W, H, 31u);
+    run(&s, 0, 900, 400);
+    {
+        int rows[H];
+        for (int i = 0; i < H; i++) rows[i] = 0;
+        for (int i = 0; i < s.n; i++) {
+            int r = (int)s.p[i].y;
+            if (r >= 0 && r < H) rows[r]++;
+        }
+        int occupied = 0;
+        for (int i = 0; i < H; i++) if (rows[i] > 0) occupied++;
+        expect("the pile stands more than a few rows deep", occupied > 12);
+    }
 
     /* Gravity to the right piles them up on the right. */
     particles_init(&s, 200, W, H, 42u);

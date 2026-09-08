@@ -2,15 +2,25 @@
 
 #include "palette.h"
 
-/* Bounce loses this much speed, so the pile settles instead of ringing. */
-#define RESTITUTION 0.45f
-/* Drag per second, so motion dies away when gravity is removed. */
-#define DRAG 0.90f
-/* Below this speed a particle against a wall is simply stopped, which is what
-   keeps a settled heap from shivering on a noisy accelerometer. */
-#define SLEEP_SPEED 6.0f
+#include <stdbool.h>
 
-#define PARTICLE_SIZE 2
+/* Bounce loses this much speed, so grains do not ring off the walls. */
+#define RESTITUTION 0.35f
+/* Drag per second. High enough to keep the bottle from becoming a blender,
+   low enough that a tilt still sloshes for a second or two afterwards. */
+#define DRAG 0.55f
+/* How hard a crowded cell pushes its neighbours away, in pixels per second
+   squared per surplus grain. This is what gives the pile depth: without it
+   every grain settles onto the same boundary line and nothing moves again.
+   Against GRAVITY_PX in main.c it sets how deep the heap stands. */
+#define PRESSURE 90.0f
+/* A per-frame nudge, in pixels per second. Small: the drag above turns it
+   into a shimmer of about ten pixels a second, so a settled heap keeps
+   shifting instead of freezing, which is both nicer to watch and better for
+   a panel that shows this for hours. */
+#define JITTER 3.0f
+
+#define PARTICLE_SIZE 3
 
 static uint32_t next_rand(particles_t *s)
 {
@@ -58,7 +68,59 @@ static void bounce(float *pos, float *vel, float limit)
     } else {
         return;
     }
-    if (*vel < SLEEP_SPEED && *vel > -SLEEP_SPEED) *vel = 0.0f;
+}
+
+/* Counts the grains into the coarse grid, so the step below can read a
+   density from it. Saturating, because a cell that holds more than 255 grains
+   is already as crowded as the gradient can express. */
+static void bin(particles_t *s)
+{
+    s->gw = s->w / PARTICLES_CELL + 1;
+    s->gh = s->h / PARTICLES_CELL + 1;
+    if (s->gw > PARTICLES_GRID_W) s->gw = PARTICLES_GRID_W;
+    if (s->gh > PARTICLES_GRID_H) s->gh = PARTICLES_GRID_H;
+
+    for (int i = 0, n = s->gw * s->gh; i < n; i++) s->grid[i] = 0;
+
+    for (int i = 0; i < s->n; i++) {
+        int cx = (int)s->p[i].x / PARTICLES_CELL;
+        int cy = (int)s->p[i].y / PARTICLES_CELL;
+        if (cx < 0) cx = 0; else if (cx >= s->gw) cx = s->gw - 1;
+        if (cy < 0) cy = 0; else if (cy >= s->gh) cy = s->gh - 1;
+        uint8_t *cell = &s->grid[cy * s->gw + cx];
+        if (*cell < 255) (*cell)++;
+    }
+}
+
+/* The count in a cell, false when there is no such cell. Off the grid is not
+   "empty": treating it as empty would let a wall pull grains through it, and
+   treating it as full would fire them back across the panel. The walls are
+   the business of bounce(); here they simply do not vote. */
+static bool cell(const particles_t *s, int cx, int cy, int *out)
+{
+    if (cx < 0 || cy < 0 || cx >= s->gw || cy >= s->gh) return false;
+    *out = s->grid[cy * s->gw + cx];
+    return true;
+}
+
+/* Where a crowded cell wants to send this grain: toward each neighbour that
+   holds fewer, in proportion to how many fewer. Comparing a cell against its
+   own contents is the point -- an earlier version compared only the two
+   neighbours, so a cell packed with sixteen grains and empty ones either
+   side felt nothing at all, and the whole pile sat one cell deep. */
+static void pressure(const particles_t *s, int cx, int cy, float *fx, float *fy)
+{
+    int self;
+    if (!cell(s, cx, cy, &self)) { *fx = *fy = 0.0f; return; }
+
+    float ax = 0.0f, ay = 0.0f;
+    int d;
+    if (cell(s, cx - 1, cy, &d) && self > d) ax -= (float)(self - d);
+    if (cell(s, cx + 1, cy, &d) && self > d) ax += (float)(self - d);
+    if (cell(s, cx, cy - 1, &d) && self > d) ay -= (float)(self - d);
+    if (cell(s, cx, cy + 1, &d) && self > d) ay += (float)(self - d);
+    *fx = ax;
+    *fy = ay;
 }
 
 void particles_step(particles_t *s, float gx, float gy, float dt)
@@ -72,10 +134,22 @@ void particles_step(particles_t *s, float gx, float gy, float dt)
     float maxx = (float)s->w;
     float maxy = (float)s->h;
 
+    bin(s);
+
     for (int i = 0; i < s->n; i++) {
         particle_t *p = &s->p[i];
-        p->vx = (p->vx + gx * dt) * damp;
-        p->vy = (p->vy + gy * dt) * damp;
+
+        float px, py;
+        pressure(s, (int)p->x / PARTICLES_CELL, (int)p->y / PARTICLES_CELL,
+                 &px, &py);
+
+        p->vx = (p->vx + (gx + px * PRESSURE) * dt) * damp;
+        p->vy = (p->vy + (gy + py * PRESSURE) * dt) * damp;
+
+        /* Never quite still. */
+        p->vx += (frand(s, -1.0f, 1.0f)) * JITTER;
+        p->vy += (frand(s, -1.0f, 1.0f)) * JITTER;
+
         p->x += p->vx * dt;
         p->y += p->vy * dt;
         bounce(&p->x, &p->vx, maxx);

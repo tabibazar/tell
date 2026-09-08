@@ -130,9 +130,9 @@ counts seconds and formats `HH:MM:SS`.
 ## Particles, on the small board
 
 The Feather has a QMI8658 accelerometer left over from its stock firmware, so
-that board pours: a few hundred coloured specks that fall whichever way you
-tilt it, bounce off the edges and settle into a heap. Spin the board and they
-stir.
+that board is a bottle of sand: eight hundred coloured grains that pour
+whichever way you tilt it, pile up against the low edge with real depth, and
+keep shifting once they land. Spin the board and they stir.
 
 They are also its screensaver. A field in constant motion protects an LCD
 better than a clock that hops to a new spot once a minute, and unlike the clock
@@ -144,7 +144,11 @@ tell --device small "!particles"
 ```
 
 The physics is `main/particles.c`: pure C, taking a gravity vector, so it is
-tested on the host with the rest of the project. The board is only needed for
+tested on the host with the rest of the project. Grains do not collide
+pairwise — that is O(n²) and there is no budget for it. They are counted into
+a coarse grid each frame and pushed out of crowded cells, which is what gives
+the pile depth; without it every grain ends up on the same boundary line and
+the animation is over the moment they arrive. The board is only needed for
 the one thing a datasheet cannot tell you, which is which way up the sensor is
 mounted.
 

@@ -265,7 +265,7 @@ void app_main(void)
     s_imu = qmi8658_init() == ESP_OK;
     if (s_imu) {
         available |= PAGE_BIT(PAGE_PARTICLES);
-        particles_init(&s_particles, 200, c->w, c->h, 0xC0FFEEu);
+        particles_init(&s_particles, 800, c->w, c->h, 0xC0FFEEu);
     }
 #endif
     pages_init(&s_pages, available);
