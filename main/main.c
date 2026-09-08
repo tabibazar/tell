@@ -109,10 +109,10 @@ static float s_gx, s_gy;      /* low-passed gravity, panel coordinates */
  *
  * That fixes both axes and the sign of the vertical one. The sign of the
  * horizontal is the one thing two still readings cannot give, since gravity
- * had no component along it either time: if the sand runs to the wrong side
- * when the board is tipped left, negate AXIS_X and nothing else.
+ * had no component along it either time -- it was read off the board instead,
+ * by tipping it and seeing which way the sand went.
  */
-#define AXIS_X ( 1.0f)      /* panel +x, to the right, is sensor +y */
+#define AXIS_X (-1.0f)      /* panel +x, to the right, is sensor -y */
 #define AXIS_Y ( 1.0f)      /* panel +y, downwards,    is sensor +x */
 
 static void gravity_from(const qmi8658_sample_t *s, float *gx, float *gy)

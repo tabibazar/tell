@@ -20,7 +20,9 @@ resets the board back into its application when it finishes.
 | I2C bus | SDA 42, SCL 41 (STEMMA QT), powered from GPIO21 with the panel |
 | IMU | QMI8658 at `0x6B`, WHO_AM_I `0x05`, revision `0x7B` |
 | Also on the bus | Something at `0x77`, a BMP280/BME280 family part. Unused. |
-| IMU orientation | Z is normal to the board; X and Y lie in the panel's plane |
+| IMU orientation | Z is the screen's normal; X is up the panel, Y across it |
+| Panel gravity | `gx = -ay`, `gy = +ax`, measured on the board, not assumed |
+| Barometer | BMP280, id `0x58`. Unused for weather; its noise seeds the sand |
 
 ## What to compare on a new board
 
