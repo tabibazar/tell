@@ -20,6 +20,7 @@ extern const ud_section_t ud_section_story;
 extern const ud_section_t ud_section_level;
 extern const ud_section_t ud_section_flip;
 extern const ud_section_t ud_section_zero;
+extern const ud_section_t ud_section_newgame;
 
 /* Every payload the board understands. A new section is a new ud_*.c file
    and one line here. */
@@ -48,5 +49,6 @@ const ud_section_t *const ud_sections[] = {
     &ud_section_level,
     &ud_section_flip,
     &ud_section_zero,
+    &ud_section_newgame,
 };
 const int ud_section_count = (int)(sizeof ud_sections / sizeof ud_sections[0]);

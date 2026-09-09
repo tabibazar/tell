@@ -428,9 +428,18 @@ static void on_message(const char *text, size_t len)
 #if HAVE_LEVEL
     /* Commands, not data: unlike the charts these were asked for, so they do
        take the view. */
-    if (kind == UD_LEVEL || kind == UD_FLIP || kind == UD_ZERO) {
+    if (kind == UD_LEVEL || kind == UD_FLIP || kind == UD_ZERO
+     || kind == UD_NEWGAME) {
         if (kind == UD_FLIP) axis_command(text);
         if (kind == UD_ZERO) zero_command(text);
+        if (kind == UD_NEWGAME) {
+            /* Wipe the scoreboard. A score set before the clock knew to ask
+               whether anyone was holding the board is not one anybody made,
+               and there was no way to clear it without a reflash. */
+            s_hold_s = s_last_hold_s = s_prev_hold_s = s_best_hold_s = 0.0f;
+            runs_save();
+            ESP_LOGI(TAG, "scoreboard cleared");
+        }
         pages_show(&s_pages, PAGE_LEVEL, now);
         s_drawn_page = PAGE_COUNT;
         return;

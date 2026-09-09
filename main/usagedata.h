@@ -454,7 +454,7 @@ typedef enum {
     /* Commands rather than data: they carry no payload and exist so the
        Feather's spirit level can be reached and adjusted from a Mac. The big
        board never registers them; the kinds cost it nothing but a name. */
-    UD_LEVEL, UD_FLIP, UD_ZERO,
+    UD_LEVEL, UD_FLIP, UD_ZERO, UD_NEWGAME,
     UD_KIND_COUNT
 } ud_kind_t;
 

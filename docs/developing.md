@@ -148,6 +148,10 @@ board and look — which is a poor thing to need a reflash for, and they were
 wrong twice before it stopped being one. `!flip x`, `!flip y`, `!flip swap`
 and `!flip reset` change the mapping and the board remembers it in NVS.
 
+**`!newgame` wipes the scoreboard.** The times live in NVS and outlive a
+reflash, so without it a score set before the rules changed can only be
+cleared by erasing the partition.
+
 **`!zero` takes the surface the board is on as true.** A desk is not a
 reference plane and a hand-mounted breakout is not square to the panel: this
 board reads about 3.7° off on one axis wherever you put it, which is the

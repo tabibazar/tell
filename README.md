@@ -178,6 +178,7 @@ altogether, and the two times.
 ```sh
 tell --device small "!level"
 tell --device small "!zero"      # take this surface as true
+tell --device small "!newgame"   # wipe the scoreboard
 ```
 
 Holding a board flat by hand turns out to be hard, so it counts: while the

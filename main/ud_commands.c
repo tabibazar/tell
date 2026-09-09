@@ -24,3 +24,4 @@ static void no_payload(usagedata_t *d, ud_host_t *h,
 COMMAND(level,     "!level",     UD_LEVEL);
 COMMAND(flip,      "!flip",      UD_FLIP);
 COMMAND(zero,      "!zero",      UD_ZERO);
+COMMAND(newgame,   "!newgame",   UD_NEWGAME);
