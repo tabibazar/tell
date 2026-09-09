@@ -10,9 +10,11 @@
 static const float RINGS[] = { 1.0f, 2.5f, 5.0f };
 #define RING_COUNT ((int)(sizeof RINGS / sizeof RINGS[0]))
 
-/* Small enough to sit inside the tolerance ring, so "the dot is in the
-   circle" and "it is true" are the same thing to look at. */
-#define BUBBLE_R 4
+/* Small enough to sit inside the tolerance ring with room to see the gap, so
+   "the dot is in the circle" and "it is true" are the same thing to look at.
+   At 0.7 degrees that ring is eight pixels, and a four-pixel dot filled it
+   almost exactly -- you could not tell nearly-out from just-in. */
+#define BUBBLE_R 3
 
 static float clampf(float v, float lo, float hi)
 {

@@ -29,10 +29,12 @@
    difficulty. Two degrees was too easy and so was 1.2; three quarters was
    unpleasantly hard, but that was on the old fifteen-degree dial where a
    degree moved the dot four pixels and you could not see what you were doing.
-   With eleven pixels to the degree and the tolerance drawn as a ring, this
-   sits just above where hard became unfair. Still flat enough to trust a desk
-   to: a fifth of a millimetre across a ruler. */
-#define LEVEL_TOLERANCE_DEG 0.9f
+   With eleven pixels to the degree and the tolerance drawn as a ring it has
+   come down in steps -- 2.0, 1.2, 0.9 all too easy -- and this is one more
+   step rather than a jump to the three quarters of a degree that was
+   unpleasant on the old dial. Fourteen millimetres per metre, so still a
+   level and not just a game. */
+#define LEVEL_TOLERANCE_DEG 0.8f
 
 bool level_is_true(float tilt_x_deg, float tilt_y_deg);
 
