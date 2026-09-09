@@ -215,3 +215,40 @@ void canvas_moon(canvas_t *c, int cx, int cy, int r, float phase,
         }
     }
 }
+
+static void plot(canvas_t *c, int x, int y, uint16_t colour)
+{
+    if (x < 0 || y < 0 || x >= c->w || y >= c->h) return;
+    c->fb[y * c->w + x] = colour;
+}
+
+void canvas_circle(canvas_t *c, int cx, int cy, int r, uint16_t colour)
+{
+    /* Midpoint circle: integer only, and each octant mirrored, so there is
+       no trigonometry and nothing to round wrongly. */
+    if (r < 0) return;
+    int x = r, y = 0, err = 1 - r;
+    while (x >= y) {
+        plot(c, cx + x, cy + y, colour); plot(c, cx - x, cy + y, colour);
+        plot(c, cx + x, cy - y, colour); plot(c, cx - x, cy - y, colour);
+        plot(c, cx + y, cy + x, colour); plot(c, cx - y, cy + x, colour);
+        plot(c, cx + y, cy - x, colour); plot(c, cx - y, cy - x, colour);
+        y++;
+        if (err < 0) {
+            err += 2 * y + 1;
+        } else {
+            x--;
+            err += 2 * (y - x) + 1;
+        }
+    }
+}
+
+void canvas_disc(canvas_t *c, int cx, int cy, int r, uint16_t colour)
+{
+    if (r < 0) return;
+    for (int dy = -r; dy <= r; dy++) {
+        int span = 0;
+        while ((span + 1) * (span + 1) + dy * dy <= r * r) span++;
+        canvas_fill_rect(c, cx - span, cy + dy, 2 * span + 1, 1, colour);
+    }
+}

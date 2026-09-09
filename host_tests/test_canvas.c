@@ -97,6 +97,33 @@ int main(void)
     expect("puts uses the colour given", lit_colour(&small, 0x07E0) > 0);
     expect("puts does not paint white", lit_colour(&small, 0xFFFF) == 0);
 
+    /* Circles and discs stay inside the framebuffer even when the centre is
+       off the panel and the radius is larger than it. */
+    {
+        canvas_t g;
+        static uint16_t guarded[8 + 240 * 135 + 8];
+        for (unsigned i = 0; i < sizeof guarded / sizeof guarded[0]; i++)
+            guarded[i] = 0xABAB;
+        canvas_init(&g, guarded + 8, 240, 135, 1);
+        canvas_circle(&g, -50, 300, 400, 0xF800);
+        canvas_disc(&g, 500, -20, 600, 0x07E0);
+        canvas_circle(&g, 120, 67, 60, 0xFFFF);
+        canvas_disc(&g, 120, 67, 8, 0xFFFF);
+        int intact = 1;
+        for (int i = 0; i < 8; i++)
+            if (guarded[i] != 0xABAB || guarded[8 + 240 * 135 + i] != 0xABAB)
+                intact = 0;
+        expect("circles and discs stay in the framebuffer", intact);
+
+        /* A disc is actually round: its widest row is at the centre. */
+        int widest = 0, at_edge = 0;
+        for (int x = 0; x < 240; x++) {
+            if (g.fb[67 * 240 + x] == 0xFFFF) widest++;
+            if (g.fb[(67 - 8) * 240 + x] == 0xFFFF) at_edge++;
+        }
+        expect("the disc is widest across its middle", widest > at_edge);
+    }
+
     if (failures == 0) { printf("all tests passed\n"); return 0; }
     printf("%d test(s) failed\n", failures);
     return 1;

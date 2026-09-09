@@ -75,6 +75,7 @@ ud_kind_t usagedata_parse(usagedata_t *d, const char *payload,
     /* Returns straight away: unlike the others this is a request, not
        data, so there is nothing to store. */
     else if (starts_with(payload, "!particles")) return UD_PARTICLES;
+    else if (starts_with(payload, "!level")) return UD_LEVEL;
     else return UD_NONE;
 
     if (kind == UD_CLOCK) {

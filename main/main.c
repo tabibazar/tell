@@ -3,6 +3,7 @@
 #include "gt911.h"
 #include "i2cbus.h"
 #include "bmp280.h"
+#include "level.h"
 #include "particles.h"
 #include "qmi8658.h"
 #include "pages.h"
@@ -66,6 +67,7 @@ static particles_t s_particles;
 static bool s_imu;
 static int64_t s_particles_last_us;
 static float s_gx, s_gy;      /* low-passed gravity, panel coordinates */
+static float s_gz;            /* and its component out of the screen */
 
 /* Gravity in pixels per second squared. A full 1 g tilt crosses the short
    axis of the panel in about half a second, which reads as sand rather than
@@ -121,6 +123,32 @@ static void gravity_from(const qmi8658_sample_t *s, float *gx, float *gy)
     *gy = AXIS_Y * s->ax;
 }
 
+/* Roll is how far the panel is turned within its own plane, pitch how far
+   its face is off vertical. Both come from the same gravity vector the liquid
+   uses, so they inherit the axis mapping measured on the board. Z takes no
+   part in the liquid but is exactly what pitch is made of. */
+static void draw_level(canvas_t *c)
+{
+    qmi8658_sample_t sample;
+    if (qmi8658_read(&sample) != ESP_OK) return;
+
+    float gx, gy;
+    gravity_from(&sample, &gx, &gy);
+    float gz = -sample.az;              /* out of the screen, toward you */
+
+    /* Low-passed like the liquid's gravity: a level that flickers in the
+       last digit cannot be read. */
+    s_gx += (gx * GRAVITY_PX - s_gx) * GRAVITY_ALPHA;
+    s_gy += (gy * GRAVITY_PX - s_gy) * GRAVITY_ALPHA;
+    s_gz += (gz - s_gz) * GRAVITY_ALPHA;
+
+    float roll = atan2f(s_gx, s_gy) * 180.0f / (float)M_PI;
+    float pitch = atan2f(s_gz, sqrtf(s_gx * s_gx + s_gy * s_gy) / GRAVITY_PX)
+                * 180.0f / (float)M_PI;
+    level_draw(c, roll, pitch);
+    display_blit();
+}
+
 static void draw_particles(canvas_t *c, int64_t now)
 {
     float dt = s_particles_last_us
@@ -172,6 +200,13 @@ static void on_message(const char *text, size_t len)
     int64_t now = esp_timer_get_time();
 
     ud_kind_t kind = usagedata_parse(&s_data, text, now);
+    if (kind == UD_LEVEL) {
+#if HAVE_PARTICLES
+        pages_show(&s_pages, PAGE_LEVEL, now);
+        s_drawn_page = PAGE_COUNT;
+#endif
+        return;
+    }
     if (kind == UD_PARTICLES) {
 #if HAVE_PARTICLES
         /* Unlike the data markers this is a request, so it does take the
@@ -304,7 +339,7 @@ void app_main(void)
 #if HAVE_PARTICLES
     s_imu = qmi8658_init() == ESP_OK;
     if (s_imu) {
-        available |= PAGE_BIT(PAGE_PARTICLES);
+        available |= PAGE_BIT(PAGE_PARTICLES) | PAGE_BIT(PAGE_LEVEL);
         /* Seeded from the pressure sensor's noise rather than a constant, so
            the grains do not land in the same places every boot. Its bottom
            bits wander on their own; the boot timer, by contrast, reads much
@@ -336,7 +371,8 @@ void app_main(void)
            slow. The tick is 10 ms, so this lands on the nearest tick below. */
         int64_t period_us = (int64_t)TICK_MS * 1000;
 #if HAVE_PARTICLES
-        if (s_imu && (s_saver || s_pages.current == PAGE_PARTICLES))
+        if (s_imu && (s_saver || s_pages.current == PAGE_PARTICLES
+                              || s_pages.current == PAGE_LEVEL))
             period_us = 33000;      /* 30 fps while the liquid is showing */
 #endif
         int64_t rest_ms = (period_us - (esp_timer_get_time() - last_wake)) / 1000;
@@ -417,6 +453,7 @@ void app_main(void)
         if (s_pages.current == PAGE_CLOCK) draw_clock(c, now);
 #if HAVE_PARTICLES
         if (s_pages.current == PAGE_PARTICLES && s_imu) draw_particles(c, now);
+        if (s_pages.current == PAGE_LEVEL && s_imu) draw_level(c);
 #endif
 
         /* USB-Serial-JTAG drops output when no host is attached, so the boot

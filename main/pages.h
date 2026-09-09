@@ -11,6 +11,7 @@ typedef enum {
     PAGE_MESSAGE,
     PAGE_TODAY,
     PAGE_PARTICLES,
+    PAGE_LEVEL,
     PAGE_COUNT
 } page_t;
 
