@@ -563,6 +563,15 @@ void app_main(void)
             }
         }
 
+#if HAVE_PARTICLES
+        /* The level and the game are things you are using, not things left on
+           display, so the screensaver must not take them away underneath you.
+           Neither needs protecting from it either: both are in constant
+           motion already, which is the only reason the saver exists. */
+        if (s_pages.current == PAGE_LEVEL || s_pages.current == PAGE_GAME)
+            s_pages.last_activity_us = now;
+#endif
+
         /* The clock screensaver needs the time; the particles do not, so on
            a board with an IMU the saver runs whether or not a Mac has ever
            connected. */
