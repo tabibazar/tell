@@ -26,7 +26,13 @@ bool level_is_true(float tilt_x_deg, float tilt_y_deg);
 
 /* Positive means that end of the axis is the low one: +x is the right edge
    down, +y is the far edge down. */
-/* `note` is printed small at the foot of the readout, or NULL. */
-void level_draw(canvas_t *c, float tilt_x_deg, float tilt_y_deg, const char *note);
+/*
+ * `hold_s` is how long it has been held true for, `best_s` the longest it
+ * ever has been -- holding a board flat by hand is harder than it sounds, so
+ * the level doubles as a game. `note` is one or two characters printed in the
+ * corner, or NULL.
+ */
+void level_draw(canvas_t *c, float tilt_x_deg, float tilt_y_deg,
+                float hold_s, float best_s, const char *note);
 
 #endif /* LEVEL_H */

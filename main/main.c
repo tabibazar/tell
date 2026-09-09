@@ -187,10 +187,28 @@ static float s_lx, s_ly, s_lz;
 static float s_zero_x, s_zero_y;
 static bool  s_zeroed;
 
+/* Holding a board flat by hand is harder than it sounds, so the level keeps a
+   clock: how long it has been true for, and the longest it ever has. The best
+   is written to flash only when a run ends and only if it beat the old one --
+   every frame would be thousands of writes a minute. */
+static float s_hold_s, s_best_hold_s;
+static int64_t s_level_last_us;
+
+static void best_save(void)
+{
+    nvs_handle_t h;
+    if (nvs_open("screen", NVS_READWRITE, &h) != ESP_OK) return;
+    nvs_set_blob(h, "hold", &s_best_hold_s, sizeof s_best_hold_s);
+    nvs_commit(h);
+    nvs_close(h);
+}
+
 static void zero_load(void)
 {
     nvs_handle_t h;
     if (nvs_open("screen", NVS_READONLY, &h) != ESP_OK) return;
+    size_t hn = sizeof(float);
+    nvs_get_blob(h, "hold", &s_best_hold_s, &hn);
     size_t n = sizeof(float);
     if (nvs_get_blob(h, "zerox", &s_zero_x, &n) == ESP_OK) {
         n = sizeof(float);
@@ -240,9 +258,26 @@ static void draw_level(canvas_t *c)
     float ty = asinf(ay) * 180.0f / (float)M_PI;
     if (s_zeroed) { tx -= s_zero_x; ty -= s_zero_y; }
 
-    char note[24];
-    snprintf(note, sizeof note, "%s", s_zeroed ? "zeroed here" : axis_describe());
-    level_draw(c, tx, ty, note);
+    /* The clock. It runs while the board is true and resets the moment it is
+       not, which is the whole game. */
+    int64_t now = esp_timer_get_time();
+    float dt = s_level_last_us
+             ? (float)(now - s_level_last_us) / 1000000.0f : 0.0f;
+    s_level_last_us = now;
+    if (dt > 0.5f) dt = 0.0f;        /* arriving on the page is not a run */
+
+    if (level_is_true(tx, ty)) {
+        s_hold_s += dt;
+        if (s_hold_s > s_best_hold_s) s_best_hold_s = s_hold_s;
+    } else if (s_hold_s > 0.0f) {
+        /* A run just ended: this is the one moment worth a flash write. */
+        if (s_hold_s >= s_best_hold_s) best_save();
+        s_hold_s = 0.0f;
+    }
+
+    /* One letter, bottom right: z means the angles are relative to a surface
+       taken as true with "!zero", nothing means they are absolute. */
+    level_draw(c, tx, ty, s_hold_s, s_best_hold_s, s_zeroed ? "z" : "");
     display_blit();
 }
 

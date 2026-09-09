@@ -44,7 +44,7 @@ static void put_angle(canvas_t *c, int col, int row, const char *label,
 }
 
 void level_draw(canvas_t *c, float tilt_x_deg, float tilt_y_deg,
-                const char *note)
+                float hold_s, float best_s, const char *note)
 {
     canvas_clear(c);
 
@@ -53,8 +53,8 @@ void level_draw(canvas_t *c, float tilt_x_deg, float tilt_y_deg,
 
     /* The dial sits on the left, square, as large as the short side allows.
        The readout takes the columns left over on the right. */
-    int r = c->h / 2 - 6;
-    int cx = r + 6;
+    int r = c->h / 2 - 18;
+    int cx = r + 8;
     int cy = c->h / 2;
     int text_col = (cx + r + 8) / c->cell_w + 1;
 
@@ -92,17 +92,52 @@ void level_draw(canvas_t *c, float tilt_x_deg, float tilt_y_deg,
        relying on the colour having changed. */
     if (ok) canvas_circle(c, bx, by, BUBBLE_R + 3, PAL_FG);
 
-    canvas_puts(c, text_col, 0, "LEVEL", PAL_FG);
-    put_angle(c, text_col, 1, "X", tilt_x_deg, accent);
-    put_angle(c, text_col, 2, "Y", tilt_y_deg, accent);
+    /* The readout. Five rows is all the panel has, so every one earns its
+       place: the two axes, how far off it is altogether, that same figure as
+       a builder would want it, and which way the surface falls. */
+    put_angle(c, text_col, 0, "X", tilt_x_deg, accent);
+    put_angle(c, text_col, 1, "Y", tilt_y_deg, accent);
 
-    char tilt[24];
-    float total = sqrtf(tilt_x_deg * tilt_x_deg + tilt_y_deg * tilt_y_deg);
-    snprintf(tilt, sizeof tilt, "OFF   %5.1f", (double)total);
-    canvas_puts(c, text_col, 3, tilt, PAL_DIM);
-    degree_mark(c, text_col + (int)strlen(tilt), 3, PAL_DIM);
+    float skew = sqrtf(tilt_x_deg * tilt_x_deg + tilt_y_deg * tilt_y_deg);
+    char buf[24];
+    snprintf(buf, sizeof buf, "SKEW %4.1f", (double)skew);
+    canvas_puts(c, text_col, 2, buf, accent);
+    degree_mark(c, text_col + (int)strlen(buf), 2, accent);
 
-    canvas_puts(c, text_col, c->rows - 2, ok ? "** TRUE **" : "not level",
-                ok ? PAL_A2 : PAL_DIM);
-    if (note != NULL) canvas_puts(c, text_col, c->rows - 1, note, PAL_DIM);
+    if (ok) {
+        /* While it is true the slope is zero and says nothing, so the two
+           bottom rows become the clock instead: how long you have held it,
+           and the longest anyone has. The bubble's ring already says TRUE. */
+        snprintf(buf, sizeof buf, "HOLD %5.1f", (double)hold_s);
+        canvas_puts(c, text_col, 3, buf, PAL_A2);
+        snprintf(buf, sizeof buf, "BEST %5.1f", (double)best_s);
+        canvas_puts(c, text_col, 4, buf, PAL_FG);
+    } else {
+        /* Millimetres per metre, which is how a slope is actually quoted on
+           a building site, and far easier to act on than a fraction of a
+           degree: a degree is about seventeen and a half of them. */
+        snprintf(buf, sizeof buf, "%5.1f mm/m",
+                 (double)(tanf(skew * (float)M_PI / 180.0f) * 1000.0f));
+        canvas_puts(c, text_col, 3, buf, PAL_DIM);
+
+        /* Which way it falls, in the screen's own terms so it needs no
+           thinking about: the low edge is the one the bubble runs away from.
+           U and D are the top and bottom of the panel as you are looking at
+           it, L and R its sides. */
+        char dir[4];
+        int n = 0;
+        if (tilt_y_deg >  LEVEL_TOLERANCE_DEG) dir[n++] = 'D';
+        if (tilt_y_deg < -LEVEL_TOLERANCE_DEG) dir[n++] = 'U';
+        if (tilt_x_deg >  LEVEL_TOLERANCE_DEG) dir[n++] = 'R';
+        if (tilt_x_deg < -LEVEL_TOLERANCE_DEG) dir[n++] = 'L';
+        dir[n] = '\0';
+        snprintf(buf, sizeof buf, "LOW %s", dir);
+        canvas_puts(c, text_col, 4, buf, PAL_A1);
+    }
+
+    /* A single letter for the state of the zero, in the corner, because the
+       numbers alone cannot say whether they are absolute or relative to a
+       surface someone chose. */
+    if (note != NULL && note[0] != '\0')
+        canvas_puts(c, c->cols - (int)strlen(note), c->rows - 1, note, PAL_DIM);
 }

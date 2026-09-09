@@ -22,7 +22,7 @@ static void draw(float roll, float pitch)
     for (unsigned i = 0; i < sizeof guarded / sizeof guarded[0]; i++)
         guarded[i] = 0xABAB;
     canvas_init(&c, guarded + 8, W, H, 2);
-    level_draw(&c, roll, pitch, "axis -+");
+    level_draw(&c, roll, pitch, 0.0f, 0.0f, "z");
 }
 
 static int guards_intact(void)
@@ -48,6 +48,8 @@ static void bubble_at(int *bx, int *by)
 
 int main(void)
 {
+    /* The hold clock is drawn only while it is true, so both branches of the
+       readout get exercised. */
     expect("dead level is true",      level_is_true(0.0f, 0.0f));
     expect("a tenth of a degree is true", level_is_true(0.1f, -0.1f));
     expect("two degrees is not",     !level_is_true(2.0f, 0.0f));
@@ -57,6 +59,13 @@ int main(void)
 
     draw(0.0f, 0.0f);
     expect("drawing stays in the framebuffer", guards_intact());
+    {
+        for (unsigned i = 0; i < sizeof guarded / sizeof guarded[0]; i++)
+            guarded[i] = 0xABAB;
+        canvas_init(&c, guarded + 8, W, H, 2);
+        level_draw(&c, 0.0f, 0.0f, 9999.9f, 99999.9f, "z");
+        expect("a very long hold still draws in bounds", guards_intact());
+    }
     bubble_at(&x0, &y0);
 
     draw(8.0f, 0.0f);
