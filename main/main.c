@@ -174,17 +174,26 @@ static float s_zero_x, s_zero_y;
 static bool  s_zeroed;
 
 /* Holding a board flat by hand is harder than it sounds, so the level keeps a
-   clock: how long it has been true for, and the longest it ever has. The best
-   is written to flash only when a run ends and only if it beat the old one --
-   every frame would be thousands of writes a minute. */
+   clock: how long it has been true for, the run that just ended, and the
+   longest there has ever been. Both times outlive the power, so whoever picks
+   the board up next inherits a mark to beat.
+
+   They are written when a run ends and never while one is running -- at
+   thirty frames a second that would be thousands of flash writes a minute --
+   and only for runs that were actually attempts. Carrying the board past
+   level trips the tolerance for a fraction of a second on the way through,
+   and without a floor every one of those would count as somebody's turn and
+   cost a write. */
+#define LEVEL_MIN_RUN_S 1.0f
 static float s_hold_s, s_last_hold_s, s_best_hold_s;
 static int64_t s_level_last_us;
 
-static void best_save(void)
+static void runs_save(void)
 {
     nvs_handle_t h;
     if (nvs_open("screen", NVS_READWRITE, &h) != ESP_OK) return;
     nvs_set_blob(h, "hold", &s_best_hold_s, sizeof s_best_hold_s);
+    nvs_set_blob(h, "last", &s_last_hold_s, sizeof s_last_hold_s);
     nvs_commit(h);
     nvs_close(h);
 }
@@ -195,6 +204,8 @@ static void zero_load(void)
     if (nvs_open("screen", NVS_READONLY, &h) != ESP_OK) return;
     size_t hn = sizeof(float);
     nvs_get_blob(h, "hold", &s_best_hold_s, &hn);
+    hn = sizeof(float);
+    nvs_get_blob(h, "last", &s_last_hold_s, &hn);
     size_t n = sizeof(float);
     if (nvs_get_blob(h, "zerox", &s_zero_x, &n) == ESP_OK) {
         n = sizeof(float);
@@ -204,6 +215,8 @@ static void zero_load(void)
     if (s_zeroed)
         ESP_LOGI(TAG, "level zeroed at %+.3f %+.3f",
                  (double)s_zero_x, (double)s_zero_y);
+    ESP_LOGI(TAG, "level times: last %.1fs, best %.1fs",
+             (double)s_last_hold_s, (double)s_best_hold_s);
 }
 
 static void zero_save(void)
@@ -272,19 +285,28 @@ static void draw_level(canvas_t *c)
     if (dt > 0.5f) dt = 0.0f;        /* arriving on the page is not a run */
 
     if (level_is_true(tx, ty)) {
+        /* The best is not raised while the run is still going. It is the best
+           *finished* run, which is what is written to flash; raising it live
+           would show a record on screen that a sub-second run never earned
+           and that a reboot would take away again. */
         s_hold_s += dt;
-        if (s_hold_s > s_best_hold_s) s_best_hold_s = s_hold_s;
     } else if (s_hold_s > 0.0f) {
-        /* A run just ended: this is the one moment worth a flash write. */
-        s_last_hold_s = s_hold_s;
-        if (s_hold_s >= s_best_hold_s) best_save();
+        /* A run just ended. This is the one moment worth a flash write, and
+           only if it was long enough to have been someone trying. */
+        if (s_hold_s >= LEVEL_MIN_RUN_S) {
+            s_last_hold_s = s_hold_s;
+            if (s_hold_s > s_best_hold_s) s_best_hold_s = s_hold_s;
+            runs_save();
+            ESP_LOGI(TAG, "held %.1fs (last %.1f, best %.1f)",
+                     (double)s_hold_s, (double)s_last_hold_s,
+                     (double)s_best_hold_s);
+        }
         s_hold_s = 0.0f;
     }
 
     /* One letter, bottom right: z means the angles are relative to a surface
        taken as true with "!zero", nothing means they are absolute. */
-    level_draw(c, tx, ty, s_hold_s, s_last_hold_s, s_best_hold_s,
-               s_zeroed ? "z" : "");
+    level_draw(c, tx, ty, s_hold_s, s_last_hold_s, s_best_hold_s);
     display_blit();
 }
 

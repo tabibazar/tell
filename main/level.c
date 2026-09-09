@@ -33,7 +33,7 @@ static void degree_mark(canvas_t *c, int col, int row, uint16_t colour)
 }
 
 void level_draw(canvas_t *c, float tilt_x_deg, float tilt_y_deg,
-                float hold_s, float last_s, float best_s, const char *note)
+                float hold_s, float last_s, float best_s)
 {
     canvas_clear(c);
 
@@ -81,40 +81,30 @@ void level_draw(canvas_t *c, float tilt_x_deg, float tilt_y_deg,
        relying on the colour having changed. */
     if (ok) canvas_circle(c, bx, by, BUBBLE_R + 3, PAL_FG);
 
-    /* The readout, now that the two axes are gone from it. They were the
-       dial repeated in words: the bubble already shows which way and how far,
-       and reading a pair of signed numbers to learn what a picture was
-       telling you is work. What is left is what the picture cannot say --
-       how far off it is as one figure, and the two times.
-
-       Three rows, in the middle three of the five, so they sit against the
-       dial rather than floating at the top of the panel. */
+    /* The readout: how far off it is, and the three clocks, straight down the
+       column. The two axes used to be here and are not any more -- they were
+       the dial repeated in words, and reading a pair of signed numbers to
+       learn what a picture was already telling you is work. */
     char buf[24];
     float skew = sqrtf(tilt_x_deg * tilt_x_deg + tilt_y_deg * tilt_y_deg);
     snprintf(buf, sizeof buf, "SKEW %4.1f", (double)skew);
-    canvas_puts(c, text_col, 1, buf, accent);
-    degree_mark(c, text_col + (int)strlen(buf), 1, accent);
+    canvas_puts(c, text_col, 0, buf, accent);
+    degree_mark(c, text_col + (int)strlen(buf), 0, accent);
 
-    /* While it is true the clock counts up; the moment it is not, that run
-       becomes the one to beat next time, sitting directly above the one to
-       beat overall. */
-    if (ok) {
-        snprintf(buf, sizeof buf, "HOLD %4.1f", (double)hold_s);
-        canvas_puts(c, text_col, 2, buf, PAL_A2);
-    } else {
-        snprintf(buf, sizeof buf, "LAST %4.1f", (double)last_s);
-        canvas_puts(c, text_col, 2, buf, PAL_A1);
-    }
+    /* Running only while it is true, and lit while it runs, so the row that
+       is moving is obvious at a glance. */
+    snprintf(buf, sizeof buf, "HOLD %4.1f", (double)hold_s);
+    canvas_puts(c, text_col, 1, buf, ok ? PAL_A2 : PAL_DIM);
+
+    /* The last finished run, and the best there has ever been. Both outlive
+       the power, so whoever picks the board up next has a mark to beat. */
+    snprintf(buf, sizeof buf, "LAST %4.1f", (double)last_s);
+    canvas_puts(c, text_col, 2, buf, PAL_FG);
 
     snprintf(buf, sizeof buf, "BEST %4.1f", (double)best_s);
-    /* Lit only while the run above it is the best there has been, so a record
-       shows without reading the two numbers against each other. */
-    bool record = best_s > 0.0f && (ok ? hold_s : last_s) >= best_s;
-    canvas_puts(c, text_col, 3, buf, record ? PAL_A4 : PAL_FG);
+    /* Lit while the run in progress has passed it, so a record announces
+       itself rather than having to be worked out from two numbers. */
+    bool record = hold_s > best_s && hold_s > 0.0f;
+    canvas_puts(c, text_col, 3, buf, record ? PAL_A4 : PAL_DIM);
 
-    /* A single letter for the state of the zero, in the corner, because the
-       numbers alone cannot say whether they are absolute or relative to a
-       surface someone chose. */
-    if (note != NULL && note[0] != '\0')
-        canvas_puts(c, c->cols - (int)strlen(note), c->rows - 1, note, PAL_DIM);
 }

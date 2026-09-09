@@ -22,7 +22,7 @@ static void draw(float roll, float pitch)
     for (unsigned i = 0; i < sizeof guarded / sizeof guarded[0]; i++)
         guarded[i] = 0xABAB;
     canvas_init(&c, guarded + 8, W, H, 2);
-    level_draw(&c, roll, pitch, 0.0f, 0.0f, 0.0f, "z");
+    level_draw(&c, roll, pitch, 0.0f, 0.0f, 0.0f);
 }
 
 static int guards_intact(void)
@@ -63,7 +63,7 @@ int main(void)
         for (unsigned i = 0; i < sizeof guarded / sizeof guarded[0]; i++)
             guarded[i] = 0xABAB;
         canvas_init(&c, guarded + 8, W, H, 2);
-        level_draw(&c, 0.0f, 0.0f, 9999.9f, 999.9f, 99999.9f, "z");
+        level_draw(&c, 0.0f, 0.0f, 9999.9f, 999.9f, 99999.9f);
         expect("a very long hold still draws in bounds", guards_intact());
     }
     bubble_at(&x0, &y0);

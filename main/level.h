@@ -30,10 +30,10 @@ bool level_is_true(float tilt_x_deg, float tilt_y_deg);
  * `hold_s` is how long it has been held true for, `last_s` the run that just
  * ended and `best_s` the longest there has ever been -- holding a board flat
  * by hand is harder than it sounds, so the level doubles as a game, and the
- * run you just missed by is the one you want to see. `note` is one or two
- * characters printed in the corner, or NULL.
+ * run you just missed by is the one you want to see, and it outlives the
+ * power, so whoever picks the board up next inherits a mark to beat.
  */
 void level_draw(canvas_t *c, float tilt_x_deg, float tilt_y_deg,
-                float hold_s, float last_s, float best_s, const char *note);
+                float hold_s, float last_s, float best_s);
 
 #endif /* LEVEL_H */
