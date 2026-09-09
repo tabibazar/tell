@@ -60,20 +60,14 @@ int main(void)
     pages_init(&p, FEATHER);
     expect("feather back skips absent pages", pages_back(&p, 500) == PAGE_MESSAGE);
 
-    /* The Feather with an IMU: the clock, the message, and the three pages
-       the sensor drives. */
-    pages_init(&p, FEATHER | PAGE_BIT(PAGE_PARTICLES) | PAGE_BIT(PAGE_LEVEL)
-                 | PAGE_BIT(PAGE_GAME));
+    /* The Feather with its IMU: the clock, the message, and the level. */
+    pages_init(&p, FEATHER | PAGE_BIT(PAGE_LEVEL));
     expect("feather+imu starts on the clock", p.current == PAGE_CLOCK);
     pages_show(&p, PAGE_LEVEL, 1000);
     expect("it can be sent to the level", p.current == PAGE_LEVEL);
-    pages_show(&p, PAGE_GAME, 2000);
-    expect("and to the game", p.current == PAGE_GAME);
 
-    /* A board without the sensor never lands on any of them. */
+    /* A board without the sensor never lands there. */
     pages_init(&p, FEATHER);
-    pages_show(&p, PAGE_PARTICLES, 1000);
-    expect("particles ignored when unavailable", p.current == PAGE_CLOCK);
     pages_show(&p, PAGE_LEVEL, 1000);
     expect("level ignored when unavailable", p.current == PAGE_CLOCK);
 

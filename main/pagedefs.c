@@ -27,8 +27,6 @@ const page_def_t page_defs[PAGE_COUNT] = {
     [PAGE_TURNS]    = { "Turns",         UD_FEED(UD_TURNS),             views_turns,    true,  0,        false, false, true  },
     [PAGE_MESSAGE]  = { "Message",       0,                             NULL,           false, 0,        true,  false, true  },
     [PAGE_DAILY]    = { "Tokens per day", UD_FEED(UD_DAILY),            views_daily,    true,  0,        false, false, true  },
-    [PAGE_PARTICLES]= { "Particles",     0,                             NULL,           false, 0,        true,  false, true  },
     [PAGE_LEVEL]    = { "Level",         0,                             NULL,           false, 0,        true,  false, false },
-    [PAGE_GAME]     = { "Tilt game",     0,                             NULL,           false, 0,        true,  false, false },
     [PAGE_SETTINGS] = { "Settings",      0,                             NULL,           false, 0,        false, true,  false },
 };

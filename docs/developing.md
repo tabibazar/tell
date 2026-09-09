@@ -130,23 +130,23 @@ powered from GPIO21 along with the panel — left over from its stock firmware.
 The I²C pins are board dependent, `CONFIG_SCREEN_I2C_SDA`/`_SCL`, because the
 CrowPanel wires its GT911 to GPIO19/20 instead.
 
-It drives three pages, none of which exist on the big board:
+It drives one page, `!level`: a bullseye spirit level that doubles as a game,
+since holding a board flat by hand is harder than it sounds. `main/level.c` is
+pure C and takes two angles, so it is tested on the host like everything else
+here. Only the axis mapping needed the board.
 
-| | |
-|---|---|
-| `!particles` | a bottle of liquid that pours as you tilt it; also the saver |
-| `!level` | a bullseye spirit level, in degrees and mm/m |
-| `!game` | tilt a ball around a walled arena and catch rings |
-
-`particles.c`, `level.c` and `tiltgame.c` are pure C and take a gravity vector,
-so they are tested on the host like everything else here. Only the axis mapping
-needed the board.
+**The big board is not compiled with any of it.** `main/CMakeLists.txt`
+excludes `qmi8658.c` and `level.c` from the CrowPanel build the same way it
+excludes the wrong display driver. What remains shared is one row in
+`pagedefs.c` and three rows in `ud_sections.c`; `main.c` clears
+`PAGE_BIT(PAGE_LEVEL)` on any board without the sensor, so the page is never
+offered and the markers do nothing.
 
 **The axis signs cannot be worked out from a still reading.** Gravity has no
 component along an axis that is level, so the only way to know is to tilt the
 board and look — which is a poor thing to need a reflash for, and they were
-wrong twice before it stopped being one. `!flip x`, `!flip y`, `!flip swap` and
-`!flip reset` change the mapping and the board remembers it in NVS.
+wrong twice before it stopped being one. `!flip x`, `!flip y`, `!flip swap`
+and `!flip reset` change the mapping and the board remembers it in NVS.
 
 **`!zero` takes the surface the board is on as true.** A desk is not a
 reference plane and a hand-mounted breakout is not square to the panel: this
@@ -154,9 +154,8 @@ board reads about 3.7° off on one axis wherever you put it, which is the
 sensor, not the table. `!zero reset` goes back to absolute.
 
 There is also a **BMP280 at `0x77`**, id `0x58` — where the stock firmware's
-temperature came from. It is not read for weather: its uncompensated bottom
-bits wander on their own, so twelve readings mixed together seed the liquid,
-and the grains land somewhere new every boot.
+temperature came from. Nothing reads it; a driver for it is in the history if
+it is ever wanted.
 
 ## Adding a page
 

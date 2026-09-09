@@ -27,9 +27,7 @@ typedef enum {
     PAGE_TURNS,      /* how long Claude takes */
     PAGE_MESSAGE,
     PAGE_DAILY,      /* tokens per day as bars */
-    PAGE_PARTICLES,  /* the Feather's accelerometer, poured out */
-    PAGE_LEVEL,      /* a spirit level, from the same sensor */
-    PAGE_GAME,       /* tilt a ball around and catch rings */
+    PAGE_LEVEL,      /* the Feather's spirit level; needs its IMU */
     PAGE_SETTINGS,   /* touch-only; last, so it is out of the way */
     PAGE_COUNT
 } page_t;

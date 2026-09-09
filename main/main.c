@@ -1,11 +1,8 @@
 #include "display.h"
 #include "ble_uart.h"
 #include "gt911.h"
-#include "bmp280.h"
 #include "level.h"
-#include "particles.h"
 #include "qmi8658.h"
-#include "tiltgame.h"
 #include "pagedefs.h"
 #include "pages.h"
 #include "view_common.h"
@@ -33,13 +30,6 @@ static const char *TAG = "main";
 
 #define TICK_MS 50            /* also the touch poll interval */
 
-/* True only where the screensaver draws something that does not need a synced
-   clock. Defined here because the saver condition below uses it. */
-#ifdef CONFIG_SCREEN_BOARD_FEATHER_S3_TFT
-#define SAVER_NEEDS_NO_CLOCK s_imu
-#else
-#define SAVER_NEEDS_NO_CLOCK false
-#endif
 
 static uint32_t s_base_secs;
 static int64_t  s_base_us;
@@ -87,41 +77,11 @@ static bool claude_busy(const ud_view_t *v, int64_t now)
     return since < UD_BUSY_SECS;
 }
 
-/* Particles, on the Feather only, driven by its QMI8658. They are the
-   screensaver there: a field in constant motion protects the panel better
-   than a clock that moves once a minute. */
+/* The spirit level, on the Feather only, driven by its QMI8658. The big board
+   has no IMU and is not compiled with any of this. */
 #ifdef CONFIG_SCREEN_BOARD_FEATHER_S3_TFT
-#define HAVE_PARTICLES 1
-static particles_t s_particles;
+#define HAVE_LEVEL 1
 static bool s_imu;
-static int64_t s_particles_last_us;
-static float s_gx, s_gy;      /* low-passed gravity, panel coordinates */
-
-/* Gravity in pixels per second squared. A full 1 g tilt crosses the short
-   axis of the panel in about half a second, which reads as sand rather than
-   as a screensaver. */
-#define GRAVITY_PX 900.0f
-/* First-order low pass, roughly a 150 ms time constant at 20 fps. Raw
-   accelerometer output at rest is noisy enough to make a heap shiver. */
-#define GRAVITY_ALPHA 0.25f
-/* Degrees per second of twist, converted to a tangential nudge. */
-#define SWIRL_SCALE 0.00015f
-
-/*
- * Shaking is not a direction, it is energy, so it must not go through the
- * filter above. That filter has a corner around 1 Hz, which is what stops the
- * settled heap shivering on sensor noise -- but a real shake is five to ten
- * times faster, so the filter removes precisely the thing we want, and the
- * board ends up moving less the harder it is shaken.
- *
- * The residual is the other half of the same filter and has the opposite
- * response: near zero when the board is still, and near the full amplitude
- * when the reading is changing faster than the filter can follow. Feeding it
- * in as agitation scatters the pile instead of tilting it.
- */
-#define SHAKE_FLOOR 250.0f     /* residual below this is noise, not a shake */
-#define SHAKE_GAIN  0.06f      /* residual px/s^2 -> scatter px/s */
-#define SHAKE_MAX   200.0f     /* enough to lift the pile, not to blur it */
 
 /*
  * Which sensor axis is which on the panel. An accelerometer at rest reads
@@ -326,66 +286,8 @@ static void draw_level(canvas_t *c)
     display_blit();
 }
 
-/* The game wants gravity as the liquid does -- quick, so the ball answers the
-   board -- so it shares that filter rather than the level's slow one. */
-static tiltgame_t s_game;
-static int64_t s_game_last_us;
-
-static void draw_game(canvas_t *c, int64_t now)
-{
-    float dt = s_game_last_us
-             ? (float)(now - s_game_last_us) / 1000000.0f : 0.033f;
-    s_game_last_us = now;
-    if (dt > 0.2f) dt = 0.2f;
-
-    qmi8658_sample_t sample;
-    if (qmi8658_read(&sample) == ESP_OK) {
-        float gx, gy;
-        gravity_from(&sample, &gx, &gy);
-        s_gx += (gx * GRAVITY_PX - s_gx) * GRAVITY_ALPHA;
-        s_gy += (gy * GRAVITY_PX - s_gy) * GRAVITY_ALPHA;
-    }
-    tiltgame_step(&s_game, s_gx, s_gy, dt);
-    tiltgame_draw(&s_game, c);
-    display_blit();
-}
-
-static void draw_particles(canvas_t *c, int64_t now)
-{
-    float dt = s_particles_last_us
-             ? (float)(now - s_particles_last_us) / 1000000.0f : 0.05f;
-    s_particles_last_us = now;
-    if (dt > 0.2f) dt = 0.2f;     /* a long stall must not teleport anything */
-
-    qmi8658_sample_t sample;
-    if (qmi8658_read(&sample) == ESP_OK) {
-        float gx, gy;
-        gravity_from(&sample, &gx, &gy);
-
-        /* The filter's own error, before it is applied: how far the board is
-           from where the slow view of gravity thinks it is. */
-        float rx = gx * GRAVITY_PX - s_gx;
-        float ry = gy * GRAVITY_PX - s_gy;
-
-        s_gx += rx * GRAVITY_ALPHA;
-        s_gy += ry * GRAVITY_ALPHA;
-
-        float shake = sqrtf(rx * rx + ry * ry) - SHAKE_FLOOR;
-        if (shake > 0.0f) {
-            float scatter = shake * SHAKE_GAIN;
-            if (scatter > SHAKE_MAX) scatter = SHAKE_MAX;
-            particles_agitate(&s_particles, scatter);
-        }
-        /* Spinning the board stirs the pile. Garnish; nothing depends on it. */
-        particles_swirl(&s_particles, sample.gz * SWIRL_SCALE);
-    }
-
-    particles_step(&s_particles, s_gx, s_gy, dt);
-    particles_draw(&s_particles, c);
-    display_blit();
-}
 #else
-#define HAVE_PARTICLES 0
+#define HAVE_LEVEL 0
 #endif
 
 /* Charts grow into place when a page appears; 0 means no animation running. */
@@ -454,24 +356,12 @@ static void on_message(const char *text, size_t len)
         if (s_data.have_utc) s_zone_dirty = true;
         return;
     }
-#if HAVE_PARTICLES
+#if HAVE_LEVEL
     /* Commands, not data: unlike the charts these were asked for, so they do
        take the view. */
-    if (kind == UD_PARTICLES || kind == UD_LEVEL || kind == UD_GAME) {
-        if (kind == UD_GAME) tiltgame_restart(&s_game);
-        pages_show(&s_pages,
-                   kind == UD_PARTICLES ? PAGE_PARTICLES
-                 : kind == UD_LEVEL     ? PAGE_LEVEL : PAGE_GAME, now);
-        s_drawn_page = PAGE_COUNT;
-        return;
-    }
-    if (kind == UD_FLIP) {
-        axis_command(text);
-        s_drawn_page = PAGE_COUNT;
-        return;
-    }
-    if (kind == UD_ZERO) {
-        zero_command(text);
+    if (kind == UD_LEVEL || kind == UD_FLIP || kind == UD_ZERO) {
+        if (kind == UD_FLIP) axis_command(text);
+        if (kind == UD_ZERO) zero_command(text);
         pages_show(&s_pages, PAGE_LEVEL, now);
         s_drawn_page = PAGE_COUNT;
         return;
@@ -596,15 +486,13 @@ void app_main(void)
         if (pd->needs_touch && !touch) continue;
         available |= PAGE_BIT(i);
     }
-#if HAVE_PARTICLES
-    /* These three need a sensor, which the page table cannot know about. */
+#if HAVE_LEVEL
+    /* The level needs a sensor, which the page table cannot know about: it
+       describes boards, and this is a question about one board's hardware. */
     s_imu = qmi8658_init() == ESP_OK;
-    if (!s_imu)
-        available &= ~(PAGE_BIT(PAGE_PARTICLES) | PAGE_BIT(PAGE_LEVEL)
-                     | PAGE_BIT(PAGE_GAME));
+    if (!s_imu) available &= ~PAGE_BIT(PAGE_LEVEL);
 #else
-    available &= ~(PAGE_BIT(PAGE_PARTICLES) | PAGE_BIT(PAGE_LEVEL)
-                 | PAGE_BIT(PAGE_GAME));
+    available &= ~PAGE_BIT(PAGE_LEVEL);
 #endif
 #ifdef CONFIG_SCREEN_BOARD_CROWPANEL_7
     /* The clock chip shares the touch bus. If it knows the time, start from
@@ -635,19 +523,8 @@ void app_main(void)
        any Mac has spoken this boot. */
     if (settings_load_zone(&s_data.utc_offset_min, s_data.tz, (int)sizeof s_data.tz))
         s_data.have_utc = true;
-#if HAVE_PARTICLES
-    if (s_imu) {
-        /* Seeded from the barometer's noise rather than a constant, so the
-           grains do not land in the same places every boot. */
-        uint32_t seed = 0;
-        if (bmp280_init() == ESP_OK) seed = bmp280_entropy();
-        if (seed == 0) seed = (uint32_t)esp_timer_get_time() | 1u;
-        ESP_LOGI(TAG, "particles seeded with 0x%08X", (unsigned)seed);
-        particles_init(&s_particles, 190, c->w, c->h, seed);
-        tiltgame_init(&s_game, c->w, c->h, seed ^ 0x5A5A5A5Au);
-        axis_load();
-        zero_load();
-    }
+#if HAVE_LEVEL
+    if (s_imu) { axis_load(); zero_load(); }
 #endif
     pages_show(&s_pages, home_page(), esp_timer_get_time());
 
@@ -662,11 +539,9 @@ void app_main(void)
            so a flat 33 ms after 13 ms of solving and blitting gives 23 fps,
            not 30. The tick is 10 ms, so this lands on the tick below. */
         int64_t period_us = (int64_t)TICK_MS * 1000;
-#if HAVE_PARTICLES
-        if (s_imu && (s_saver || s_pages.current == PAGE_PARTICLES
-                              || s_pages.current == PAGE_LEVEL
-                              || s_pages.current == PAGE_GAME))
-            period_us = 33000;      /* 30 fps while the sensor drives it */
+#if HAVE_LEVEL
+        if (s_imu && s_pages.current == PAGE_LEVEL)
+            period_us = 33000;      /* 30 fps while the bubble is moving */
 #endif
         int64_t rest_ms = (period_us - (esp_timer_get_time() - last_wake)) / 1000;
         vTaskDelay(rest_ms > 1 ? pdMS_TO_TICKS(rest_ms) : 1);
@@ -767,17 +642,14 @@ void app_main(void)
             s_busy = busy;
         }
 
-#if HAVE_PARTICLES
-        /* The level and the game are things you are using, not things left on
-           display, so the saver must not take them away underneath you.
-           Neither needs protecting from it either: both already move. */
-        if (s_pages.current == PAGE_LEVEL || s_pages.current == PAGE_GAME)
-            s_pages.last_activity_us = now;
+#if HAVE_LEVEL
+        /* The level is a thing you are using, not a thing left on display, so
+           the saver must not take it away underneath you -- and reading one
+           sends the board nothing, which is exactly what looks like idling.
+           It needs no protecting from burn-in either: the bubble moves. */
+        if (s_pages.current == PAGE_LEVEL) s_pages.last_activity_us = now;
 #endif
-        /* The clock saver needs the time; the particles do not, so a board
-           with an IMU runs its saver whether or not a Mac has ever spoken. */
-        bool saver_now = pages_saver_active(&s_pages, now)
-                       && (s_synced || SAVER_NEEDS_NO_CLOCK);
+        bool saver_now = s_synced && pages_saver_active(&s_pages, now);
         if (saver_now != s_saver) {
             s_saver = saver_now;
             s_drawn_page = PAGE_COUNT;      /* force a full redraw either way */
@@ -787,11 +659,6 @@ void app_main(void)
             /* Start the slideshow by moving on, so it is visibly a saver. */
             if (s_saver && s_settings.saver_cycle) pages_step(&s_pages, cycle_skip());
         }
-#if HAVE_PARTICLES
-        /* On the Feather the saver is the liquid: a field in constant motion
-           protects the panel better than a clock that moves once a minute. */
-        if (s_saver && s_imu) { draw_particles(c, now); continue; }
-#endif
         if (s_saver && !s_settings.saver_cycle) {
             uint32_t secs = timecalc_advance(s_base_secs,
                                              (uint64_t)(now - s_base_us));
@@ -867,12 +734,8 @@ void app_main(void)
         }
 
         if (s_pages.current == PAGE_CLOCK) draw_clock(c, now);
-#if HAVE_PARTICLES
-        if (s_imu) {
-            if (s_pages.current == PAGE_PARTICLES) draw_particles(c, now);
-            else if (s_pages.current == PAGE_LEVEL) draw_level(c);
-            else if (s_pages.current == PAGE_GAME) draw_game(c, now);
-        }
+#if HAVE_LEVEL
+        if (s_pages.current == PAGE_LEVEL && s_imu) draw_level(c);
 #endif
         /* Pages with ages on them redraw on their own so the ages keep counting. */
         if (pd->refresh_us > 0 && now - s_page_drawn_us > pd->refresh_us)

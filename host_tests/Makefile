@@ -4,7 +4,7 @@ CFLAGS = -std=c11 -Wall -Wextra -Werror -g -I../main
 VIEW_SRCS = $(wildcard ../main/view_*.c)
 UD_SRCS = ../main/usagedata.c $(wildcard ../main/ud_*.c)
 
-all: test_textwrap test_font test_font_clock test_timecalc test_canvas test_usagedata test_pages test_views test_settings test_ds3231 test_particles test_level test_tiltgame
+all: test_textwrap test_font test_font_clock test_timecalc test_canvas test_usagedata test_pages test_views test_settings test_ds3231 test_level
 
 test_textwrap: test_textwrap.c ../main/textwrap.c
 	cc $(CFLAGS) -o $@ $^
@@ -36,16 +36,10 @@ test_settings: test_settings.c ../main/settings.c
 test_ds3231: test_ds3231.c ../main/ds3231.c
 	cc $(CFLAGS) -o $@ $^
 
-test_particles: test_particles.c ../main/particles.c ../main/canvas.c ../main/textwrap.c
-	cc $(CFLAGS) -o $@ $^
-
 test_level: test_level.c ../main/level.c ../main/canvas.c ../main/textwrap.c
 	cc $(CFLAGS) -o $@ $^ -lm
 
-test_tiltgame: test_tiltgame.c ../main/tiltgame.c ../main/canvas.c ../main/textwrap.c
-	cc $(CFLAGS) -o $@ $^
-
 clean:
-	rm -f test_textwrap test_font test_font_clock test_timecalc test_canvas test_usagedata test_pages test_views test_settings test_ds3231 test_particles test_level test_tiltgame
+	rm -f test_textwrap test_font test_font_clock test_timecalc test_canvas test_usagedata test_pages test_views test_settings test_ds3231 test_level
 
 .PHONY: all clean

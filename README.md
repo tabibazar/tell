@@ -168,30 +168,31 @@ the big panel's pages, which shows the local time with its zone and UTC beside
 it; the offset and the zone's name (`utc -240`, `tz EDT`) ride along in the
 clock payload the `push-clock` agent sends every five minutes.
 
-## Particles, on the small board
+## A spirit level, on the small board
 
 The Feather has a QMI8658 accelerometer left over from its stock firmware, so
-that board is a bottle of sand: eight hundred coloured grains that pour
-whichever way you tilt it, pile up against the low edge with real depth, and
-keep shifting once they land. Spin the board and they stir.
-
-They are also its screensaver. A field in constant motion protects an LCD
-better than a clock that hops to a new spot once a minute, and unlike the clock
-it does not need a Mac to have set the time first — so the board does something
-worth looking at even if nothing has ever connected to it.
+that board is a bullseye level. Rings at 5, 10 and 15 degrees, a bubble that
+floats to the high side as a real one does, and beside it the two axes in
+degrees, the total skew, the slope in mm/m, and which way the surface falls.
 
 ```sh
-tell --device small "!particles"
+tell --device small "!level"
+tell --device small "!zero"      # take this surface as true
 ```
 
-The physics is `main/particles.c`: pure C, taking a gravity vector, so it is
-tested on the host with the rest of the project. Grains do not collide
-pairwise — that is O(n²) and there is no budget for it. They are counted into
-a coarse grid each frame and pushed out of crowded cells, which is what gives
-the pile depth; without it every grain ends up on the same boundary line and
-the animation is over the moment they arrive. The board is only needed for
-the one thing a datasheet cannot tell you, which is which way up the sensor is
-mounted.
+Holding a board flat by hand turns out to be hard, so it counts: while the
+board is true a clock runs, and the moment it is not, the run ends. The best
+survives a power cycle.
+
+Two things are worth knowing. `!zero` matters more than it sounds -- a desk is
+not a reference plane and a hand-mounted breakout is not square to the panel,
+and this board reads about 3.7 degrees off on one axis wherever you put it.
+And the axis signs cannot be worked out from a still reading, because gravity
+has no component along an axis that is level, so `!flip x`, `!flip y` and
+`!flip swap` set them from the Mac and the board remembers.
+
+None of this exists on the big board, which has no IMU and is not compiled
+with any of it.
 
 ## How it works
 

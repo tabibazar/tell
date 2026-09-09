@@ -72,7 +72,6 @@ int main(void)
     parse("!stats\n");
     expect("empty section yields no rows", v.model_count == 0);
 
-    expect("particles marker recognised", parse("!particles\n") == UD_PARTICLES);
     expect("level marker recognised", parse("!level\n") == UD_LEVEL);
     expect("an unknown marker is still nothing", parse("!nope\n") == UD_NONE);
 

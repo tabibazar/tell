@@ -452,8 +452,9 @@ typedef enum {
     UD_RHYTHM, UD_NOW, UD_PROJECTS, UD_CACHE, UD_TOOLS, UD_THINKING,
     UD_WEEK, UD_RECORDS, UD_RUNS, UD_TURNS, UD_STORY,
     /* Commands rather than data: they carry no payload and exist so the
-       Feather's IMU pages can be reached and adjusted from a Mac. */
-    UD_PARTICLES, UD_LEVEL, UD_GAME, UD_FLIP, UD_ZERO,
+       Feather's spirit level can be reached and adjusted from a Mac. The big
+       board never registers them; the kinds cost it nothing but a name. */
+    UD_LEVEL, UD_FLIP, UD_ZERO,
     UD_KIND_COUNT
 } ud_kind_t;
 
