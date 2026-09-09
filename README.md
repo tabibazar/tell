@@ -171,9 +171,9 @@ clock payload the `push-clock` agent sends every five minutes.
 ## A spirit level, on the small board
 
 The Feather has a QMI8658 accelerometer left over from its stock firmware, so
-that board is a bullseye level. Rings at 5, 10 and 15 degrees, a bubble that
-floats to the high side as a real one does, and beside it the two axes in
-degrees, the total skew, the slope in mm/m, and which way the surface falls.
+that board is a bullseye level. Rings at 5, 10 and 15 degrees and a bubble
+that floats to the high side, as a real one does; beside it, how far off it is
+altogether, and the two times.
 
 ```sh
 tell --device small "!level"
@@ -181,8 +181,9 @@ tell --device small "!zero"      # take this surface as true
 ```
 
 Holding a board flat by hand turns out to be hard, so it counts: while the
-board is true a clock runs, and the moment it is not, the run ends. The best
-survives a power cycle.
+board is true a clock runs, and the moment it is not, that run becomes the one
+to beat, shown directly above the best there has ever been. The best survives
+a power cycle, and lights up while the run above it is beating it.
 
 Two things are worth knowing. `!zero` matters more than it sounds -- a desk is
 not a reference plane and a hand-mounted breakout is not square to the panel,

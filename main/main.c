@@ -177,7 +177,7 @@ static bool  s_zeroed;
    clock: how long it has been true for, and the longest it ever has. The best
    is written to flash only when a run ends and only if it beat the old one --
    every frame would be thousands of writes a minute. */
-static float s_hold_s, s_best_hold_s;
+static float s_hold_s, s_last_hold_s, s_best_hold_s;
 static int64_t s_level_last_us;
 
 static void best_save(void)
@@ -276,13 +276,15 @@ static void draw_level(canvas_t *c)
         if (s_hold_s > s_best_hold_s) s_best_hold_s = s_hold_s;
     } else if (s_hold_s > 0.0f) {
         /* A run just ended: this is the one moment worth a flash write. */
+        s_last_hold_s = s_hold_s;
         if (s_hold_s >= s_best_hold_s) best_save();
         s_hold_s = 0.0f;
     }
 
     /* One letter, bottom right: z means the angles are relative to a surface
        taken as true with "!zero", nothing means they are absolute. */
-    level_draw(c, tx, ty, s_hold_s, s_best_hold_s, s_zeroed ? "z" : "");
+    level_draw(c, tx, ty, s_hold_s, s_last_hold_s, s_best_hold_s,
+               s_zeroed ? "z" : "");
     display_blit();
 }
 
