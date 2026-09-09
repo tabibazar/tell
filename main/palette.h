@@ -31,6 +31,25 @@
 #define PAL_PEAK     0xF728  /* yellow */
 #define PAL_LATEST   0xE4E0  /* orange */
 
+/* The year page's heat ramp: one hue, amber, dark to bright. A single hue
+   whose lightness climbs is readable without distinguishing hues at all, and
+   adjacent steps are at least 14 dE apart under every common form of colour
+   blindness (checked, not eyeballed). Index 0 is the dot for an empty day. */
+#define PAL_HEAT_STEPS 4
+static inline unsigned short pal_heat(int level)
+{
+    const unsigned short a[PAL_HEAT_STEPS + 1] = {
+        0x4208,  /* none   #404040 */
+        0x3941,  /* 1      #3d2a08 */
+        0x7AA2,  /* 2      #7d5510 */
+        0xBC23,  /* 3      #b9841a */
+        0xF5C6,  /* 4      #f5b836 */
+    };
+    if (level < 0) level = 0;
+    if (level > PAL_HEAT_STEPS) level = PAL_HEAT_STEPS;
+    return a[level];
+}
+
 /* One colour per weekday, so a single machine's chart still reads as more
    than a wall of one hue -- and the colour means something: you can see the
    working week against the weekend. */

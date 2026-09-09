@@ -1,13 +1,16 @@
 #include "display.h"
 #include "ble_uart.h"
 #include "gt911.h"
-#include "i2cbus.h"
 #include "bmp280.h"
 #include "level.h"
-#include "tiltgame.h"
 #include "particles.h"
 #include "qmi8658.h"
+#include "tiltgame.h"
+#include "pagedefs.h"
 #include "pages.h"
+#include "view_common.h"
+#include "ds3231.h"
+#include "settings.h"
 #include "timecalc.h"
 #include "usagedata.h"
 
@@ -21,17 +24,17 @@
 #include "freertos/task.h"
 #include "sdkconfig.h"
 
+#include <limits.h>
 #include <math.h>
 #include <stdbool.h>
-#include <stdio.h>
 #include <string.h>
 
 static const char *TAG = "main";
 
 #define TICK_MS 50            /* also the touch poll interval */
 
-/* True only where the screensaver draws something that does not need a
-   synced clock. Defined here because the saver condition below uses it. */
+/* True only where the screensaver draws something that does not need a synced
+   clock. Defined here because the saver condition below uses it. */
 #ifdef CONFIG_SCREEN_BOARD_FEATHER_S3_TFT
 #define SAVER_NEEDS_NO_CLOCK s_imu
 #else
@@ -42,7 +45,16 @@ static uint32_t s_base_secs;
 static int64_t  s_base_us;
 static bool     s_synced;
 
+/* The battery-backed clock, when one is on the bus. A Mac's sync is written
+   to it from the main loop rather than from the BLE task that receives it,
+   so the I2C bus is only ever driven from one task. */
+static bool     s_rtc;
+static bool     s_rtc_pending;      /* a sync arrived; copy it to the chip */
+static int64_t  s_rtc_checked_us;
+#define RTC_RECHECK_US (3600 * 1000000LL)
+
 static usagedata_t s_data;
+static settings_t s_settings;
 #define MESSAGE_MAX 512
 static char s_message[MESSAGE_MAX + 1];
 static pages_t s_pages;
@@ -51,15 +63,29 @@ static pages_t s_pages;
 static page_t s_drawn_page = PAGE_COUNT;
 static int s_drawn_second = -1;
 
-/* Charts grow into place when a page appears; 0 means no animation running. */
-#define ANIM_US (600 * 1000LL)
-static int64_t s_anim_start = 0;
+/* When the current page was last drawn, for pages that refresh on their own. */
+static int64_t s_page_drawn_us = 0;
 
-/* Screensaver: the clock drifts to a new spot each minute, so no pixel stays
-   lit. Position is derived from the minute, so it is stable within one. */
-static bool s_saver = false;
-static int s_saver_minute = -1;
-static int s_saver_x, s_saver_y;
+/* The title bars carry the time, so every page redraws when the minute
+   changes -- quietly, without replaying its grow-in animation. */
+static int s_drawn_minute = -1;
+static bool s_quiet_redraw = false;
+static bool s_zone_dirty = false;     /* a Mac sent a zone; keep it in flash */
+
+/* Auto-jump: while Claude is busy the live page shows itself, and when the
+   work stops the clock comes back. Only from the clock or the saver, so a
+   page someone is reading is never taken away, and only until they tap. */
+static bool s_busy = false;
+static bool s_auto_jumped = false;
+static int64_t s_busy_check_us = 0;
+#define BUSY_CHECK_US (10 * 1000000LL)
+
+static bool claude_busy(const ud_view_t *v, int64_t now)
+{
+    if (!v->now.present || !v->now.have_last) return false;
+    int64_t since = v->now.last_secs + (now - v->now.last_sent_us) / 1000000;
+    return since < UD_BUSY_SECS;
+}
 
 /* Particles, on the Feather only, driven by its QMI8658. They are the
    screensaver there: a field in constant motion protects the panel better
@@ -235,6 +261,25 @@ static void zero_save(void)
     nvs_close(h);
 }
 
+/* "!zero" takes whatever the board is resting on as true; "!zero reset" goes
+   back to absolute. The reading used is the level's own heavily filtered one,
+   so a zero is a settled measurement rather than one frame of noise. */
+static void zero_command(const char *text)
+{
+    if (strstr(text, "reset")) {
+        s_zeroed = false;
+    } else {
+        float ax = s_lx < -1.0f ? -1.0f : (s_lx > 1.0f ? 1.0f : s_lx);
+        float ay = s_ly < -1.0f ? -1.0f : (s_ly > 1.0f ? 1.0f : s_ly);
+        s_zero_x = asinf(ax) * 180.0f / (float)M_PI;
+        s_zero_y = asinf(ay) * 180.0f / (float)M_PI;
+        s_zeroed = true;
+        ESP_LOGI(TAG, "level zeroed at %+.2f %+.2f",
+                 (double)s_zero_x, (double)s_zero_y);
+    }
+    zero_save();
+}
+
 static void draw_level(canvas_t *c)
 {
     qmi8658_sample_t sample;
@@ -343,12 +388,58 @@ static void draw_particles(canvas_t *c, int64_t now)
 #define HAVE_PARTICLES 0
 #endif
 
+/* Charts grow into place when a page appears; 0 means no animation running. */
+#define ANIM_US (600 * 1000LL)
+static int64_t s_anim_start = 0;
+
+/* Screensaver. In its default mode it cycles the pages, each for a set
+   number of seconds; in the other the clock drifts to a new spot each minute
+   so no pixel stays lit. Position is derived from the minute, so it is
+   stable within one. */
+static bool s_saver = false;
+static int s_saver_minute = -1;
+static int s_saver_x, s_saver_y;
+static int64_t s_cycle_last = 0;
+
+static void apply_settings(void)
+{
+    pages_set_saver(&s_pages, (int64_t)s_settings.saver_min * 60 * 1000000LL);
+}
+
+/* Where the board rests: the clock, or the live page if that was chosen and
+   this board has it. Boot, an expired message and the end of a busy spell
+   all land here. */
+static page_t home_page(void)
+{
+    if (s_settings.home_now && (s_pages.available & PAGE_BIT(PAGE_NOW))) return PAGE_NOW;
+    return PAGE_CLOCK;
+}
+
+/* The pages the cycling saver leaves out: settings, because a slideshow
+   should not land on a control panel, and the message page when nothing
+   has been sent, because "nothing sent yet" is not worth twenty seconds. */
+static unsigned cycle_skip(void)
+{
+    unsigned skip = 0;
+    for (int i = 0; i < PAGE_COUNT; i++)
+        if (!page_defs[i].in_saver) skip |= PAGE_BIT(i);
+    if (s_message[0] == '\0') skip |= PAGE_BIT(PAGE_MESSAGE);
+    return skip;
+}
+
 static void on_time(uint32_t secs)
 {
     s_base_secs = secs;
     s_base_us = esp_timer_get_time();
     s_synced = true;
     s_drawn_second = -1;
+    s_rtc_pending = true;
+}
+
+/* The board's idea of the time right now. */
+static uint32_t now_secs(int64_t now)
+{
+    return timecalc_advance(s_base_secs, (uint64_t)(now - s_base_us));
 }
 
 static void on_message(const char *text, size_t len)
@@ -356,81 +447,46 @@ static void on_message(const char *text, size_t len)
     int64_t now = esp_timer_get_time();
 
     ud_kind_t kind = usagedata_parse(&s_data, text, now);
-    if (kind == UD_ZERO) {
-#if HAVE_PARTICLES
-        if (strstr(text, "reset")) {
-            s_zeroed = false;
-        } else {
-            /* Whatever the filter is showing right now becomes true. It is
-               already heavily smoothed, so this is a settled reading rather
-               than one frame of noise -- but leave the board alone for a
-               second before sending it. */
-            float ax = s_lx < -1.0f ? -1.0f : (s_lx > 1.0f ? 1.0f : s_lx);
-            float ay = s_ly < -1.0f ? -1.0f : (s_ly > 1.0f ? 1.0f : s_ly);
-            s_zero_x = asinf(ax) * 180.0f / (float)M_PI;
-            s_zero_y = asinf(ay) * 180.0f / (float)M_PI;
-            s_zeroed = true;
-            ESP_LOGI(TAG, "level zeroed at %+.2f %+.2f",
-                     (double)s_zero_x, (double)s_zero_y);
-        }
-        zero_save();
-        pages_show(&s_pages, PAGE_LEVEL, now);
-        s_drawn_page = PAGE_COUNT;
-#endif
-        return;
-    }
-    if (kind == UD_FLIP) {
-#if HAVE_PARTICLES
-        axis_command(text);
-        s_drawn_page = PAGE_COUNT;      /* show the new mapping at once */
-#endif
-        return;
-    }
-    if (kind == UD_GAME) {
-#if HAVE_PARTICLES
-        /* A fresh round whenever it is asked for, so "!game" always starts
-           one rather than dropping you into a run already lost. */
-        tiltgame_restart(&s_game);
-        pages_show(&s_pages, PAGE_GAME, now);
-        s_drawn_page = PAGE_COUNT;
-#endif
-        return;
-    }
-    if (kind == UD_LEVEL) {
-#if HAVE_PARTICLES
-        pages_show(&s_pages, PAGE_LEVEL, now);
-        s_drawn_page = PAGE_COUNT;
-#endif
-        return;
-    }
-    if (kind == UD_PARTICLES) {
-#if HAVE_PARTICLES
-        /* Unlike the data markers this is a request, so it does take the
-           view: someone asked to see it. */
-        pages_show(&s_pages, PAGE_PARTICLES, now);
-        s_drawn_page = PAGE_COUNT;
-#endif
-        return;
-    }
-    if (kind == UD_TODAY) {
-        if (s_pages.current == PAGE_TODAY) s_drawn_page = PAGE_COUNT;
-        return;
-    }
     if (kind == UD_CLOCK) {
         /* Arrives on a timer like the charts, so it must not steal the view. */
         if (s_pages.current == PAGE_CLOCK) s_drawn_second = -1;
+        else s_drawn_minute = -1;            /* redraw the title strip quietly */
+        if (s_data.have_utc) s_zone_dirty = true;
         return;
     }
-    if (kind == UD_STATS || kind == UD_DAILY) {
+#if HAVE_PARTICLES
+    /* Commands, not data: unlike the charts these were asked for, so they do
+       take the view. */
+    if (kind == UD_PARTICLES || kind == UD_LEVEL || kind == UD_GAME) {
+        if (kind == UD_GAME) tiltgame_restart(&s_game);
+        pages_show(&s_pages,
+                   kind == UD_PARTICLES ? PAGE_PARTICLES
+                 : kind == UD_LEVEL     ? PAGE_LEVEL : PAGE_GAME, now);
+        s_drawn_page = PAGE_COUNT;
+        return;
+    }
+    if (kind == UD_FLIP) {
+        axis_command(text);
+        s_drawn_page = PAGE_COUNT;
+        return;
+    }
+    if (kind == UD_ZERO) {
+        zero_command(text);
+        pages_show(&s_pages, PAGE_LEVEL, now);
+        s_drawn_page = PAGE_COUNT;
+        return;
+    }
+#endif
+    if (kind != UD_NONE) {
         /* Data arrives on a timer, so it must never steal the view: refresh
-           the numbers, and redraw only if that page is already showing. */
-        page_t target = (kind == UD_STATS) ? PAGE_STATS : PAGE_DAILY;
-        if (s_pages.current == target) s_drawn_page = PAGE_COUNT;
+           the numbers, and redraw only if a page it feeds is showing. */
+        if (page_defs[s_pages.current].feeds & UD_FEED(kind)) s_drawn_page = PAGE_COUNT;
+        if (kind == UD_NOW) s_busy_check_us = 0;      /* re-judge busy at once */
         return;
     }
     if (len == 0) {
         s_message[0] = '\0';
-        pages_show(&s_pages, PAGE_CLOCK, now);
+        pages_show(&s_pages, home_page(), now);
     } else {
         size_t n = len < MESSAGE_MAX ? len : MESSAGE_MAX;
         memcpy(s_message, text, n);
@@ -453,6 +509,7 @@ static void draw_message(canvas_t *c)
         return;
     }
     canvas_text(c, s_message);
+    vw_menu_tab(c);
 }
 
 /* Date above the digits, weather below, both sent from the Mac. Centred so
@@ -501,6 +558,7 @@ static void draw_clock(canvas_t *c, int64_t now)
             s_drawn_second = -2;
             canvas_big(c, "--:--:--");
             draw_clock_extras(c);
+            vw_menu_tab(c);
             display_blit();
         }
         return;
@@ -511,6 +569,7 @@ static void draw_clock(canvas_t *c, int64_t now)
     timecalc_format_hms(secs, buf);
     canvas_big(c, buf);
     draw_clock_extras(c);
+    vw_menu_tab(c);
     display_blit();
     s_drawn_second = (int)secs;
 }
@@ -523,62 +582,91 @@ void app_main(void)
         return;
     }
 
-    canvas_t *c = display_canvas();
-
-    unsigned available = PAGE_BIT(PAGE_CLOCK) | PAGE_BIT(PAGE_MESSAGE);
-    bool touch = false;
+    bool touch = false, big = false;
 #ifdef CONFIG_SCREEN_BOARD_CROWPANEL_7
-    available |= PAGE_BIT(PAGE_STATS) | PAGE_BIT(PAGE_DAILY)
-               | PAGE_BIT(PAGE_TODAY);
+    big = true;
     touch = gt911_init() == ESP_OK;
 #endif
+    /* Which pages this board offers: the data pages need the big panel, and
+       the menu and settings need a finger. */
+    unsigned available = 0;
+    for (int i = 0; i < PAGE_COUNT; i++) {
+        const page_def_t *pd = &page_defs[i];
+        if (!pd->everywhere && !big) continue;
+        if (pd->needs_touch && !touch) continue;
+        available |= PAGE_BIT(i);
+    }
 #if HAVE_PARTICLES
+    /* These three need a sensor, which the page table cannot know about. */
     s_imu = qmi8658_init() == ESP_OK;
-    if (s_imu) {
-        available |= PAGE_BIT(PAGE_PARTICLES) | PAGE_BIT(PAGE_LEVEL)
-                   | PAGE_BIT(PAGE_GAME);
-        /* Seeded from the pressure sensor's noise rather than a constant, so
-           the grains do not land in the same places every boot. Its bottom
-           bits wander on their own; the boot timer, by contrast, reads much
-           the same every time the board is reset the same way. */
-        uint32_t seed = 0;
-        if (bmp280_init() == ESP_OK) seed = bmp280_entropy();
-        if (seed == 0) seed = (uint32_t)esp_timer_get_time() | 1u;
-        ESP_LOGI(TAG, "particles seeded with 0x%08X", (unsigned)seed);
-        particles_init(&s_particles, 190, c->w, c->h, seed);
-        tiltgame_init(&s_game, c->w, c->h, seed ^ 0x5A5A5A5Au);
+    if (!s_imu)
+        available &= ~(PAGE_BIT(PAGE_PARTICLES) | PAGE_BIT(PAGE_LEVEL)
+                     | PAGE_BIT(PAGE_GAME));
+#else
+    available &= ~(PAGE_BIT(PAGE_PARTICLES) | PAGE_BIT(PAGE_LEVEL)
+                 | PAGE_BIT(PAGE_GAME));
+#endif
+#ifdef CONFIG_SCREEN_BOARD_CROWPANEL_7
+    /* The clock chip shares the touch bus. If it knows the time, start from
+       it, so the display is right before any Mac has said anything. */
+    s_rtc = ds3231_init() == ESP_OK;
+    uint32_t rtc_secs;
+    if (s_rtc && ds3231_read(&rtc_secs)) {
+        on_time(rtc_secs);
+        s_rtc_pending = false;          /* it came from the chip; no need to write it back */
+        ESP_LOGI(TAG, "clock set from the RTC");
     }
 #endif
     pages_init(&s_pages, available);
+    settings_defaults(&s_settings);
 
-    /* After ble_uart_start, which is where NVS gets initialised. */
+    canvas_t *c = display_canvas();
+
     if (ble_uart_start(on_message, on_time) != ESP_OK) {
         ESP_LOGE(TAG, "ble start failed");
         canvas_text(c, "BLE FAILED");
         display_blit();
         return;
     }
-
+    /* After BLE, which is where NVS gets initialised. */
+    settings_load(&s_settings);
+    apply_settings();
+    /* The zone the Mac last reported, so UTC shows from the RTC's time before
+       any Mac has spoken this boot. */
+    if (settings_load_zone(&s_data.utc_offset_min, s_data.tz, (int)sizeof s_data.tz))
+        s_data.have_utc = true;
 #if HAVE_PARTICLES
-    axis_load();
-    zero_load();
+    if (s_imu) {
+        /* Seeded from the barometer's noise rather than a constant, so the
+           grains do not land in the same places every boot. */
+        uint32_t seed = 0;
+        if (bmp280_init() == ESP_OK) seed = bmp280_entropy();
+        if (seed == 0) seed = (uint32_t)esp_timer_get_time() | 1u;
+        ESP_LOGI(TAG, "particles seeded with 0x%08X", (unsigned)seed);
+        particles_init(&s_particles, 190, c->w, c->h, seed);
+        tiltgame_init(&s_game, c->w, c->h, seed ^ 0x5A5A5A5Au);
+        axis_load();
+        zero_load();
+    }
 #endif
+    pages_show(&s_pages, home_page(), esp_timer_get_time());
 
     int64_t last_beat = 0;
     int64_t last_wake = esp_timer_get_time();
+    /* The merged view is a few kilobytes; the main task's stack is not. */
+    static ud_view_t v;
 
     for (;;) {
-        /* Sleep for what is left of the frame, not for a whole frame on top
-           of the work. vTaskDelay is time added after everything else has
-           run, so sleeping a flat 33 ms after 13 ms of solving and blitting
-           gives 23 fps, not 30 -- which is most of why the liquid looked
-           slow. The tick is 10 ms, so this lands on the nearest tick below. */
+        /* Sleep for what is left of the frame, not a whole frame on top of
+           the work. vTaskDelay is time added after everything else has run,
+           so a flat 33 ms after 13 ms of solving and blitting gives 23 fps,
+           not 30. The tick is 10 ms, so this lands on the tick below. */
         int64_t period_us = (int64_t)TICK_MS * 1000;
 #if HAVE_PARTICLES
         if (s_imu && (s_saver || s_pages.current == PAGE_PARTICLES
                               || s_pages.current == PAGE_LEVEL
                               || s_pages.current == PAGE_GAME))
-            period_us = 33000;      /* 30 fps while the liquid is showing */
+            period_us = 33000;      /* 30 fps while the sensor drives it */
 #endif
         int64_t rest_ms = (period_us - (esp_timer_get_time() - last_wake)) / 1000;
         vTaskDelay(rest_ms > 1 ? pdMS_TO_TICKS(rest_ms) : 1);
@@ -586,30 +674,108 @@ void app_main(void)
         int64_t now = esp_timer_get_time();
         last_wake = now;
 
+        if (s_zone_dirty) {
+            /* Written from here rather than the BLE task, like the RTC. */
+            s_zone_dirty = false;
+            static int saved_off = INT_MIN;
+            static char saved_tz[8];
+            if (s_data.utc_offset_min != saved_off || strcmp(s_data.tz, saved_tz) != 0) {
+                if (settings_save_zone(s_data.utc_offset_min, s_data.tz)) {
+                    saved_off = s_data.utc_offset_min;
+                    strncpy(saved_tz, s_data.tz, sizeof saved_tz - 1);
+                    ESP_LOGI(TAG, "zone %s (%d min) kept", s_data.tz, s_data.utc_offset_min);
+                }
+            }
+        }
+        if (s_rtc && s_rtc_pending && s_synced) {
+            /* A Mac just synced us; its clock is NTP-disciplined, so the chip
+               takes that time and holds it through the next power cycle. */
+            s_rtc_pending = false;
+            s_rtc_checked_us = now;
+            if (ds3231_write(now_secs(now))) ESP_LOGI(TAG, "RTC set from the Mac");
+        }
+        if (s_rtc && now - s_rtc_checked_us > RTC_RECHECK_US) {
+            /* The ESP timer drifts seconds a day; the chip does not. Once an
+               hour without a Mac's sync, take the chip's word for it. */
+            s_rtc_checked_us = now;
+            uint32_t secs;
+            if (ds3231_read(&secs)) {
+                on_time(secs);
+                s_rtc_pending = false;
+                ESP_LOGI(TAG, "clock re-read from the RTC");
+            }
+        }
+
         if (touch && gt911_tapped()) {
+            int tx, ty, row, choice;
+            page_t target;
+            gt911_point(&tx, &ty);
             if (s_saver) {
                 /* The first tap dismisses the saver rather than also changing
                    the page, which would be a surprise. */
                 s_pages.last_activity_us = now;
-                ESP_LOGI(TAG, "tap -> wake");
+                ESP_LOGI(TAG, "tap at %d,%d -> wake", tx, ty);
+            } else if (s_pages.current != PAGE_MENU && vw_menu_tab_hit(c, tx, ty)) {
+                pages_show(&s_pages, PAGE_MENU, now);
+                s_drawn_page = PAGE_COUNT;
+                ESP_LOGI(TAG, "tap at %d,%d -> menu tab", tx, ty);
+            } else if (s_pages.current == PAGE_MENU
+                       && views_menu_hit(c, &s_pages, tx, ty, &target)) {
+                pages_show(&s_pages, target, now);
+                s_drawn_page = PAGE_COUNT;
+                ESP_LOGI(TAG, "tap at %d,%d -> menu -> page %d", tx, ty, (int)target);
+            } else if (s_pages.current == PAGE_SETTINGS
+                       && views_settings_hit(c, tx, ty, &row, &choice)) {
+                if (settings_select(&s_settings, row, choice)) {
+                    settings_save(&s_settings);
+                    apply_settings();
+                }
+                s_pages.last_activity_us = now;
+                s_drawn_page = PAGE_COUNT;
+                ESP_LOGI(TAG, "tap at %d,%d -> setting %d = %d", tx, ty, row, choice);
+            } else if (tx < c->w / 2) {
+                /* The left half goes back, the right half forward. Buttons on
+                   the settings page were tested first, so they still win. */
+                page_t p = pages_back(&s_pages, now);
+                ESP_LOGI(TAG, "tap at %d,%d -> back to page %d", tx, ty, (int)p);
             } else {
                 page_t p = pages_advance(&s_pages, now);
-                ESP_LOGI(TAG, "tap -> page %d", (int)p);
+                ESP_LOGI(TAG, "tap at %d,%d -> page %d", tx, ty, (int)p);
             }
+            s_auto_jumped = false;          /* a tap means a person is choosing */
+        }
+
+        if (now - s_busy_check_us > BUSY_CHECK_US) {
+            s_busy_check_us = now;
+            usagedata_merge(&s_data, &v);
+            bool busy = claude_busy(&v, now);
+            if (busy && !s_busy && s_settings.auto_now
+                && (s_pages.current == home_page() || s_saver)
+                && s_pages.current != PAGE_NOW
+                && (s_pages.available & PAGE_BIT(PAGE_NOW))) {
+                pages_show(&s_pages, PAGE_NOW, now);
+                s_auto_jumped = true;
+                ESP_LOGI(TAG, "busy -> live page");
+            } else if (!busy && s_busy && s_auto_jumped && s_pages.current == PAGE_NOW) {
+                pages_show(&s_pages, home_page(), now);
+                s_auto_jumped = false;
+                ESP_LOGI(TAG, "idle -> home");
+            }
+            /* While busy on the live page, keep the saver away. */
+            if (busy && s_auto_jumped && s_pages.current == PAGE_NOW)
+                s_pages.last_activity_us = now;
+            s_busy = busy;
         }
 
 #if HAVE_PARTICLES
         /* The level and the game are things you are using, not things left on
-           display, so the screensaver must not take them away underneath you.
-           Neither needs protecting from it either: both are in constant
-           motion already, which is the only reason the saver exists. */
+           display, so the saver must not take them away underneath you.
+           Neither needs protecting from it either: both already move. */
         if (s_pages.current == PAGE_LEVEL || s_pages.current == PAGE_GAME)
             s_pages.last_activity_us = now;
 #endif
-
-        /* The clock screensaver needs the time; the particles do not, so on
-           a board with an IMU the saver runs whether or not a Mac has ever
-           connected. */
+        /* The clock saver needs the time; the particles do not, so a board
+           with an IMU runs its saver whether or not a Mac has ever spoken. */
         bool saver_now = pages_saver_active(&s_pages, now)
                        && (s_synced || SAVER_NEEDS_NO_CLOCK);
         if (saver_now != s_saver) {
@@ -617,11 +783,16 @@ void app_main(void)
             s_drawn_page = PAGE_COUNT;      /* force a full redraw either way */
             s_drawn_second = -1;
             s_saver_minute = -1;
+            s_cycle_last = now;
+            /* Start the slideshow by moving on, so it is visibly a saver. */
+            if (s_saver && s_settings.saver_cycle) pages_step(&s_pages, cycle_skip());
         }
-        if (s_saver) {
 #if HAVE_PARTICLES
-            if (s_imu) { draw_particles(c, now); continue; }
+        /* On the Feather the saver is the liquid: a field in constant motion
+           protects the panel better than a clock that moves once a minute. */
+        if (s_saver && s_imu) { draw_particles(c, now); continue; }
 #endif
+        if (s_saver && !s_settings.saver_cycle) {
             uint32_t secs = timecalc_advance(s_base_secs,
                                              (uint64_t)(now - s_base_us));
             if ((int)secs != s_drawn_second) {
@@ -630,26 +801,59 @@ void app_main(void)
             }
             continue;
         }
+        if (s_saver && now - s_cycle_last > (int64_t)s_settings.dwell_s * 1000000LL) {
+            /* Cycling: step without touching the activity clock, so the
+               saver stays on, and let the ordinary drawing below show it. */
+            s_cycle_last = now;
+            pages_step(&s_pages, cycle_skip());
+        }
 
         /* Once idle, cycle the pages so no image sits long enough to burn in. */
         pages_tick(&s_pages, now);
 
+        /* The strip in the title bars: local time and UTC, once both the
+           board's clock and the Mac's offset are known. */
+        {
+            uint32_t secs = s_synced ? now_secs(now) : 0;
+            vw_set_clock(s_synced && s_data.have_utc, secs, s_data.utc_offset_min, s_data.tz);
+            int minute = s_synced ? (int)(secs / 60) : -1;
+            if (minute != s_drawn_minute) {
+                s_drawn_minute = minute;
+                if (s_pages.current != PAGE_CLOCK && s_drawn_page == s_pages.current) {
+                    s_drawn_page = PAGE_COUNT;
+                    s_quiet_redraw = true;
+                }
+            }
+        }
+
+        const page_def_t *pd = &page_defs[s_pages.current];
         if (s_pages.current != s_drawn_page) {
             s_drawn_page = s_pages.current;
             s_drawn_second = -1;
-            switch (s_pages.current) {
-            case PAGE_STATS:
-            case PAGE_DAILY:
+            s_page_drawn_us = now;
+            bool quiet = s_quiet_redraw;
+            s_quiet_redraw = false;
+            if (pd->draw && pd->animated && !quiet) {
                 s_anim_start = now;      /* drawn by the animation below */
-                break;
-            case PAGE_MESSAGE: draw_message(c); display_blit(); break;
-            case PAGE_TODAY:   views_today(c, &s_data); display_blit(); break;
-            default: break;
+            } else if (pd->draw) {
+                s_anim_start = 0;
+                usagedata_merge(&s_data, &v);
+                pd->draw(c, &v, 1.0f, now);
+                display_blit();
+            } else {
+                /* The few pages that draw from something other than the
+                   merged view. The clock draws itself below, every second. */
+                switch (s_pages.current) {
+                case PAGE_MESSAGE:  draw_message(c); display_blit(); break;
+                case PAGE_TODAY:    views_today(c, &s_data); display_blit(); break;
+                case PAGE_SETTINGS: views_settings(c, &s_settings); display_blit(); break;
+                case PAGE_MENU:     views_menu(c, &s_pages); display_blit(); break;
+                default: break;
+                }
             }
         }
         /* Grow the bars into place, then hold the finished chart. */
-        if (s_anim_start != 0
-            && (s_pages.current == PAGE_STATS || s_pages.current == PAGE_DAILY)) {
+        if (s_anim_start != 0 && pd->draw && pd->animated) {
             int64_t elapsed = now - s_anim_start;
             float t = (float)elapsed / (float)ANIM_US;
             bool last = t >= 1.0f;
@@ -657,26 +861,30 @@ void app_main(void)
             /* Ease out, so the bars settle rather than stopping dead. */
             t = 1.0f - (1.0f - t) * (1.0f - t);
 
-            ud_view_t v;
             usagedata_merge(&s_data, &v);
-            if (s_pages.current == PAGE_STATS) views_stats(c, &v, t, now);
-            else views_daily(c, &v, t, now);
+            pd->draw(c, &v, t, now);
             display_blit();
         }
 
         if (s_pages.current == PAGE_CLOCK) draw_clock(c, now);
 #if HAVE_PARTICLES
-        if (s_pages.current == PAGE_PARTICLES && s_imu) draw_particles(c, now);
-        if (s_pages.current == PAGE_LEVEL && s_imu) draw_level(c);
-        if (s_pages.current == PAGE_GAME && s_imu) draw_game(c, now);
+        if (s_imu) {
+            if (s_pages.current == PAGE_PARTICLES) draw_particles(c, now);
+            else if (s_pages.current == PAGE_LEVEL) draw_level(c);
+            else if (s_pages.current == PAGE_GAME) draw_game(c, now);
+        }
 #endif
+        /* Pages with ages on them redraw on their own so the ages keep counting. */
+        if (pd->refresh_us > 0 && now - s_page_drawn_us > pd->refresh_us)
+            s_drawn_page = PAGE_COUNT;
 
         /* USB-Serial-JTAG drops output when no host is attached, so the boot
            log is often missed. A heartbeat makes liveness observable. */
         if (now - last_beat > 30 * 1000000LL) {
             last_beat = now;
-            ESP_LOGI(TAG, "alive, page %d, clock %s",
-                     (int)s_pages.current, s_synced ? "synced" : "unset");
+            ESP_LOGI(TAG, "alive, page %d, clock %s, rtc %s",
+                     (int)s_pages.current, s_synced ? "synced" : "unset",
+                     s_rtc ? "present" : "absent");
         }
     }
 }

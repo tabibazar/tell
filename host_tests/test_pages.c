@@ -13,7 +13,14 @@ static void expect(const char *what, int cond)
 
 #define ALL (PAGE_BIT(PAGE_CLOCK) | PAGE_BIT(PAGE_STATS) \
              | PAGE_BIT(PAGE_DAILY) | PAGE_BIT(PAGE_MESSAGE) \
-             | PAGE_BIT(PAGE_TODAY))
+             | PAGE_BIT(PAGE_TODAY) | PAGE_BIT(PAGE_MODELS) \
+             | PAGE_BIT(PAGE_YEAR) | PAGE_BIT(PAGE_COST) \
+             | PAGE_BIT(PAGE_SETTINGS) | PAGE_BIT(PAGE_NOW) \
+             | PAGE_BIT(PAGE_RHYTHM) | PAGE_BIT(PAGE_PROJECTS) \
+             | PAGE_BIT(PAGE_CACHE) | PAGE_BIT(PAGE_TOOLS) \
+             | PAGE_BIT(PAGE_THINKING) | PAGE_BIT(PAGE_WEEK) \
+             | PAGE_BIT(PAGE_RECORDS) | PAGE_BIT(PAGE_RUNS) \
+             | PAGE_BIT(PAGE_MENU) | PAGE_BIT(PAGE_TURNS) | PAGE_BIT(PAGE_STORY))
 #define FEATHER (PAGE_BIT(PAGE_CLOCK) | PAGE_BIT(PAGE_MESSAGE))
 
 int main(void)
@@ -22,23 +29,53 @@ int main(void)
 
     pages_init(&p, ALL);
     expect("starts on the clock", p.current == PAGE_CLOCK);
-    expect("advance goes to stats", pages_advance(&p, 1000) == PAGE_STATS);
-    expect("then daily", pages_advance(&p, 2000) == PAGE_DAILY);
-    expect("then message", pages_advance(&p, 3000) == PAGE_MESSAGE);
-    expect("then today", pages_advance(&p, 4000) == PAGE_TODAY);
+    expect("advance goes to the menu", pages_advance(&p, 850) == PAGE_MENU);
+    expect("then now", pages_advance(&p, 900) == PAGE_NOW);
+    expect("then the story", pages_advance(&p, 920) == PAGE_STORY);
+    expect("then the week", pages_advance(&p, 950) == PAGE_WEEK);
+    expect("then stats", pages_advance(&p, 1000) == PAGE_STATS);
+    expect("then today", pages_advance(&p, 2000) == PAGE_TODAY);
+    expect("then models", pages_advance(&p, 3000) == PAGE_MODELS);
+    expect("then projects", pages_advance(&p, 3500) == PAGE_PROJECTS);
+    expect("then the year", pages_advance(&p, 4000) == PAGE_YEAR);
+    expect("then the rhythm", pages_advance(&p, 4200) == PAGE_RHYTHM);
+    expect("then the cost", pages_advance(&p, 4500) == PAGE_COST);
+    expect("then the cache", pages_advance(&p, 4600) == PAGE_CACHE);
+    expect("then tools", pages_advance(&p, 4650) == PAGE_TOOLS);
+    expect("then what it runs", pages_advance(&p, 4680) == PAGE_RUNS);
+    expect("then thinking", pages_advance(&p, 4700) == PAGE_THINKING);
+    expect("then records", pages_advance(&p, 4750) == PAGE_RECORDS);
+    expect("then turns", pages_advance(&p, 4780) == PAGE_TURNS);
+    expect("then message", pages_advance(&p, 4800) == PAGE_MESSAGE);
+    expect("then daily", pages_advance(&p, 4900) == PAGE_DAILY);
+    expect("then settings, last of all", pages_advance(&p, 4950) == PAGE_SETTINGS);
     expect("then wraps to clock", pages_advance(&p, 5000) == PAGE_CLOCK);
 
-    /* The Feather with an IMU: clock, message, particles. */
-    pages_init(&p, FEATHER | PAGE_BIT(PAGE_PARTICLES));
-    expect("feather+imu starts on the clock", p.current == PAGE_CLOCK);
-    expect("advance reaches message", pages_advance(&p, 1000) == PAGE_MESSAGE);
-    expect("then particles", pages_advance(&p, 2000) == PAGE_PARTICLES);
-    expect("then wraps to the clock", pages_advance(&p, 3000) == PAGE_CLOCK);
+    pages_init(&p, ALL);
+    expect("back from the clock wraps to the last page", pages_back(&p, 100) == PAGE_SETTINGS);
+    expect("back again", pages_back(&p, 200) == PAGE_DAILY);
+    expect("back is activity", p.last_activity_us == 200);
+    pages_show(&p, PAGE_STATS, 300);
+    expect("back from stats skips nothing", pages_back(&p, 400) == PAGE_WEEK);
+    pages_init(&p, FEATHER);
+    expect("feather back skips absent pages", pages_back(&p, 500) == PAGE_MESSAGE);
 
-    /* A board without one never lands there. */
+    /* The Feather with an IMU: the clock, the message, and the three pages
+       the sensor drives. */
+    pages_init(&p, FEATHER | PAGE_BIT(PAGE_PARTICLES) | PAGE_BIT(PAGE_LEVEL)
+                 | PAGE_BIT(PAGE_GAME));
+    expect("feather+imu starts on the clock", p.current == PAGE_CLOCK);
+    pages_show(&p, PAGE_LEVEL, 1000);
+    expect("it can be sent to the level", p.current == PAGE_LEVEL);
+    pages_show(&p, PAGE_GAME, 2000);
+    expect("and to the game", p.current == PAGE_GAME);
+
+    /* A board without the sensor never lands on any of them. */
     pages_init(&p, FEATHER);
     pages_show(&p, PAGE_PARTICLES, 1000);
     expect("particles ignored when unavailable", p.current == PAGE_CLOCK);
+    pages_show(&p, PAGE_LEVEL, 1000);
+    expect("level ignored when unavailable", p.current == PAGE_CLOCK);
 
     pages_init(&p, FEATHER);
     expect("feather starts on the clock", p.current == PAGE_CLOCK);
@@ -77,7 +114,7 @@ int main(void)
 
     int64_t t = PAGES_IDLE_US + PAGES_ROTATE_US + 1;
     expect("rotates once idle", pages_tick(&p, t));
-    expect("moved off the clock", p.current == PAGE_STATS);
+    expect("moved off the clock", p.current == PAGE_MENU);
     expect("does not rotate again immediately", !pages_tick(&p, t + 1));
     expect("rotates after the interval", pages_tick(&p, t + PAGES_ROTATE_US + 1));
     expect("advanced again", p.current == PAGE_DAILY);
@@ -122,6 +159,29 @@ int main(void)
     expect("a touch dismisses the saver", !pages_saver_active(&p, 2000001));
     expect("and it returns after the delay",
            pages_saver_active(&p, 2000000 + PAGES_SAVER_US + 1));
+
+    /* The delay is a setting. */
+    expect("the default delay is the constant", p.saver_us == PAGES_SAVER_US);
+    pages_set_saver(&p, 60 * 1000000LL);
+    expect("a shorter delay brings the saver sooner",
+           pages_saver_active(&p, 2000000 + 60 * 1000000LL + 1)
+           && !pages_saver_active(&p, 2000000 + 60 * 1000000LL));
+    pages_set_saver(&p, 0);
+    expect("zero means never", !pages_saver_active(&p, 2000000 + PAGES_SAVER_US * 100));
+    pages_set_saver(&p, -5);
+    expect("a negative delay is treated as never",
+           p.saver_us == 0 && !pages_saver_active(&p, 2000000 + PAGES_SAVER_US * 100));
+
+    /* Stepping, which the cycling saver uses: it moves without waking. */
+    pages_init(&p, ALL);
+    pages_show(&p, PAGE_TURNS, 1000);
+    expect("step moves to the next page",
+           pages_step(&p, 0) == PAGE_MESSAGE);
+    expect("step is not activity", p.last_activity_us == 1000);
+    expect("step skips masked pages",
+           pages_step(&p, PAGE_BIT(PAGE_DAILY) | PAGE_BIT(PAGE_SETTINGS)) == PAGE_CLOCK);
+    expect("step with everything masked stays put",
+           pages_step(&p, ALL) == PAGE_CLOCK);
 
     if (failures == 0) { printf("all tests passed\n"); return 0; }
     printf("%d test(s) failed\n", failures);

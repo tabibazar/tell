@@ -57,4 +57,8 @@ void canvas_disc(canvas_t *c, int cx, int cy, int r, uint16_t colour);
    clipped at the right edge. */
 void canvas_puts(canvas_t *c, int col, int row, const char *s, uint16_t colour);
 
+/* As canvas_puts, but at a pixel position, for labels that must line up
+   with something drawn off the text grid. */
+void canvas_puts_px(canvas_t *c, int x, int y, const char *s, uint16_t colour);
+
 #endif /* CANVAS_H */

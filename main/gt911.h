@@ -15,8 +15,8 @@ bool gt911_tapped(void);
    after gt911_tapped() has returned true. */
 void gt911_point(int *x, int *y);
 
-/* Diagnostic one-liner: probe result, last status byte, counters. The serial
-   console is unreadable on this board, so this goes on the screen. */
+/* Diagnostic one-liner: probe result, last status byte, counters, for showing
+   on the screen when no serial cable is attached. */
 const char *gt911_debug(void);
 
 #endif /* GT911_H */

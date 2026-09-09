@@ -88,39 +88,36 @@ plain `100`, succeeded — which made the chip look present but unreadable.
 address, so "the probe succeeded" is not proof a device is there. Two
 hypotheses were built on that assumption before it was checked.
 
-## Next: the DS3231 real-time clock
+## The DS3231 real-time clock
 
-A Wishiot **DS3231 + AT24C32** module is to be wired to the CrowPanel, giving
-the board a battery-backed clock. Today it starts at `--:--:--` after every
-power cycle and drifts until a `tell` re-syncs it; the DS3231 is
-temperature-compensated to about a minute a year.
+A DS3231 module sits on the CrowPanel's I²C header, which is the touch bus
+(**SDA 19, SCL 20**); it answers at `0x68`, the GT911 at `0x5D`, so nothing
+collides. `main/ds3231.c` reads it at boot, writes every sync from a Mac back
+to it, and re-reads it hourly to cancel the ESP timer's drift. Only the time
+of day is stored, with a dummy date, because that is all the board deals in.
+The driver is named after the chip because ESP-IDF already owns the symbol
+`rtc_init`.
 
-**Wiring:** the same I²C bus as the touch controller. The pins are now board
-dependent, set by `CONFIG_SCREEN_I2C_SDA`/`_SCL` — on the CrowPanel **SDA 19,
-SCL 20**,
-3V3 and GND. DS3231 answers at `0x68` and the AT24C32 EEPROM at `0x50`–`0x57`;
-the GT911 is at `0x5D`, so nothing collides.
-
-**The blocking refactor is already done.** `main/i2cbus.c` owns the bus and
-drivers attach to it with `i2cbus_handle()` and `i2cbus_probe()`. Before that,
-`gt911_init()` created the bus itself and a second `i2c_new_master_bus` on the
-same port would have failed. So this is now a driver plus wiring.
-
-**Check the battery before powering it.** These modules are built for a
-rechargeable LIR2032 but are commonly sold with a non-rechargeable CR2032 in
+**Check the battery before powering the module.** These modules are built for
+a rechargeable LIR2032 but are commonly sold with a non-rechargeable CR2032 in
 the holder, which the charging circuit will then try to charge. Fit a LIR2032,
 or remove the charging resistor — usually the one marked `201` beside the
-diode.
+diode. A flat battery shows up as the chip's oscillator-stopped flag, and the
+firmware then ignores its time until the next sync.
 
 ## Architecture, in one paragraph
 
 The firmware owns all drawing; Macs send data, never pixels. A full frame is
 750 KB against BLE's ~10–20 KB/s, so sending pictures was never viable.
-Payloads are marker-prefixed text lines (`!stats`, `!daily`, `!clock`,
-`!today`) on the Nordic UART Service, which means a page can be typed by hand
-from nRF Connect to tell firmware bugs from client bugs. `usagedata`,
-`textwrap`, `timecalc`, `pages` and `canvas` are pure C and host-tested;
-`display_*` and `gt911` are the only units that touch hardware.
+Payloads are marker-prefixed text lines (`!stats`, `!year`, `!now`, and so
+on) on the Nordic UART Service, which means a page can be typed by hand from
+nRF Connect to tell firmware bugs from client bugs. The parser is a small
+core (`usagedata.c`) plus one `ud_*.c` per payload, registered in
+`ud_sections.c`; the renderer is `view_common.c` plus one `view_*.c` per
+page; `pagedefs.c` is the table `main.c` reads for what each page is. All of
+that, with `textwrap`, `timecalc`, `pages`, `settings` and `canvas`, is pure
+C and host-tested; `display_*`, `gt911`, `ds3231` and `ble_uart` are the only
+units that touch hardware.
 
 ```sh
 make -C host_tests && for t in host_tests/test_*; do [ -x "$t" ] && "$t"; done
@@ -128,17 +125,71 @@ make -C host_tests && for t in host_tests/test_*; do [ -x "$t" ] && "$t"; done
 
 ## The Feather's IMU
 
-The small board has a QMI8658 on its STEMMA QT bus at `0x6B`, left over from
-its stock firmware. `main/qmi8658.c` drives it and `main/particles.c` turns its
-accelerometer into eight hundred grains of sand in a bottle, which are that
-board's screensaver: a field in constant motion protects the panel better than a clock
-that moves once a minute. `tell --device small "!particles"` summons the page.
+The small board has a QMI8658 on its STEMMA QT bus at `0x6B` — SDA 42, SCL 41,
+powered from GPIO21 along with the panel — left over from its stock firmware.
+The I²C pins are board dependent, `CONFIG_SCREEN_I2C_SDA`/`_SCL`, because the
+CrowPanel wires its GT911 to GPIO19/20 instead.
 
-`particles.c` is pure C and takes a gravity vector, so it is tested on the host
-like everything else here; only the axis mapping needed the board. That mapping
-lives in `AXIS_X`/`AXIS_Y` in `main.c` — if the particles ever run the wrong
-way after the sensor is remounted, flip a sign there rather than touching the
-physics.
+It drives three pages, none of which exist on the big board:
 
-There is also an unused device at `0x77`, a BMP280/BME280 family pressure and
-temperature part. That is where the stock firmware's temperature came from.
+| | |
+|---|---|
+| `!particles` | a bottle of liquid that pours as you tilt it; also the saver |
+| `!level` | a bullseye spirit level, in degrees and mm/m |
+| `!game` | tilt a ball around a walled arena and catch rings |
+
+`particles.c`, `level.c` and `tiltgame.c` are pure C and take a gravity vector,
+so they are tested on the host like everything else here. Only the axis mapping
+needed the board.
+
+**The axis signs cannot be worked out from a still reading.** Gravity has no
+component along an axis that is level, so the only way to know is to tilt the
+board and look — which is a poor thing to need a reflash for, and they were
+wrong twice before it stopped being one. `!flip x`, `!flip y`, `!flip swap` and
+`!flip reset` change the mapping and the board remembers it in NVS.
+
+**`!zero` takes the surface the board is on as true.** A desk is not a
+reference plane and a hand-mounted breakout is not square to the panel: this
+board reads about 3.7° off on one axis wherever you put it, which is the
+sensor, not the table. `!zero reset` goes back to absolute.
+
+There is also a **BMP280 at `0x77`**, id `0x58` — where the stock firmware's
+temperature came from. It is not read for weather: its uncompensated bottom
+bits wander on their own, so twelve readings mixed together seed the liquid,
+and the grains land somewhere new every boot.
+
+## Adding a page
+
+The firmware is one file per page and one file per payload, each registered
+in a table, so a new page touches nothing that exists. In order:
+
+1. **Payload.** Add `!name` to `tools/claude-stats.py` (`render_name`, and its
+   entry in the `--all` list and `--section` choices), and a row for it in
+   `tools/push-stats.sh`'s section loop. Keep any per-day series to one
+   character per day (`grid_char`, or `pct_char` for percentages) so the
+   payload stays under the 2048-byte BLE message.
+2. **Parser.** Add the per-machine struct and its view struct to
+   `main/usagedata.h`, a `UD_NAME` kind (before `UD_KIND_COUNT`), and a
+   `main/ud_name.c` with `begin` (reset one machine's copy), `line` (one
+   row: `tag`, rest -- return, never `continue`), `end` (validate), `merge`
+   (fold every machine's copy into the view) and `used` (has this machine
+   sent it), ending in a `const ud_section_t ud_section_name`. Register it in `main/ud_sections.c`.
+   Test it in `host_tests/test_usagedata.c`; the helpers you want are in
+   `main/ud_internal.h`.
+3. **Page.** Add `PAGE_NAME` to the enum in `main/pages.h` where it should sit
+   in the tap order, and `main/view_name.c` with
+   `void views_name(canvas_t *, const ud_view_t *, float t, int64_t now_us)`
+   (declare it in `views.h`; `t` grows bars from 0 to 1 and can be ignored).
+   `main/view_common.h` has the title bar, footer, number and date formatting,
+   the heat cell and the step plot. Add one row to `main/pagedefs.c`: the menu
+   name, `UD_FEED(UD_NAME)`, the draw function, and whether it animates,
+   refreshes on its own, exists on the Feather, needs touch, or joins the
+   screensaver cycle.
+4. **Check it.** `make -C host_tests && ./host_tests/test_views /tmp/page
+   payload.txt` renders every page to PPM; `sips -s format png` and look.
+   Then `idf.py -B build-crowpanel ... reconfigure` (new files are only seen
+   at configure time), build, and `tools/flash-crowpanel.sh`.
+
+`main.c` should not need editing: it reads `page_defs` for availability,
+redraw-on-payload, drawing and the saver cycle, and `usagedata_parse` finds
+the section by its marker.

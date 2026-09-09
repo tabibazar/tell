@@ -1,75 +1,18 @@
-#include "views.h"
-
-#include "palette.h"
+#include "view_common.h"
 
 #include <stdio.h>
 #include <string.h>
-
-/* Compact magnitude: a billion has to fit in a narrow column. */
-static void human(uint64_t n, char *out, int size)
-{
-    if (n >= 1000000000ULL) snprintf(out, size, "%.1fB", n / 1e9);
-    else if (n >= 1000000ULL) snprintf(out, size, "%.1fM", n / 1e6);
-    else if (n >= 1000ULL) snprintf(out, size, "%.0fK", n / 1e3);
-    else snprintf(out, size, "%llu", (unsigned long long)n);
-}
-
-/* How long ago the newest machine sent data. Shown rather than used to expire
-   anything: stale numbers are more useful when labelled than when deleted. */
-static void freshness(const ud_view_t *d, int64_t now_us, char *out, int size)
-{
-    if (d->updated_us <= 0) { snprintf(out, size, "no data"); return; }
-
-    long secs = (long)((now_us - d->updated_us) / 1000000);
-    if (secs < 0) secs = 0;
-    if (secs < 90) snprintf(out, size, "updated %lds ago", secs);
-    else if (secs < 5400) snprintf(out, size, "updated %ldm ago", secs / 60);
-    else snprintf(out, size, "updated %ldh ago", secs / 3600);
-}
-
-static void title(canvas_t *c, const char *left, const char *right)
-{
-    canvas_fill_rect(c, 0, 0, c->w, c->cell_h, PAL_TITLE_BG);
-    canvas_puts(c, 1, 0, left, PAL_FG);
-    if (right == NULL) return;
-
-    /* Sit left of the button, and drop the note rather than overlap the
-       heading if there is no room. */
-    int col = c->cols - 1 - (int)strlen(right);
-    if (col > (int)strlen(left) + 2)
-        canvas_puts(c, col, 0, right, PAL_FG);
-}
-
-/* Warns in the build if a footer could ever be clipped at the right edge. */
-static void footer_fit(canvas_t *c, char *text)
-{
-    if ((int)strlen(text) > c->cols - 1) text[c->cols - 1] = '\0';
-}
-
-/* A footnote explaining what was actually measured. Without it a bar chart is
-   decoration: the reader cannot tell tokens from calls, or which window. */
-static void footer(canvas_t *c, char *text)
-{
-    footer_fit(c, text);
-    canvas_puts(c, 1, c->rows - 1, text, PAL_DIM);
-}
-
-static void right_text(canvas_t *c, int row, int right_col, const char *s,
-                       uint16_t colour)
-{
-    canvas_puts(c, right_col - (int)strlen(s), row, s, colour);
-}
 
 void views_stats(canvas_t *c, const ud_view_t *d, float t, int64_t now_us)
 {
     canvas_clear(c);
     char head[48], fresh[24];
-    freshness(d, now_us, fresh, sizeof fresh);
+    vw_freshness(d, now_us, fresh, sizeof fresh);
     if (d->host_count > 1)
         snprintf(head, sizeof head, "%d machines   %s", d->host_count, fresh);
     else
         snprintf(head, sizeof head, "%s", fresh);
-    title(c, "USAGE BY MODEL", head);
+    vw_title(c, "USAGE BY MODEL", head);
 
     if (d->model_count == 0) {
         canvas_puts(c, 1, 2, "no data yet -- run tools/push-stats.sh", PAL_DIM);
@@ -85,7 +28,7 @@ void views_stats(canvas_t *c, const ud_view_t *d, float t, int64_t now_us)
 
     canvas_puts(c, 1, 1, "model", PAL_DIM);
     canvas_puts(c, 17, 1, "share of busiest model", PAL_DIM);
-    right_text(c, 1, c->cols - 1, "total", PAL_DIM);
+    vw_right_text(c, 1, c->cols - 1, "total", PAL_DIM);
 
     int bar_x = 17 * c->cell_w;
     int bar_max = c->w - bar_x - 10 * c->cell_w;
@@ -97,7 +40,7 @@ void views_stats(canvas_t *c, const ud_view_t *d, float t, int64_t now_us)
         canvas_fill_rect(c, x, first_row * c->cell_h, 1,
                          (last_row - first_row) * c->cell_h, PAL_DIM);
         char lab[16];
-        human(peak * (uint64_t)q / 4, lab, sizeof lab);
+        vw_human(peak * (uint64_t)q / 4, lab, sizeof lab);
         canvas_puts(c, x / c->cell_w - (int)strlen(lab) + 1, 2, lab, PAL_DIM);
     }
 
@@ -112,16 +55,16 @@ void views_stats(canvas_t *c, const ud_view_t *d, float t, int64_t now_us)
                          width, c->cell_h / 2, pal_accent(i));
 
         char value[16];
-        human(total, value, sizeof value);
-        right_text(c, row, c->cols - 1, value, PAL_FG);
+        vw_human(total, value, sizeof value);
+        vw_right_text(c, row, c->cols - 1, value, PAL_FG);
     }
 
     char note[128], total[16];
-    human(grand, total, sizeof total);
+    vw_human(grand, total, sizeof total);
     snprintf(note, sizeof note,
              "bar = output + cache-read tokens   %d models   %s total",
              d->model_count, total);
-    footer(c, note);
+    vw_footer(c, note);
 }
 
 void views_daily(canvas_t *c, const ud_view_t *d, float t, int64_t now_us)
@@ -129,16 +72,16 @@ void views_daily(canvas_t *c, const ud_view_t *d, float t, int64_t now_us)
     canvas_clear(c);
 
     if (d->day_count == 0) {
-        title(c, "TOKENS PER DAY", NULL);
+        vw_title(c, "TOKENS PER DAY", NULL);
             canvas_puts(c, 1, 2, "no data yet -- run tools/push-stats.sh", PAL_DIM);
         return;
     }
 
     char range[64], fresh[24];
-    freshness(d, now_us, fresh, sizeof fresh);
+    vw_freshness(d, now_us, fresh, sizeof fresh);
     snprintf(range, sizeof range, "%s to %s   %s",
              d->days[0].label, d->days[d->day_count - 1].label, fresh);
-    title(c, "TOKENS PER DAY", range);
+    vw_title(c, "TOKENS PER DAY", range);
 
     uint64_t peak = 1, grand = 0;
     int peak_i = 0;
@@ -158,8 +101,8 @@ void views_daily(canvas_t *c, const ud_view_t *d, float t, int64_t now_us)
         int y = bottom - plot_h * q / 4;
         canvas_fill_rect(c, gutter, y, plot_w, 1, PAL_DIM);
         char lab[16];
-        human(peak * (uint64_t)q / 4, lab, sizeof lab);
-        right_text(c, y / c->cell_h, gutter / c->cell_w - 1, lab, PAL_DIM);
+        vw_human(peak * (uint64_t)q / 4, lab, sizeof lab);
+        vw_right_text(c, y / c->cell_h, gutter / c->cell_w - 1, lab, PAL_DIM);
     }
     canvas_fill_rect(c, gutter, top, 1, plot_h + 1, PAL_DIM);
 
@@ -210,7 +153,7 @@ void views_daily(canvas_t *c, const ud_view_t *d, float t, int64_t now_us)
         if (d->host_count == 0)
             canvas_fill_rect(c, bx, bottom - h, bar_w, h, colour);
 
-marks:
+marks: ;   /* C11 needs a statement, not a declaration, after a label */
 
         int label_col = (gutter + i * slot) / c->cell_w;
         if (slot >= 6 * c->cell_w || (i % 2) == 0)
@@ -232,7 +175,7 @@ marks:
     /* The peak is the number people look for, so put it on the bar. */
     {
         char plab[16];
-        human(peak, plab, sizeof plab);
+        vw_human(peak, plab, sizeof plab);
         int col = (gutter + peak_i * slot) / c->cell_w - 1;
         if (col < 0) col = 0;
         canvas_puts(c, col, top / c->cell_h - 1, plab, PAL_PEAK);
@@ -250,49 +193,14 @@ marks:
     canvas_puts(c, 26, row, "> most recent", PAL_DIM);
 
     char peak_lab[16], avg[16], total[16];
-    human(peak, peak_lab, sizeof peak_lab);
-    human(grand / (uint64_t)d->day_count, avg, sizeof avg);
-    human(grand, total, sizeof total);
+    vw_human(peak, peak_lab, sizeof peak_lab);
+    vw_human(grand / (uint64_t)d->day_count, avg, sizeof avg);
+    vw_human(grand, total, sizeof total);
     canvas_puts(c, 41, row, "bar = in+out+cache", PAL_DIM);
 
     char note[128];
     snprintf(note, sizeof note,
              "peak %s on %s   avg %s/day   %s over %d days",
              peak_lab, d->days[peak_i].label, avg, total, d->day_count);
-    footer(c, note);
-}
-
-void views_today(canvas_t *c, const usagedata_t *d)
-{
-    canvas_clear(c);
-    title(c, "TODAY", d->date[0] ? d->date : NULL);
-
-    if (d->sun[0] == '\0' && d->moon_name[0] == '\0') {
-        canvas_puts(c, 1, 2, "no data yet -- run tools/push-today.sh", PAL_DIM);
-        return;
-    }
-
-    /* The moon gets the left third, drawn rather than described. */
-    int r = (c->h - 5 * c->cell_h) / 2;
-    if (r > 90) r = 90;
-    int cx = 2 * c->cell_w + r;
-    int cy = 2 * c->cell_h + r;
-    canvas_moon(c, cx, cy, r, d->moon_phase, PAL_FG, 0x2124);
-
-    int col = (cx + r) / c->cell_w + 2;
-    if (d->moon_name[0])
-        canvas_puts(c, col, 3, d->moon_name, PAL_A4);
-
-    if (d->sun[0]) {
-        canvas_puts(c, col, 6, "SUN", PAL_DIM);
-        canvas_puts(c, col, 7, d->sun, PAL_FG);
-    }
-    if (d->dayinfo[0]) {
-        canvas_puts(c, col, 10, "DAY", PAL_DIM);
-        canvas_puts(c, col, 11, d->dayinfo, PAL_FG);
-    }
-    if (d->holiday[0]) {
-        canvas_puts(c, col, 14, "NEXT HOLIDAY", PAL_DIM);
-        canvas_puts(c, col, 15, d->holiday, PAL_A1);
-    }
+    vw_footer(c, note);
 }

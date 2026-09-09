@@ -8,7 +8,32 @@ date | tell
 git log -1 --format=%s | tell
 ```
 
-When nothing is being displayed, the screen shows a clock.
+When nothing is being displayed, the screen shows a clock. On the big panel
+there are also pages of Claude Code usage: bars per model, bars per day, a
+line per model over the last two months, a heatmap of the last year in the
+style of Claude Code's own `/stats` screen, a weekday-by-hour heatmap of when
+you work, a live page for today with whether Claude is busy right now, the
+tokens by repository, the prompt-cache hit rate and what caching saved, which
+tools Claude calls and the programs behind its Bash calls, how much of its
+output is thinking, this week against
+last, your personal records, what it all would have cost at API list
+prices, and a recap of the day written by Claude from your prompts, plus an
+almanac and a Settings page. While Claude is busy the board shows the live page on its own and
+returns to the clock when the work stops; Settings can turn that off.
+
+On the touch panel a tap on the right half of the screen goes to the next
+page and one on the left half to the previous; the amber MENU tab at the top
+left of every page opens a menu with a tile per page, so any page is two taps
+away. After ten minutes with no tap
+and no message the screensaver cycles through the pages, twenty seconds each,
+so nothing sits still long enough to burn in; a tap brings back whatever page
+is showing. The Settings page (last in the
+tap order, touch boards only) changes the delay, from one minute to never,
+switches the saver to a drifting clock instead, sets the seconds per page,
+chooses whether the board jumps to the live page while Claude is busy, and
+picks the home page: the clock, or the live page, which then stays up all day
+if the screensaver is set to never. Settings are kept in flash across power
+cycles.
 
 ---
 
@@ -88,8 +113,8 @@ cd tell
 ```
 
 That checks the prerequisites, builds the client, links it onto your PATH,
-looks for the boards, and starts the agents that keep the clock, charts and
-almanac fresh. `./install.sh big --no-agents` sets up the client alone.
+looks for the boards, and starts the agents that keep the clock, charts,
+almanac and story fresh. `./install.sh big --no-agents` sets up the client alone.
 
 macOS asks your **terminal** for Bluetooth permission the first time; if no
 board is found, grant it under System Settings > Privacy & Security >
@@ -103,6 +128,10 @@ stacked with a segment per machine, named in the legend. Set
 Only a Mac that can see the board over Bluetooth can contribute, so this means
 machines in the same room. A machine that stops pushing keeps whatever it last
 sent until the board restarts.
+
+The usage pages are pushed every five minutes, and the live page's section
+on its own every minute so "busy" stays current; the clock, almanac and story
+agents run on their own timers.
 
 The board accepts one BLE connection at a time. Sends on the same machine take
 a shared lock; across machines the client simply retries, five times, ten
@@ -118,14 +147,26 @@ A message holds the screen for 5 minutes, then the clock returns.
 
 ## The clock
 
-The board has no battery-backed real-time clock, so it starts at `--:--:--`
-after every power cycle and drifts a few seconds a day. Every `tell` command
-re-syncs it, so in practice this is invisible; `tell --sync` corrects it without
-disturbing what is on screen.
+The board has no real-time clock of its own, so on its own it starts at
+`--:--:--` after every power cycle and drifts a few seconds a day. Every `tell`
+command re-syncs it, so in practice this is invisible; `tell --sync` corrects
+it without disturbing what is on screen.
+
+A **DS3231 module on the CrowPanel's I2C header** fixes the power-cycle gap:
+the firmware finds it at boot, takes the time from it, and writes every sync
+from a Mac back to it, so the chip always holds the last NTP-disciplined time
+the Mac had. Once an hour without a sync it re-reads the chip to cancel the
+ESP timer's drift. The chip stores local time of day only; after a
+daylight-saving change it is an hour off until the next sync, which the
+`push-clock` agent provides within five minutes. A chip whose battery has
+died reports that its oscillator stopped, and is then ignored until set again.
 
 Time is sent as **seconds since your local midnight**, not a Unix timestamp.
 That way the firmware never needs to know about timezones or leap seconds — it
-counts seconds and formats `HH:MM:SS`.
+counts seconds and formats `HH:MM:SS`. The one concession is the title bar on
+the big panel's pages, which shows the local time with its zone and UTC beside
+it; the offset and the zone's name (`utc -240`, `tz EDT`) ride along in the
+clock payload the `push-clock` agent sends every five minutes.
 
 ## Particles, on the small board
 
@@ -167,10 +208,15 @@ alone:
 | `textwrap` | Word wrap. Pure C, no hardware — this is where the unit tests live |
 | `canvas`   | Framebuffer and glyph rendering. Panel independent, host tested |
 | `display_*`| Panel bring-up and blitting. One file per board |
-| `timecalc` | Seconds-since-midnight arithmetic. Also pure, also tested |
+| `timecalc` | Seconds-since-midnight and days-since-epoch arithmetic. Also pure, also tested |
+| `usagedata` + `ud_*` | Parses and merges the data payloads from several Macs: a small core and one file per payload, registered in `ud_sections.c`. Pure, tested |
+| `view_*`   | Draws the pages onto a canvas, one file per page over `view_common`. Rendered and inspected on the host |
+| `pagedefs` | The page table: name, which payload feeds it, how it is drawn. `main` reads it instead of listing pages |
 
 `main` wires them together. Nothing above `display` knows about SPI or pin
-numbers, and nothing above `ble_uart` knows about GATT.
+numbers, and nothing above `ble_uart` knows about GATT. Adding a page is a
+`view_*.c` file, a `ud_*.c` file if it needs a new payload, an enum entry,
+and one row in each of the two tables; see [docs/developing.md](docs/developing.md).
 
 Rendering goes to an off-screen framebuffer that is blitted in one operation.
 Drawing glyphs straight to the panel would make partial updates visible.
@@ -187,13 +233,46 @@ firmware bugs apart from client bugs.
 | Text | `6E400002-B5A3-F393-E0A9-E50E24DCCA9E` | write, UTF-8, max 2048 bytes |
 | Clock | `6E400004-B5A3-F393-E0A9-E50E24DCCA9E` | write, 4 bytes LE, seconds since local midnight |
 
+**Data payloads.** A text message that starts with `!stats`, `!daily`,
+`!year`, `!cost`, `!rhythm`, `!now`, `!projects`, `!cache`, `!tools`,
+`!thinking`, `!week`, `!records`, `!runs`, `!turns`, `!story`, `!clock` or
+`!today` is data for a page rather than a
+message to show, and replaces that section for the sending machine (named on
+a `host` line) without changing what is on screen. `tools/claude-stats.py
+--format data --section <name>` produces each of the first fourteen (or `--all
+DIR` writes them all from one pass); `tools/story.py` writes the recap by
+handing the day's prompts to the `claude` command in headless mode, on your
+subscription, and regenerates only when the prompt count has changed; the
+almanac and weather scripts produce the last two.
+
+The script reads the transcripts under `~/.claude/projects` for recent, exact
+figures and merges `~/.claude/stats-cache.json` for the months before that,
+since transcripts are pruned but the cache keeps a daily summary back to the
+first session. Days the cache knows only as message counts are estimated from
+the average message and footnoted on the board. Costs use API list prices
+per model, cache reads at the model's read rate, cache writes at 1.25x input
+for the 5-minute TTL or 2x for the 1-hour TTL when the transcript says which;
+set `CLAUDE_PLAN_USD` to your subscription price to see the ratio.
+
+Dates in these payloads are **day numbers**, days since 1970-01-01 in the
+Mac's local time, and per-day token counts are **one character per day**:
+`.` for none, otherwise `0-9A-Za-z` on a half-octave log scale
+(`round(2*log2(tokens/1000))`, decoded as `1000*2^(i/2)`, within about 19%).
+That keeps a year of days to 371 bytes and eight models' last sixty days to
+about a kilobyte, so each fits one 2048-byte message however heavy the usage.
+The board turns day numbers back into month names and weekdays itself
+(`timecalc_civil`); it still knows nothing about time zones.
+
 No pairing or bonding: it displays text on a desk, and pairing would add a setup
 step without buying meaningful security.
 
 **Message framing.** BLE's default MTU is 23 bytes — 20 bytes of payload per
 write. macOS negotiates upward on connect, but a long message still arrives as
 several writes. The firmware appends them to a buffer and completes the message
-after **250 ms** with no further write. This is the part most likely to break, so
+after **250 ms** with no further write, or **1.5 s** for a data payload (one
+starting with `!`), since a stall in the Mac's Bluetooth stack mid-payload
+otherwise closes it early and the tail shows up as a text message with no
+marker. This is the part most likely to break, so
 it has an explicit test: a 512-byte message crosses three writes at MTU 256 and
 reassembles correctly.
 
@@ -244,7 +323,9 @@ Two more traps on this board, both learned the hard way:
   the port drops with `Device not configured`. Use the default rate.
 - **After a failed build, `idf.py` leaves the previous `build/screen.bin` in
   place.** Check the binary's timestamp before flashing, or you will flash a
-  stale image and debug a bug you already fixed.
+  stale image and debug a bug you already fixed. `tools/flash-crowpanel.sh`
+  refuses a binary older than the sources for exactly this reason, then
+  flashes the app partition and pushes every data section.
 
 Serial output goes over USB-Serial-JTAG (`idf.py monitor`). It is discarded when
 no host is attached, so boot logs are usually missed — hence the heartbeat log
@@ -252,14 +333,18 @@ every 30 seconds.
 
 ## Tests
 
-The two pure units are tested on the host, no board required:
+The pure units are tested on the host, no board required:
 
 ```sh
 make -C host_tests && for t in host_tests/test_*; do [ -x "$t" ] && "$t"; done
 ```
 
 Covers wrap boundaries, over-long words, truncation marking, non-ASCII
-substitution, and — for the clock — midnight wrap and multi-day rollover.
+substitution, the clock's midnight wrap and multi-day rollover, the calendar
+arithmetic, the payload parser and multi-machine merge, and the page layouts.
+`host_tests/test_views /tmp/page tools-output.txt ...` also writes each usage
+page as a PPM, so a layout can be looked at without flashing anything:
+`sips -s format png /tmp/page-year.ppm --out page-year.png`.
 
 ## Known limitations
 

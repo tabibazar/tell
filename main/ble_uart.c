@@ -26,6 +26,12 @@
    interval, but Android commonly starts at 30-50 ms, so 50 ms was too tight
    for any non-Apple client. */
 #define FLUSH_IDLE_US  250000
+/* Data payloads (the ones starting with '!') are a kilobyte or two written by
+   a machine, and a stall in the Mac's Bluetooth stack mid-way used to close
+   them early: the tail then arrived as a second message with no marker and
+   was shown as text. Nobody is waiting on a data payload, so it may sit
+   quiet for much longer before it is taken as complete. */
+#define FLUSH_IDLE_DATA_US 1500000
 
 static const char *TAG = "ble_uart";
 
@@ -78,7 +84,8 @@ static int gatt_rx(uint16_t conn_handle, uint16_t attr_handle,
 
     /* Restart the idle timer: a long message arrives as several writes. */
     esp_timer_stop(s_flush_timer);
-    esp_timer_start_once(s_flush_timer, FLUSH_IDLE_US);
+    esp_timer_start_once(s_flush_timer,
+                         (s_len > 0 && s_buf[0] == '!') ? FLUSH_IDLE_DATA_US : FLUSH_IDLE_US);
     return 0;
 }
 
