@@ -26,10 +26,13 @@
 /* Within this of true, on both axes, it calls itself level.
 
    Found by playing rather than reasoned about, which is the only way to set a
-   difficulty: three quarters of a degree was a real level's tolerance and
-   unpleasantly hard, two degrees was too easy, so it sits between them. Still
-   flat enough to trust a desk to. */
-#define LEVEL_TOLERANCE_DEG 1.2f
+   difficulty. Two degrees was too easy and so was 1.2; three quarters was
+   unpleasantly hard, but that was on the old fifteen-degree dial where a
+   degree moved the dot four pixels and you could not see what you were doing.
+   With eleven pixels to the degree and the tolerance drawn as a ring, this
+   sits just above where hard became unfair. Still flat enough to trust a desk
+   to: a fifth of a millimetre across a ruler. */
+#define LEVEL_TOLERANCE_DEG 0.9f
 
 bool level_is_true(float tilt_x_deg, float tilt_y_deg);
 
