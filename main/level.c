@@ -77,9 +77,13 @@ void level_draw(canvas_t *c, float roll_deg, float pitch_deg)
         canvas_fill_rect(c, cx - 3, cy - rr, 7, 1, PAL_FG);
     }
 
-    /* The bubble, stopped at the rim rather than sliding off the dial. */
-    float sx = clampf(roll_deg, -LEVEL_FULL_SCALE_DEG, LEVEL_FULL_SCALE_DEG);
-    float sy = clampf(pitch_deg, -LEVEL_FULL_SCALE_DEG, LEVEL_FULL_SCALE_DEG);
+    /* The bubble, stopped at the rim rather than sliding off the dial.
+       It floats to the HIGH side, which is the whole point of a bubble and
+       the opposite of where gravity points: tip the right edge down and the
+       bubble goes left, exactly as it does in a real level. Drawn the other
+       way round it reads upside down, because everyone has used one. */
+    float sx = clampf(-roll_deg, -LEVEL_FULL_SCALE_DEG, LEVEL_FULL_SCALE_DEG);
+    float sy = clampf(-pitch_deg, -LEVEL_FULL_SCALE_DEG, LEVEL_FULL_SCALE_DEG);
     int bx = cx + (int)(sx / LEVEL_FULL_SCALE_DEG * (float)r);
     int by = cy + (int)(sy / LEVEL_FULL_SCALE_DEG * (float)r);
     canvas_disc(c, bx, by, BUBBLE_R, accent);

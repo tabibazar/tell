@@ -67,7 +67,6 @@ static particles_t s_particles;
 static bool s_imu;
 static int64_t s_particles_last_us;
 static float s_gx, s_gy;      /* low-passed gravity, panel coordinates */
-static float s_gz;            /* and its component out of the screen */
 
 /* Gravity in pixels per second squared. A full 1 g tilt crosses the short
    axis of the panel in about half a second, which reads as sand rather than
@@ -127,6 +126,14 @@ static void gravity_from(const qmi8658_sample_t *s, float *gx, float *gy)
    its face is off vertical. Both come from the same gravity vector the liquid
    uses, so they inherit the axis mapping measured on the board. Z takes no
    part in the liquid but is exactly what pitch is made of. */
+/* The level keeps its own filtered copy of gravity, in g and much slower than
+   the liquid's. The liquid wants to feel the board move; an instrument wants
+   to be read, and at the animation filter's speed the tenths digit never
+   stops moving. This corner is about a fifth of a hertz -- it takes a second
+   to catch up with a deliberate tilt and ignores everything faster. */
+#define LEVEL_ALPHA 0.06f
+static float s_lx, s_ly, s_lz;
+
 static void draw_level(canvas_t *c)
 {
     qmi8658_sample_t sample;
@@ -136,14 +143,12 @@ static void draw_level(canvas_t *c)
     gravity_from(&sample, &gx, &gy);
     float gz = -sample.az;              /* out of the screen, toward you */
 
-    /* Low-passed like the liquid's gravity: a level that flickers in the
-       last digit cannot be read. */
-    s_gx += (gx * GRAVITY_PX - s_gx) * GRAVITY_ALPHA;
-    s_gy += (gy * GRAVITY_PX - s_gy) * GRAVITY_ALPHA;
-    s_gz += (gz - s_gz) * GRAVITY_ALPHA;
+    s_lx += (gx - s_lx) * LEVEL_ALPHA;
+    s_ly += (gy - s_ly) * LEVEL_ALPHA;
+    s_lz += (gz - s_lz) * LEVEL_ALPHA;
 
-    float roll = atan2f(s_gx, s_gy) * 180.0f / (float)M_PI;
-    float pitch = atan2f(s_gz, sqrtf(s_gx * s_gx + s_gy * s_gy) / GRAVITY_PX)
+    float roll  = atan2f(s_lx, s_ly) * 180.0f / (float)M_PI;
+    float pitch = atan2f(s_lz, sqrtf(s_lx * s_lx + s_ly * s_ly))
                 * 180.0f / (float)M_PI;
     level_draw(c, roll, pitch);
     display_blit();
