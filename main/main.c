@@ -313,7 +313,7 @@ void app_main(void)
         if (bmp280_init() == ESP_OK) seed = bmp280_entropy();
         if (seed == 0) seed = (uint32_t)esp_timer_get_time() | 1u;
         ESP_LOGI(TAG, "particles seeded with 0x%08X", (unsigned)seed);
-        particles_init(&s_particles, 800, c->w, c->h, seed);
+        particles_init(&s_particles, 380, c->w, c->h, seed);
     }
 #endif
     pages_init(&s_pages, available);
@@ -326,19 +326,24 @@ void app_main(void)
     }
 
     int64_t last_beat = 0;
+    int64_t last_wake = esp_timer_get_time();
 
     for (;;) {
+        /* Sleep for what is left of the frame, not for a whole frame on top
+           of the work. vTaskDelay is time added after everything else has
+           run, so sleeping a flat 33 ms after 13 ms of solving and blitting
+           gives 23 fps, not 30 -- which is most of why the liquid looked
+           slow. The tick is 10 ms, so this lands on the nearest tick below. */
+        int64_t period_us = (int64_t)TICK_MS * 1000;
 #if HAVE_PARTICLES
-        /* Particles read better at 30 fps. A frame is 240*135*2 = 65 KB over
-           a 40 MHz bus, so the transfer is a fraction of the budget; nothing
-           else on the board is made busier, because this only shortens the
-           delay while the animation is what is showing. */
-        bool animating = s_imu && (s_saver || s_pages.current == PAGE_PARTICLES);
-        vTaskDelay(pdMS_TO_TICKS(animating ? 33 : TICK_MS));
-#else
-        vTaskDelay(pdMS_TO_TICKS(TICK_MS));
+        if (s_imu && (s_saver || s_pages.current == PAGE_PARTICLES))
+            period_us = 33000;      /* 30 fps while the liquid is showing */
 #endif
+        int64_t rest_ms = (period_us - (esp_timer_get_time() - last_wake)) / 1000;
+        vTaskDelay(rest_ms > 1 ? pdMS_TO_TICKS(rest_ms) : 1);
+
         int64_t now = esp_timer_get_time();
+        last_wake = now;
 
         if (touch && gt911_tapped()) {
             if (s_saver) {

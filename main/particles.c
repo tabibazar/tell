@@ -2,27 +2,28 @@
 
 #include "palette.h"
 
-#include <stdbool.h>
+/* Drag per second, the bulk viscosity of the body. It can be this lively only
+   because the grains genuinely separate: while crowding was approximated by a
+   density grid, anything above about 0.1 fed the corrections back as velocity
+   and the body hummed instead of settling. */
+#define DRAG 0.60f
+/* How strongly a grain is pulled toward the mean velocity of its cell. This
+   is what makes it a liquid rather than a cloud: neighbours travel together,
+   so the body slumps and levels instead of every grain going its own way. */
+#define VISCOSITY 0.25f
+/* How many times the overlaps are resolved per frame. One pass cannot settle
+   a stack: separating the grain at the bottom crowds the one above it, which
+   would otherwise not be dealt with until next frame. */
+#define RELAX_PASSES 3
+/* Each pass removes this share of an overlap. Below one, so a grain wedged
+   between two others does not ping between them. */
+#define STIFFNESS 0.9f
+/* A per-frame nudge, in pixels per second. Barely anything: enough that the
+   surface never becomes a frozen straight line, not enough to stop the body
+   settling. */
+#define JITTER 0.3f
 
-/* Bounce loses this much speed, so grains do not ring off the walls. */
-#define RESTITUTION 0.35f
-/* Drag per second. High enough to keep the bottle from becoming a blender,
-   low enough that a tilt still sloshes for a second or two afterwards. */
-#define DRAG 0.55f
-/* How hard a crowded cell pushes its neighbours away, in pixels per second
-   squared per surplus grain. This is what gives the pile depth: without it
-   every grain settles onto the same boundary line and nothing moves again.
-   Against GRAVITY_PX in main.c it sets how deep the heap stands: higher fills
-   more of the bottle, but past about 500 the pile stops settling and starts
-   boiling, because the grid is coarse enough that the term fights itself. */
-#define PRESSURE 350.0f
-/* A per-frame nudge, in pixels per second. Small: the drag above turns it
-   into a shimmer of about ten pixels a second, so a settled heap keeps
-   shifting instead of freezing, which is both nicer to watch and better for
-   a panel that shows this for hours. */
-#define JITTER 3.0f
-
-#define PARTICLE_SIZE 3
+#define GRAIN_SIZE 4
 
 static uint32_t next_rand(particles_t *s)
 {
@@ -44,6 +45,11 @@ void particles_init(particles_t *s, int n, int w, int h, uint32_t seed)
     s->h = h;
     s->rng = seed ? seed : 1u;
 
+    s->gw = w / PARTICLES_CELL + 1;
+    s->gh = h / PARTICLES_CELL + 1;
+    if (s->gw > PARTICLES_GRID_W) s->gw = PARTICLES_GRID_W;
+    if (s->gh > PARTICLES_GRID_H) s->gh = PARTICLES_GRID_H;
+
     /* Six colours from the project's Okabe-Ito set, so the animation belongs
        to the same palette as the charts. */
     static const uint16_t colours[6] = {
@@ -55,74 +61,98 @@ void particles_init(particles_t *s, int n, int w, int h, uint32_t seed)
         s->p[i].y = frand(s, 1.0f, (float)h - 1.0f);
         s->p[i].vx = frand(s, -20.0f, 20.0f);
         s->p[i].vy = frand(s, -20.0f, 20.0f);
+        s->p[i].ox = s->p[i].x;
+        s->p[i].oy = s->p[i].y;
         s->p[i].colour = colours[next_rand(s) % 6u];
     }
 }
 
-static void bounce(float *pos, float *vel, float limit)
+static int cell_index(const particles_t *s, float x, float y)
 {
-    if (*pos < 0.0f) {
-        *pos = 0.0f;
-        *vel = -*vel * RESTITUTION;
-    } else if (*pos > limit) {
-        *pos = limit;
-        *vel = -*vel * RESTITUTION;
-    } else {
-        return;
-    }
+    int cx = (int)x / PARTICLES_CELL;
+    int cy = (int)y / PARTICLES_CELL;
+    if (cx < 0) cx = 0; else if (cx >= s->gw) cx = s->gw - 1;
+    if (cy < 0) cy = 0; else if (cy >= s->gh) cy = s->gh - 1;
+    return cy * s->gw + cx;
 }
 
-/* Counts the grains into the coarse grid, so the step below can read a
-   density from it. Saturating, because a cell that holds more than 255 grains
-   is already as crowded as the gradient can express. */
-static void bin(particles_t *s)
+/* Groups the grain indices by cell, so the separation pass can walk a cell's
+   grains contiguously instead of searching. A counting sort: count, prefix
+   sum, place. */
+static void bucket(particles_t *s)
 {
-    s->gw = s->w / PARTICLES_CELL + 1;
-    s->gh = s->h / PARTICLES_CELL + 1;
-    if (s->gw > PARTICLES_GRID_W) s->gw = PARTICLES_GRID_W;
-    if (s->gh > PARTICLES_GRID_H) s->gh = PARTICLES_GRID_H;
+    int cells = s->gw * s->gh;
+    for (int i = 0; i <= cells; i++) s->head[i] = 0;
+    for (int i = 0; i < cells; i++) { s->vgx[i] = 0.0f; s->vgy[i] = 0.0f; }
 
-    for (int i = 0, n = s->gw * s->gh; i < n; i++) s->grid[i] = 0;
+    for (int i = 0; i < s->n; i++) s->head[cell_index(s, s->p[i].x, s->p[i].y) + 1]++;
+    for (int i = 0; i < cells; i++) s->head[i + 1] = (uint16_t)(s->head[i + 1] + s->head[i]);
+    for (int i = 0; i < cells; i++) s->fill[i] = s->head[i];
 
     for (int i = 0; i < s->n; i++) {
-        int cx = (int)s->p[i].x / PARTICLES_CELL;
-        int cy = (int)s->p[i].y / PARTICLES_CELL;
-        if (cx < 0) cx = 0; else if (cx >= s->gw) cx = s->gw - 1;
-        if (cy < 0) cy = 0; else if (cy >= s->gh) cy = s->gh - 1;
-        uint8_t *cell = &s->grid[cy * s->gw + cx];
-        if (*cell < 255) (*cell)++;
+        int k = cell_index(s, s->p[i].x, s->p[i].y);
+        s->order[s->fill[k]++] = (uint16_t)i;
+        s->vgx[k] += s->p[i].vx;
+        s->vgy[k] += s->p[i].vy;
+    }
+    for (int i = 0; i < cells; i++) {
+        int held = s->head[i + 1] - s->head[i];
+        if (held > 0) { s->vgx[i] /= (float)held; s->vgy[i] /= (float)held; }
     }
 }
 
-/* The count in a cell, false when there is no such cell. Off the grid is not
-   "empty": treating it as empty would let a wall pull grains through it, and
-   treating it as full would fire them back across the panel. The walls are
-   the business of bounce(); here they simply do not vote. */
-static bool cell(const particles_t *s, int cx, int cy, int *out)
+/* Pushes any two grains that overlap apart, each by half of the overlap.
+   Every pair is visited once: a cell against itself, and against the four
+   neighbours on one side only, which covers all nine without doing any of
+   them twice. */
+static void separate(particles_t *s)
 {
-    if (cx < 0 || cy < 0 || cx >= s->gw || cy >= s->gh) return false;
-    *out = s->grid[cy * s->gw + cx];
-    return true;
-}
+    const float r = 2.0f * PARTICLES_RADIUS;
+    const float r2 = r * r;
+    const float inv_r2 = 1.0f / r2;
+    (void)r;
 
-/* Where a crowded cell wants to send this grain: toward each neighbour that
-   holds fewer, in proportion to how many fewer. Comparing a cell against its
-   own contents is the point -- an earlier version compared only the two
-   neighbours, so a cell packed with sixteen grains and empty ones either
-   side felt nothing at all, and the whole pile sat one cell deep. */
-static void pressure(const particles_t *s, int cx, int cy, float *fx, float *fy)
-{
-    int self;
-    if (!cell(s, cx, cy, &self)) { *fx = *fy = 0.0f; return; }
+    for (int cy = 0; cy < s->gh; cy++) {
+        for (int cx = 0; cx < s->gw; cx++) {
+            int a = cy * s->gw + cx;
+            for (int ai = s->head[a]; ai < s->head[a + 1]; ai++) {
+                particle_t *p = &s->p[s->order[ai]];
 
-    float ax = 0.0f, ay = 0.0f;
-    int d;
-    if (cell(s, cx - 1, cy, &d) && self > d) ax -= (float)(self - d);
-    if (cell(s, cx + 1, cy, &d) && self > d) ax += (float)(self - d);
-    if (cell(s, cx, cy - 1, &d) && self > d) ay -= (float)(self - d);
-    if (cell(s, cx, cy + 1, &d) && self > d) ay += (float)(self - d);
-    *fx = ax;
-    *fy = ay;
+                /* dx, dy over the half-neighbourhood plus self. */
+                static const int nx[5] = { 0, 1, -1, 0, 1 };
+                static const int ny[5] = { 0, 0,  1, 1, 1 };
+                for (int d = 0; d < 5; d++) {
+                    int bx = cx + nx[d], by = cy + ny[d];
+                    if (bx < 0 || by < 0 || bx >= s->gw || by >= s->gh) continue;
+                    int b = by * s->gw + bx;
+                    int from = (d == 0) ? ai + 1 : s->head[b];
+                    for (int bi = from; bi < s->head[b + 1]; bi++) {
+                        particle_t *q = &s->p[s->order[bi]];
+                        float dx = q->x - p->x, dy = q->y - p->y;
+                        float d2 = dx * dx + dy * dy;
+                        if (d2 >= r2) continue;
+                        if (d2 < 0.01f) {
+                            /* Exactly on top of each other: nudge them apart
+                               along a fixed axis rather than dividing by
+                               zero. Which axis does not matter; the next
+                               frame will sort it out. */
+                            dx = 0.1f; dy = 0.0f; d2 = 0.01f;
+                        }
+                        /* A square-law push, so no square root. The Xtensa
+                           has no hardware sqrt and does it in software; with
+                           one per overlapping pair per pass it dominated the
+                           frame, at 58 ms against a 33 ms budget. This is a
+                           softer spring but it costs a multiply. */
+                        float push = (r2 - d2) * inv_r2 * STIFFNESS * 0.5f;
+                        p->x -= dx * push;
+                        p->y -= dy * push;
+                        q->x += dx * push;
+                        q->y += dy * push;
+                    }
+                }
+            }
+        }
+    }
 }
 
 void particles_step(particles_t *s, float gx, float gy, float dt)
@@ -135,27 +165,51 @@ void particles_step(particles_t *s, float gx, float gy, float dt)
 
     float maxx = (float)s->w;
     float maxy = (float)s->h;
+    float inv_dt = dt > 0.0f ? 1.0f / dt : 0.0f;
 
-    bin(s);
-
+    /* Predict where each grain would go on its own. */
+    bucket(s);
     for (int i = 0; i < s->n; i++) {
         particle_t *p = &s->p[i];
+        int k = cell_index(s, p->x, p->y);
 
-        float px, py;
-        pressure(s, (int)p->x / PARTICLES_CELL, (int)p->y / PARTICLES_CELL,
-                 &px, &py);
+        p->ox = p->x;
+        p->oy = p->y;
 
-        p->vx = (p->vx + (gx + px * PRESSURE) * dt) * damp;
-        p->vy = (p->vy + (gy + py * PRESSURE) * dt) * damp;
-
-        /* Never quite still. */
-        p->vx += (frand(s, -1.0f, 1.0f)) * JITTER;
-        p->vy += (frand(s, -1.0f, 1.0f)) * JITTER;
+        p->vx += gx * dt;
+        p->vy += gy * dt;
+        /* Travel with the neighbours, not through them. */
+        p->vx += (s->vgx[k] - p->vx) * VISCOSITY;
+        p->vy += (s->vgy[k] - p->vy) * VISCOSITY;
+        p->vx = p->vx * damp + frand(s, -JITTER, JITTER);
+        p->vy = p->vy * damp + frand(s, -JITTER, JITTER);
 
         p->x += p->vx * dt;
         p->y += p->vy * dt;
-        bounce(&p->x, &p->vx, maxx);
-        bounce(&p->y, &p->vy, maxy);
+    }
+
+    /* Then make the positions legal: no overlaps, nothing outside the panel.
+       Moving grains rather than pushing them is what lets the body come to
+       rest -- a force overshoots and hums for ever. */
+    for (int pass = 0; pass < RELAX_PASSES; pass++) {
+        if (pass > 0) bucket(s);
+        separate(s);
+        for (int i = 0; i < s->n; i++) {
+            particle_t *p = &s->p[i];
+            if (p->x < 0.0f) p->x = 0.0f; else if (p->x > maxx) p->x = maxx;
+            if (p->y < 0.0f) p->y = 0.0f; else if (p->y > maxy) p->y = maxy;
+        }
+    }
+
+    /* Velocity is whatever actually happened, derived once at the end. A
+       grain held up by the body below it ends the frame where it began and
+       therefore at rest, which is what settling means. Crediting each
+       correction to the velocity as it is applied instead would double-count,
+       because a later pass corrects what an earlier one did. */
+    for (int i = 0; i < s->n; i++) {
+        particle_t *p = &s->p[i];
+        p->vx = (p->x - p->ox) * inv_dt;
+        p->vy = (p->y - p->oy) * inv_dt;
     }
 }
 
@@ -185,5 +239,5 @@ void particles_draw(const particles_t *s, canvas_t *c)
     canvas_clear(c);
     for (int i = 0; i < s->n; i++)
         canvas_fill_rect(c, (int)s->p[i].x, (int)s->p[i].y,
-                         PARTICLE_SIZE, PARTICLE_SIZE, s->p[i].colour);
+                         GRAIN_SIZE, GRAIN_SIZE, s->p[i].colour);
 }
