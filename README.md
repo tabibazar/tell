@@ -175,8 +175,10 @@ that board is a bullseye level. Rings at 5, 10 and 15 degrees and a bubble
 that floats to the high side, as a real one does; beside it, how far off it is
 altogether, and the two times.
 
+The board comes up on it: the level is why that board has a screen.
+
 ```sh
-tell --device small "!level"
+tell --device small "!level"     # if you have navigated away
 tell --device small "!zero"      # take this surface as true
 tell --device small "!newgame"   # wipe the scoreboard
 ```

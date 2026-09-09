@@ -66,6 +66,13 @@ int main(void)
     pages_show(&p, PAGE_LEVEL, 1000);
     expect("it can be sent to the level", p.current == PAGE_LEVEL);
 
+    /* The level is where a board with the sensor comes up: it is the only
+       reason that board has a screen. main picks the home page, but the
+       availability this depends on is here. */
+    pages_init(&p, FEATHER | PAGE_BIT(PAGE_LEVEL));
+    expect("the level is available when the sensor is",
+           (p.available & PAGE_BIT(PAGE_LEVEL)) != 0);
+
     /* A board without the sensor never lands there. */
     pages_init(&p, FEATHER);
     pages_show(&p, PAGE_LEVEL, 1000);

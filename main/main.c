@@ -382,6 +382,10 @@ static void apply_settings(void)
    all land here. */
 static page_t home_page(void)
 {
+    /* On a board whose only reason to have a screen is the level, the level
+       is home. The big board keeps the clock: it is a display of Claude's
+       usage that happens to know the time, and this one is an instrument. */
+    if (s_pages.available & PAGE_BIT(PAGE_LEVEL)) return PAGE_LEVEL;
     if (s_settings.home_now && (s_pages.available & PAGE_BIT(PAGE_NOW))) return PAGE_NOW;
     return PAGE_CLOCK;
 }
