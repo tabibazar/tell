@@ -17,10 +17,10 @@ static float clampf(float v, float lo, float hi)
     return v < lo ? lo : (v > hi ? hi : v);
 }
 
-bool level_is_true(float roll_deg, float pitch_deg)
+bool level_is_true(float tilt_x_deg, float tilt_y_deg)
 {
-    return fabsf(roll_deg) <= LEVEL_TOLERANCE_DEG
-        && fabsf(pitch_deg) <= LEVEL_TOLERANCE_DEG;
+    return fabsf(tilt_x_deg) <= LEVEL_TOLERANCE_DEG
+        && fabsf(tilt_y_deg) <= LEVEL_TOLERANCE_DEG;
 }
 
 /* The degree sign, which the font does not have: a small ring, drawn at the
@@ -43,11 +43,11 @@ static void put_angle(canvas_t *c, int col, int row, const char *label,
     degree_mark(c, col + (int)strlen(buf), row, colour);
 }
 
-void level_draw(canvas_t *c, float roll_deg, float pitch_deg)
+void level_draw(canvas_t *c, float tilt_x_deg, float tilt_y_deg)
 {
     canvas_clear(c);
 
-    bool ok = level_is_true(roll_deg, pitch_deg);
+    bool ok = level_is_true(tilt_x_deg, tilt_y_deg);
     uint16_t accent = ok ? PAL_A2 : PAL_A1;
 
     /* The dial sits on the left, square, as large as the short side allows.
@@ -82,8 +82,8 @@ void level_draw(canvas_t *c, float roll_deg, float pitch_deg)
        the opposite of where gravity points: tip the right edge down and the
        bubble goes left, exactly as it does in a real level. Drawn the other
        way round it reads upside down, because everyone has used one. */
-    float sx = clampf(-roll_deg, -LEVEL_FULL_SCALE_DEG, LEVEL_FULL_SCALE_DEG);
-    float sy = clampf(-pitch_deg, -LEVEL_FULL_SCALE_DEG, LEVEL_FULL_SCALE_DEG);
+    float sx = clampf(-tilt_x_deg, -LEVEL_FULL_SCALE_DEG, LEVEL_FULL_SCALE_DEG);
+    float sy = clampf(-tilt_y_deg, -LEVEL_FULL_SCALE_DEG, LEVEL_FULL_SCALE_DEG);
     int bx = cx + (int)(sx / LEVEL_FULL_SCALE_DEG * (float)r);
     int by = cy + (int)(sy / LEVEL_FULL_SCALE_DEG * (float)r);
     canvas_disc(c, bx, by, BUBBLE_R, accent);
@@ -92,11 +92,11 @@ void level_draw(canvas_t *c, float roll_deg, float pitch_deg)
     if (ok) canvas_circle(c, bx, by, BUBBLE_R + 3, PAL_FG);
 
     canvas_puts(c, text_col, 0, "LEVEL", PAL_FG);
-    put_angle(c, text_col, 1, "ROLL", roll_deg, accent);
-    put_angle(c, text_col, 2, "PITCH", pitch_deg, accent);
+    put_angle(c, text_col, 1, "X", tilt_x_deg, accent);
+    put_angle(c, text_col, 2, "Y", tilt_y_deg, accent);
 
     char tilt[24];
-    float total = sqrtf(roll_deg * roll_deg + pitch_deg * pitch_deg);
+    float total = sqrtf(tilt_x_deg * tilt_x_deg + tilt_y_deg * tilt_y_deg);
     snprintf(tilt, sizeof tilt, "OFF   %5.1f", (double)total);
     canvas_puts(c, text_col, 3, tilt, PAL_DIM);
     degree_mark(c, text_col + (int)strlen(tilt), 3, PAL_DIM);

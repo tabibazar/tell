@@ -76,6 +76,7 @@ ud_kind_t usagedata_parse(usagedata_t *d, const char *payload,
        data, so there is nothing to store. */
     else if (starts_with(payload, "!particles")) return UD_PARTICLES;
     else if (starts_with(payload, "!level")) return UD_LEVEL;
+    else if (starts_with(payload, "!game")) return UD_GAME;
     else return UD_NONE;
 
     if (kind == UD_CLOCK) {

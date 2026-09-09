@@ -61,16 +61,16 @@ int main(void)
 
     draw(8.0f, 0.0f);
     bubble_at(&x1, &y1);
-    expect("rolled right floats the bubble left", x1 < x0 - 5);
+    expect("right edge down floats the bubble left", x1 < x0 - 5);
     expect("and not vertically", y1 > y0 - 4 && y1 < y0 + 4);
 
     draw(0.0f, 8.0f);
     bubble_at(&x1, &y1);
-    expect("pitched away floats the bubble up", y1 < y0 - 5);
+    expect("far edge down floats the bubble up", y1 < y0 - 5);
 
     draw(-8.0f, 0.0f);
     bubble_at(&x1, &y1);
-    expect("rolled left floats it right", x1 > x0 + 5);
+    expect("left edge down floats it right", x1 > x0 + 5);
 
     /* Beyond full scale the bubble stops at the rim instead of leaving. */
     draw(90.0f, 90.0f);

@@ -4,6 +4,7 @@
 #include "i2cbus.h"
 #include "bmp280.h"
 #include "level.h"
+#include "tiltgame.h"
 #include "particles.h"
 #include "qmi8658.h"
 #include "pages.h"
@@ -147,10 +148,38 @@ static void draw_level(canvas_t *c)
     s_ly += (gy - s_ly) * LEVEL_ALPHA;
     s_lz += (gz - s_lz) * LEVEL_ALPHA;
 
-    float roll  = atan2f(s_lx, s_ly) * 180.0f / (float)M_PI;
-    float pitch = atan2f(s_lz, sqrtf(s_lx * s_lx + s_ly * s_ly))
-                * 180.0f / (float)M_PI;
-    level_draw(c, roll, pitch);
+    /* How far each of the panel's own axes is off horizontal. With the board
+       flat this is the natural reading and both are zero on a true surface.
+       asin, not atan2: the in-plane component of gravity IS the sine of the
+       tilt, and it needs no assumption about which way up the board is. */
+    float ax = s_lx < -1.0f ? -1.0f : (s_lx > 1.0f ? 1.0f : s_lx);
+    float ay = s_ly < -1.0f ? -1.0f : (s_ly > 1.0f ? 1.0f : s_ly);
+    level_draw(c, asinf(ax) * 180.0f / (float)M_PI,
+                  asinf(ay) * 180.0f / (float)M_PI);
+    display_blit();
+}
+
+/* The game wants gravity as the liquid does -- quick, so the ball answers the
+   board -- so it shares that filter rather than the level's slow one. */
+static tiltgame_t s_game;
+static int64_t s_game_last_us;
+
+static void draw_game(canvas_t *c, int64_t now)
+{
+    float dt = s_game_last_us
+             ? (float)(now - s_game_last_us) / 1000000.0f : 0.033f;
+    s_game_last_us = now;
+    if (dt > 0.2f) dt = 0.2f;
+
+    qmi8658_sample_t sample;
+    if (qmi8658_read(&sample) == ESP_OK) {
+        float gx, gy;
+        gravity_from(&sample, &gx, &gy);
+        s_gx += (gx * GRAVITY_PX - s_gx) * GRAVITY_ALPHA;
+        s_gy += (gy * GRAVITY_PX - s_gy) * GRAVITY_ALPHA;
+    }
+    tiltgame_step(&s_game, s_gx, s_gy, dt);
+    tiltgame_draw(&s_game, c);
     display_blit();
 }
 
@@ -205,6 +234,16 @@ static void on_message(const char *text, size_t len)
     int64_t now = esp_timer_get_time();
 
     ud_kind_t kind = usagedata_parse(&s_data, text, now);
+    if (kind == UD_GAME) {
+#if HAVE_PARTICLES
+        /* A fresh round whenever it is asked for, so "!game" always starts
+           one rather than dropping you into a run already lost. */
+        tiltgame_restart(&s_game);
+        pages_show(&s_pages, PAGE_GAME, now);
+        s_drawn_page = PAGE_COUNT;
+#endif
+        return;
+    }
     if (kind == UD_LEVEL) {
 #if HAVE_PARTICLES
         pages_show(&s_pages, PAGE_LEVEL, now);
@@ -344,7 +383,8 @@ void app_main(void)
 #if HAVE_PARTICLES
     s_imu = qmi8658_init() == ESP_OK;
     if (s_imu) {
-        available |= PAGE_BIT(PAGE_PARTICLES) | PAGE_BIT(PAGE_LEVEL);
+        available |= PAGE_BIT(PAGE_PARTICLES) | PAGE_BIT(PAGE_LEVEL)
+                   | PAGE_BIT(PAGE_GAME);
         /* Seeded from the pressure sensor's noise rather than a constant, so
            the grains do not land in the same places every boot. Its bottom
            bits wander on their own; the boot timer, by contrast, reads much
@@ -354,6 +394,7 @@ void app_main(void)
         if (seed == 0) seed = (uint32_t)esp_timer_get_time() | 1u;
         ESP_LOGI(TAG, "particles seeded with 0x%08X", (unsigned)seed);
         particles_init(&s_particles, 190, c->w, c->h, seed);
+        tiltgame_init(&s_game, c->w, c->h, seed ^ 0x5A5A5A5Au);
     }
 #endif
     pages_init(&s_pages, available);
@@ -377,7 +418,8 @@ void app_main(void)
         int64_t period_us = (int64_t)TICK_MS * 1000;
 #if HAVE_PARTICLES
         if (s_imu && (s_saver || s_pages.current == PAGE_PARTICLES
-                              || s_pages.current == PAGE_LEVEL))
+                              || s_pages.current == PAGE_LEVEL
+                              || s_pages.current == PAGE_GAME))
             period_us = 33000;      /* 30 fps while the liquid is showing */
 #endif
         int64_t rest_ms = (period_us - (esp_timer_get_time() - last_wake)) / 1000;
@@ -459,6 +501,7 @@ void app_main(void)
 #if HAVE_PARTICLES
         if (s_pages.current == PAGE_PARTICLES && s_imu) draw_particles(c, now);
         if (s_pages.current == PAGE_LEVEL && s_imu) draw_level(c);
+        if (s_pages.current == PAGE_GAME && s_imu) draw_game(c, now);
 #endif
 
         /* USB-Serial-JTAG drops output when no host is attached, so the boot

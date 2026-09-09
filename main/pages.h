@@ -12,6 +12,7 @@ typedef enum {
     PAGE_TODAY,
     PAGE_PARTICLES,
     PAGE_LEVEL,
+    PAGE_GAME,
     PAGE_COUNT
 } page_t;
 
