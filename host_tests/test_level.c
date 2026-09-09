@@ -22,7 +22,7 @@ static void draw(float roll, float pitch)
     for (unsigned i = 0; i < sizeof guarded / sizeof guarded[0]; i++)
         guarded[i] = 0xABAB;
     canvas_init(&c, guarded + 8, W, H, 2);
-    level_draw(&c, roll, pitch, 0.0f, 0.0f, 0.0f);
+    level_draw(&c, roll, pitch, 0.0f, 0.0f, 0.0f, 0.0f, true);
 }
 
 static int guards_intact(void)
@@ -50,10 +50,15 @@ int main(void)
 {
     /* The hold clock is drawn only while it is true, so both branches of the
        readout get exercised. */
-    expect("dead level is true",      level_is_true(0.0f, 0.0f));
-    expect("a tenth of a degree is true", level_is_true(0.1f, -0.1f));
-    expect("two degrees is not",     !level_is_true(2.0f, 0.0f));
-    expect("either axis alone counts", !level_is_true(0.0f, -2.0f));
+    /* Written against the tolerance rather than a number that happened to be
+       outside it when this was first run: it has already been widened once to
+       make the game playable, and these should not have to be edited again. */
+    const float in = LEVEL_TOLERANCE_DEG * 0.5f;
+    const float out = LEVEL_TOLERANCE_DEG * 1.5f;
+    expect("dead level is true",       level_is_true(0.0f, 0.0f));
+    expect("just inside is true",      level_is_true(in, -in));
+    expect("just outside is not",     !level_is_true(out, 0.0f));
+    expect("either axis alone counts", !level_is_true(0.0f, -out));
 
     int x0, y0, x1, y1;
 
@@ -63,7 +68,9 @@ int main(void)
         for (unsigned i = 0; i < sizeof guarded / sizeof guarded[0]; i++)
             guarded[i] = 0xABAB;
         canvas_init(&c, guarded + 8, W, H, 2);
-        level_draw(&c, 0.0f, 0.0f, 9999.9f, 999.9f, 99999.9f);
+        level_draw(&c, 0.0f, 0.0f, 9999.9f, 999.9f, 888.8f, 99999.9f, true);
+        expect("and the same when nobody is holding it", guards_intact());
+        level_draw(&c, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, false);
         expect("a very long hold still draws in bounds", guards_intact());
     }
     bubble_at(&x0, &y0);

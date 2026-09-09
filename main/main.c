@@ -162,9 +162,33 @@ static void gravity_from(const qmi8658_sample_t *s, float *gx, float *gy)
    the liquid's. The liquid wants to feel the board move; an instrument wants
    to be read, and at the animation filter's speed the tenths digit never
    stops moving. This corner is about a fifth of a hertz -- it takes a second
-   to catch up with a deliberate tilt and ignores everything faster. */
-#define LEVEL_ALPHA 0.06f
+   to catch up with a deliberate tilt and ignores everything faster.
+
+   Slower still since the dial went to five degrees full scale, where every
+   twitch of a hand is eleven pixels of dot: the reading was honest and
+   unwatchable. But not as slow as it briefly was, because smoothing the dot
+   also smooths away the tremor that should be ending a run, and a level that
+   hides your mistakes is both a worse instrument and an easier game than it
+   ought to be. */
+#define LEVEL_ALPHA 0.04f
 static float s_lx, s_ly, s_lz;
+
+/*
+ * The clock only runs once the board has actually been picked up, because a
+ * board resting on a level desk holds true for ever and would take the record
+ * by being left alone -- which it had already done, with twenty-four seconds
+ * nobody earned.
+ *
+ * Telling a held board from a resting one by how much the reading trembles
+ * needs a threshold between a hand and a table, and two attempts at guessing
+ * that threshold were both wrong: too low and the desk scored, too high and a
+ * real hand could not arm it. But the question answers itself. A board lying
+ * on a level surface never leaves level. So a run may only begin after the
+ * board has been off level at least once since the page opened -- which a
+ * resting board never manages, and which anyone picking it up does without
+ * trying. No threshold, and nothing to measure.
+ */
+static bool s_armed;
 
 /* The surface the board is standing on, as captured by "!zero": angles are
    reported relative to it. A desk is not a reference plane and neither is a
@@ -185,7 +209,7 @@ static bool  s_zeroed;
    and without a floor every one of those would count as somebody's turn and
    cost a write. */
 #define LEVEL_MIN_RUN_S 1.0f
-static float s_hold_s, s_last_hold_s, s_best_hold_s;
+static float s_hold_s, s_last_hold_s, s_prev_hold_s, s_best_hold_s;
 static int64_t s_level_last_us;
 
 static void runs_save(void)
@@ -194,6 +218,7 @@ static void runs_save(void)
     if (nvs_open("screen", NVS_READWRITE, &h) != ESP_OK) return;
     nvs_set_blob(h, "hold", &s_best_hold_s, sizeof s_best_hold_s);
     nvs_set_blob(h, "last", &s_last_hold_s, sizeof s_last_hold_s);
+    nvs_set_blob(h, "prev", &s_prev_hold_s, sizeof s_prev_hold_s);
     nvs_commit(h);
     nvs_close(h);
 }
@@ -206,6 +231,8 @@ static void zero_load(void)
     nvs_get_blob(h, "hold", &s_best_hold_s, &hn);
     hn = sizeof(float);
     nvs_get_blob(h, "last", &s_last_hold_s, &hn);
+    hn = sizeof(float);
+    nvs_get_blob(h, "prev", &s_prev_hold_s, &hn);
     size_t n = sizeof(float);
     if (nvs_get_blob(h, "zerox", &s_zero_x, &n) == ESP_OK) {
         n = sizeof(float);
@@ -215,8 +242,9 @@ static void zero_load(void)
     if (s_zeroed)
         ESP_LOGI(TAG, "level zeroed at %+.3f %+.3f",
                  (double)s_zero_x, (double)s_zero_y);
-    ESP_LOGI(TAG, "level times: last %.1fs, best %.1fs",
-             (double)s_last_hold_s, (double)s_best_hold_s);
+    ESP_LOGI(TAG, "level times: last %.1fs, prev %.1fs, best %.1fs",
+             (double)s_last_hold_s, (double)s_prev_hold_s,
+             (double)s_best_hold_s);
 }
 
 static void zero_save(void)
@@ -262,9 +290,26 @@ static void draw_level(canvas_t *c)
     gravity_from(&sample, &gx, &gy);
     float gz = -sample.az;              /* out of the screen, toward you */
 
-    s_lx += (gx - s_lx) * LEVEL_ALPHA;
-    s_ly += (gy - s_ly) * LEVEL_ALPHA;
-    s_lz += (gz - s_lz) * LEVEL_ALPHA;
+    int64_t now = esp_timer_get_time();
+    float dt = s_level_last_us
+             ? (float)(now - s_level_last_us) / 1000000.0f : 0.0f;
+    bool fresh = dt <= 0.0f || dt > 0.5f;
+    s_level_last_us = now;
+
+    if (fresh) {
+        /* Arriving on the page. Snap the filter to what the board is actually
+           reading rather than letting it converge from zero: while it
+           converges the panel is nowhere near level, which armed the game and
+           then scored the settling as a sixteen-second run. */
+        s_lx = gx; s_ly = gy; s_lz = gz;
+        s_armed = false;
+        s_hold_s = 0.0f;
+        dt = 0.0f;
+    } else {
+        s_lx += (gx - s_lx) * LEVEL_ALPHA;
+        s_ly += (gy - s_ly) * LEVEL_ALPHA;
+        s_lz += (gz - s_lz) * LEVEL_ALPHA;
+    }
 
     /* How far each of the panel's own axes is off horizontal. With the board
        flat this is the natural reading and both are zero on a true surface.
@@ -278,13 +323,9 @@ static void draw_level(canvas_t *c)
 
     /* The clock. It runs while the board is true and resets the moment it is
        not, which is the whole game. */
-    int64_t now = esp_timer_get_time();
-    float dt = s_level_last_us
-             ? (float)(now - s_level_last_us) / 1000000.0f : 0.0f;
-    s_level_last_us = now;
-    if (dt > 0.5f) dt = 0.0f;        /* arriving on the page is not a run */
+    if (!level_is_true(tx, ty)) s_armed = true;
 
-    if (level_is_true(tx, ty)) {
+    if (level_is_true(tx, ty) && s_armed) {
         /* The best is not raised while the run is still going. It is the best
            *finished* run, which is what is written to flash; raising it live
            would show a record on screen that a sub-second run never earned
@@ -294,11 +335,14 @@ static void draw_level(canvas_t *c)
         /* A run just ended. This is the one moment worth a flash write, and
            only if it was long enough to have been someone trying. */
         if (s_hold_s >= LEVEL_MIN_RUN_S) {
+            /* The two most recent attempts, newest first, so a second player
+               can see what the one before them managed. */
+            s_prev_hold_s = s_last_hold_s;
             s_last_hold_s = s_hold_s;
             if (s_hold_s > s_best_hold_s) s_best_hold_s = s_hold_s;
             runs_save();
-            ESP_LOGI(TAG, "held %.1fs (last %.1f, best %.1f)",
-                     (double)s_hold_s, (double)s_last_hold_s,
+            ESP_LOGI(TAG, "held %.1fs (prev %.1f, best %.1f)",
+                     (double)s_hold_s, (double)s_prev_hold_s,
                      (double)s_best_hold_s);
         }
         s_hold_s = 0.0f;
@@ -306,7 +350,8 @@ static void draw_level(canvas_t *c)
 
     /* One letter, bottom right: z means the angles are relative to a surface
        taken as true with "!zero", nothing means they are absolute. */
-    level_draw(c, tx, ty, s_hold_s, s_last_hold_s, s_best_hold_s);
+    level_draw(c, tx, ty, s_hold_s, s_last_hold_s, s_prev_hold_s,
+               s_best_hold_s, s_armed);
     display_blit();
 }
 

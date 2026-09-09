@@ -7,10 +7,12 @@
 #include <string.h>
 
 /* Rings, in degrees. The outermost is the full scale. */
-static const int RINGS[] = { 5, 10, 15 };
+static const float RINGS[] = { 1.0f, 2.5f, 5.0f };
 #define RING_COUNT ((int)(sizeof RINGS / sizeof RINGS[0]))
 
-#define BUBBLE_R 7
+/* Small enough to sit inside the tolerance ring, so "the dot is in the
+   circle" and "it is true" are the same thing to look at. */
+#define BUBBLE_R 4
 
 static float clampf(float v, float lo, float hi)
 {
@@ -33,7 +35,8 @@ static void degree_mark(canvas_t *c, int col, int row, uint16_t colour)
 }
 
 void level_draw(canvas_t *c, float tilt_x_deg, float tilt_y_deg,
-                float hold_s, float last_s, float best_s)
+                float hold_s, float last_s, float prev_s, float best_s,
+                bool armed)
 {
     canvas_clear(c);
 
@@ -48,9 +51,17 @@ void level_draw(canvas_t *c, float tilt_x_deg, float tilt_y_deg,
     int text_col = (cx + r + 8) / c->cell_w + 1;
 
     for (int i = 0; i < RING_COUNT; i++) {
-        int rr = (int)((float)RINGS[i] / LEVEL_FULL_SCALE_DEG * (float)r);
+        int rr = (int)(RINGS[i] / LEVEL_FULL_SCALE_DEG * (float)r);
         canvas_circle(c, cx, cy, rr, i == RING_COUNT - 1 ? PAL_FG : PAL_DIM);
     }
+
+    /* The tolerance itself, drawn: inside this ring the board counts as true
+       and the clock runs. Without it "level" was a threshold you could only
+       find by watching the numbers, on a dial whose smallest ring was seven
+       times wider than it. */
+    int true_r = (int)(LEVEL_TOLERANCE_DEG / LEVEL_FULL_SCALE_DEG * (float)r);
+    if (true_r < BUBBLE_R + 2) true_r = BUBBLE_R + 2;
+    canvas_circle(c, cx, cy, true_r, ok ? PAL_A2 : PAL_A1);
 
     /* Crosshair: this is where the bubble sits when the board is true, so it
        is drawn in the accent colour and the bubble can be read against it. */
@@ -60,7 +71,7 @@ void level_draw(canvas_t *c, float tilt_x_deg, float tilt_y_deg,
     /* A tick on each axis at every ring, so the scale can be read without
        counting circles. */
     for (int i = 0; i < RING_COUNT; i++) {
-        int rr = (int)((float)RINGS[i] / LEVEL_FULL_SCALE_DEG * (float)r);
+        int rr = (int)(RINGS[i] / LEVEL_FULL_SCALE_DEG * (float)r);
         canvas_fill_rect(c, cx + rr, cy - 3, 1, 7, PAL_FG);
         canvas_fill_rect(c, cx - rr, cy - 3, 1, 7, PAL_FG);
         canvas_fill_rect(c, cx - 3, cy + rr, 7, 1, PAL_FG);
@@ -79,7 +90,7 @@ void level_draw(canvas_t *c, float tilt_x_deg, float tilt_y_deg,
     canvas_disc(c, bx, by, BUBBLE_R, accent);
     /* A ring around it when it is true: the state must be readable without
        relying on the colour having changed. */
-    if (ok) canvas_circle(c, bx, by, BUBBLE_R + 3, PAL_FG);
+
 
     /* The readout: how far off it is, and the three clocks, straight down the
        column. The two axes used to be here and are not any more -- they were
@@ -91,20 +102,32 @@ void level_draw(canvas_t *c, float tilt_x_deg, float tilt_y_deg,
     canvas_puts(c, text_col, 0, buf, accent);
     degree_mark(c, text_col + (int)strlen(buf), 0, accent);
 
-    /* Running only while it is true, and lit while it runs, so the row that
-       is moving is obvious at a glance. */
-    snprintf(buf, sizeof buf, "HOLD %4.1f", (double)hold_s);
-    canvas_puts(c, text_col, 1, buf, ok ? PAL_A2 : PAL_DIM);
+    /* Running only while it is true and somebody is holding the board, and
+       lit while it runs, so the row that is moving is obvious at a glance.
+       When the board is sitting on something it says so, because a clock
+       stuck at zero with no explanation reads as a fault. */
+    if (armed) {
+        snprintf(buf, sizeof buf, "HOLD %4.1f", (double)hold_s);
+        canvas_puts(c, text_col, 1, buf, ok ? PAL_A2 : PAL_DIM);
+    } else {
+        /* Nine columns, so nine characters -- "PICK ME UP" was ten and came
+           out as "PICK ME U", which reads as a fault rather than a prompt. */
+        canvas_puts(c, text_col, 1, "TILT ME", PAL_A1);
+    }
 
-    /* The last finished run, and the best there has ever been. Both outlive
-       the power, so whoever picks the board up next has a mark to beat. */
+    /* The two most recent finished runs, newest first, and the best there has
+       ever been. All three outlive the power, so whoever picks the board up
+       next sees both what the last player managed and the mark to beat. */
     snprintf(buf, sizeof buf, "LAST %4.1f", (double)last_s);
     canvas_puts(c, text_col, 2, buf, PAL_FG);
+
+    snprintf(buf, sizeof buf, "PREV %4.1f", (double)prev_s);
+    canvas_puts(c, text_col, 3, buf, PAL_DIM);
 
     snprintf(buf, sizeof buf, "BEST %4.1f", (double)best_s);
     /* Lit while the run in progress has passed it, so a record announces
        itself rather than having to be worked out from two numbers. */
     bool record = hold_s > best_s && hold_s > 0.0f;
-    canvas_puts(c, text_col, 3, buf, record ? PAL_A4 : PAL_DIM);
+    canvas_puts(c, text_col, 4, buf, record ? PAL_A4 : PAL_FG);
 
 }
