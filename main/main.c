@@ -15,6 +15,7 @@
 #include "views.h"
 
 #include "esp_log.h"
+#include "nvs.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -22,6 +23,7 @@
 
 #include <math.h>
 #include <stdbool.h>
+#include <stdio.h>
 #include <string.h>
 
 static const char *TAG = "main";
@@ -96,37 +98,80 @@ static float s_gx, s_gy;      /* low-passed gravity, panel coordinates */
 #define SHAKE_MAX   200.0f     /* enough to lift the pile, not to blur it */
 
 /*
- * Which sensor axis is which on the panel, measured on the board rather than
- * assumed. An accelerometer at rest reads +1 g along the axis pointing UP, so
- * the gravity vector is minus the reading: G = -a.
+ * Which sensor axis is which on the panel. An accelerometer at rest reads
+ * +1 g along the axis pointing UP, so gravity is minus the reading: G = -a.
  *
- * Standing on its long edge, screen upright, the board reads
- * (+0.99, +0.15, -0.20). So sensor +X points up, and the panel's down axis is
- * -X. That makes the downward component G . y = (-a) . (-X) = +ax.
+ * Measured on the board rather than assumed. Standing on its long edge the
+ * sensor reads (+0.99, +0.15, -0.20), so +X is up and the panel's downward
+ * component is +ax. Laid flat it read (+0.50, +0.12, -0.96): X and Z traded
+ * places while Y barely moved, so Y is the board's long edge -- the panel's
+ * horizontal -- and Z is the screen's normal.
  *
- * Laid flat instead, it read (+0.50, +0.12, -0.96): X and Z traded places
- * while Y barely moved, so Y is the axis it was rotated about -- the board's
- * long edge, which is the panel's horizontal. Z is therefore the screen's
- * normal and takes no part in this.
- *
- * That fixes both axes and the sign of the vertical one. The sign of the
- * horizontal is the one thing two still readings cannot give, since gravity
- * had no component along it either time -- it was read off the board instead,
- * by tipping it and seeing which way the sand went.
+ * The signs are another matter. Which way round they go depends on how the
+ * breakout is soldered and on which way the board is facing when you look at
+ * it, and no still reading can tell you: gravity has no component along an
+ * axis that is level. They have been wrong twice, so they are no longer
+ * compiled in. Send "!flip x", "!flip y" or "!flip swap" and the board
+ * changes them and remembers, which takes a second instead of a reflash.
  */
-#define AXIS_X (-1.0f)      /* panel +x, to the right, is sensor -y */
-#define AXIS_Y ( 1.0f)      /* panel +y, downwards,    is sensor +x */
+static int8_t s_axis_sx = -1;    /* panel +x, to the right, from sensor y */
+static int8_t s_axis_sy =  1;    /* panel +y, downwards,     from sensor x */
+static bool   s_axis_swap;       /* the two sensor axes the other way round */
+
+static void axis_load(void)
+{
+    nvs_handle_t h;
+    if (nvs_open("screen", NVS_READONLY, &h) != ESP_OK) return;
+    int8_t v;
+    uint8_t b;
+    if (nvs_get_i8(h, "axsx", &v) == ESP_OK) s_axis_sx = v;
+    if (nvs_get_i8(h, "axsy", &v) == ESP_OK) s_axis_sy = v;
+    if (nvs_get_u8(h, "axswap", &b) == ESP_OK) s_axis_swap = b != 0;
+    nvs_close(h);
+    ESP_LOGI(TAG, "axis %+d %+d%s", s_axis_sx, s_axis_sy,
+             s_axis_swap ? " swapped" : "");
+}
+
+static void axis_save(void)
+{
+    nvs_handle_t h;
+    if (nvs_open("screen", NVS_READWRITE, &h) != ESP_OK) return;
+    nvs_set_i8(h, "axsx", s_axis_sx);
+    nvs_set_i8(h, "axsy", s_axis_sy);
+    nvs_set_u8(h, "axswap", s_axis_swap ? 1 : 0);
+    nvs_commit(h);
+    nvs_close(h);
+}
+
+/* "x", "y", "swap" or "reset", anywhere in the payload. */
+static void axis_command(const char *text)
+{
+    if (strstr(text, "swap")) s_axis_swap = !s_axis_swap;
+    else if (strstr(text, "reset")) { s_axis_sx = -1; s_axis_sy = 1; s_axis_swap = false; }
+    else if (strchr(text, 'x')) s_axis_sx = (int8_t)-s_axis_sx;
+    else if (strchr(text, 'y')) s_axis_sy = (int8_t)-s_axis_sy;
+    axis_save();
+    ESP_LOGI(TAG, "axis now %+d %+d%s", s_axis_sx, s_axis_sy,
+             s_axis_swap ? " swapped" : "");
+}
+
+const char *axis_describe(void)
+{
+    static char buf[24];
+    snprintf(buf, sizeof buf, "axis %c%c%s",
+             s_axis_sx < 0 ? '-' : '+', s_axis_sy < 0 ? '-' : '+',
+             s_axis_swap ? " sw" : "");
+    return buf;
+}
 
 static void gravity_from(const qmi8658_sample_t *s, float *gx, float *gy)
 {
-    *gx = AXIS_X * s->ay;
-    *gy = AXIS_Y * s->ax;
+    float across = s->ay, along = s->ax;
+    if (s_axis_swap) { float t = across; across = along; along = t; }
+    *gx = (float)s_axis_sx * across;
+    *gy = (float)s_axis_sy * along;
 }
 
-/* Roll is how far the panel is turned within its own plane, pitch how far
-   its face is off vertical. Both come from the same gravity vector the liquid
-   uses, so they inherit the axis mapping measured on the board. Z takes no
-   part in the liquid but is exactly what pitch is made of. */
 /* The level keeps its own filtered copy of gravity, in g and much slower than
    the liquid's. The liquid wants to feel the board move; an instrument wants
    to be read, and at the animation filter's speed the tenths digit never
@@ -134,6 +179,43 @@ static void gravity_from(const qmi8658_sample_t *s, float *gx, float *gy)
    to catch up with a deliberate tilt and ignores everything faster. */
 #define LEVEL_ALPHA 0.06f
 static float s_lx, s_ly, s_lz;
+
+/* The surface the board is standing on, as captured by "!zero": angles are
+   reported relative to it. A desk is not a reference plane and neither is a
+   sensor soldered by hand, so "level" is most usefully "level with whatever
+   this is sitting on now". "!zero reset" goes back to absolute. */
+static float s_zero_x, s_zero_y;
+static bool  s_zeroed;
+
+static void zero_load(void)
+{
+    nvs_handle_t h;
+    if (nvs_open("screen", NVS_READONLY, &h) != ESP_OK) return;
+    size_t n = sizeof(float);
+    if (nvs_get_blob(h, "zerox", &s_zero_x, &n) == ESP_OK) {
+        n = sizeof(float);
+        if (nvs_get_blob(h, "zeroy", &s_zero_y, &n) == ESP_OK) s_zeroed = true;
+    }
+    nvs_close(h);
+    if (s_zeroed)
+        ESP_LOGI(TAG, "level zeroed at %+.3f %+.3f",
+                 (double)s_zero_x, (double)s_zero_y);
+}
+
+static void zero_save(void)
+{
+    nvs_handle_t h;
+    if (nvs_open("screen", NVS_READWRITE, &h) != ESP_OK) return;
+    if (s_zeroed) {
+        nvs_set_blob(h, "zerox", &s_zero_x, sizeof s_zero_x);
+        nvs_set_blob(h, "zeroy", &s_zero_y, sizeof s_zero_y);
+    } else {
+        nvs_erase_key(h, "zerox");
+        nvs_erase_key(h, "zeroy");
+    }
+    nvs_commit(h);
+    nvs_close(h);
+}
 
 static void draw_level(canvas_t *c)
 {
@@ -154,8 +236,13 @@ static void draw_level(canvas_t *c)
        tilt, and it needs no assumption about which way up the board is. */
     float ax = s_lx < -1.0f ? -1.0f : (s_lx > 1.0f ? 1.0f : s_lx);
     float ay = s_ly < -1.0f ? -1.0f : (s_ly > 1.0f ? 1.0f : s_ly);
-    level_draw(c, asinf(ax) * 180.0f / (float)M_PI,
-                  asinf(ay) * 180.0f / (float)M_PI);
+    float tx = asinf(ax) * 180.0f / (float)M_PI;
+    float ty = asinf(ay) * 180.0f / (float)M_PI;
+    if (s_zeroed) { tx -= s_zero_x; ty -= s_zero_y; }
+
+    char note[24];
+    snprintf(note, sizeof note, "%s", s_zeroed ? "zeroed here" : axis_describe());
+    level_draw(c, tx, ty, note);
     display_blit();
 }
 
@@ -234,6 +321,36 @@ static void on_message(const char *text, size_t len)
     int64_t now = esp_timer_get_time();
 
     ud_kind_t kind = usagedata_parse(&s_data, text, now);
+    if (kind == UD_ZERO) {
+#if HAVE_PARTICLES
+        if (strstr(text, "reset")) {
+            s_zeroed = false;
+        } else {
+            /* Whatever the filter is showing right now becomes true. It is
+               already heavily smoothed, so this is a settled reading rather
+               than one frame of noise -- but leave the board alone for a
+               second before sending it. */
+            float ax = s_lx < -1.0f ? -1.0f : (s_lx > 1.0f ? 1.0f : s_lx);
+            float ay = s_ly < -1.0f ? -1.0f : (s_ly > 1.0f ? 1.0f : s_ly);
+            s_zero_x = asinf(ax) * 180.0f / (float)M_PI;
+            s_zero_y = asinf(ay) * 180.0f / (float)M_PI;
+            s_zeroed = true;
+            ESP_LOGI(TAG, "level zeroed at %+.2f %+.2f",
+                     (double)s_zero_x, (double)s_zero_y);
+        }
+        zero_save();
+        pages_show(&s_pages, PAGE_LEVEL, now);
+        s_drawn_page = PAGE_COUNT;
+#endif
+        return;
+    }
+    if (kind == UD_FLIP) {
+#if HAVE_PARTICLES
+        axis_command(text);
+        s_drawn_page = PAGE_COUNT;      /* show the new mapping at once */
+#endif
+        return;
+    }
     if (kind == UD_GAME) {
 #if HAVE_PARTICLES
         /* A fresh round whenever it is asked for, so "!game" always starts
@@ -399,12 +516,18 @@ void app_main(void)
 #endif
     pages_init(&s_pages, available);
 
+    /* After ble_uart_start, which is where NVS gets initialised. */
     if (ble_uart_start(on_message, on_time) != ESP_OK) {
         ESP_LOGE(TAG, "ble start failed");
         canvas_text(c, "BLE FAILED");
         display_blit();
         return;
     }
+
+#if HAVE_PARTICLES
+    axis_load();
+    zero_load();
+#endif
 
     int64_t last_beat = 0;
     int64_t last_wake = esp_timer_get_time();

@@ -22,7 +22,7 @@ static void draw(float roll, float pitch)
     for (unsigned i = 0; i < sizeof guarded / sizeof guarded[0]; i++)
         guarded[i] = 0xABAB;
     canvas_init(&c, guarded + 8, W, H, 2);
-    level_draw(&c, roll, pitch);
+    level_draw(&c, roll, pitch, "axis -+");
 }
 
 static int guards_intact(void)

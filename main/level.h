@@ -26,6 +26,7 @@ bool level_is_true(float tilt_x_deg, float tilt_y_deg);
 
 /* Positive means that end of the axis is the low one: +x is the right edge
    down, +y is the far edge down. */
-void level_draw(canvas_t *c, float tilt_x_deg, float tilt_y_deg);
+/* `note` is printed small at the foot of the readout, or NULL. */
+void level_draw(canvas_t *c, float tilt_x_deg, float tilt_y_deg, const char *note);
 
 #endif /* LEVEL_H */

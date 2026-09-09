@@ -43,7 +43,8 @@ static void put_angle(canvas_t *c, int col, int row, const char *label,
     degree_mark(c, col + (int)strlen(buf), row, colour);
 }
 
-void level_draw(canvas_t *c, float tilt_x_deg, float tilt_y_deg)
+void level_draw(canvas_t *c, float tilt_x_deg, float tilt_y_deg,
+                const char *note)
 {
     canvas_clear(c);
 
@@ -101,6 +102,7 @@ void level_draw(canvas_t *c, float tilt_x_deg, float tilt_y_deg)
     canvas_puts(c, text_col, 3, tilt, PAL_DIM);
     degree_mark(c, text_col + (int)strlen(tilt), 3, PAL_DIM);
 
-    canvas_puts(c, text_col, c->rows - 1, ok ? "** TRUE **" : "not level",
+    canvas_puts(c, text_col, c->rows - 2, ok ? "** TRUE **" : "not level",
                 ok ? PAL_A2 : PAL_DIM);
+    if (note != NULL) canvas_puts(c, text_col, c->rows - 1, note, PAL_DIM);
 }

@@ -68,7 +68,7 @@ typedef struct {
 } ud_view_t;
 
 typedef enum { UD_NONE = 0, UD_STATS, UD_DAILY, UD_CLOCK, UD_TODAY,
-               UD_PARTICLES, UD_LEVEL, UD_GAME } ud_kind_t;
+               UD_PARTICLES, UD_LEVEL, UD_GAME, UD_FLIP, UD_ZERO } ud_kind_t;
 
 /* Parses one payload. "!stats" and "!daily" replace that section for the
    sending machine, named by a "host <name>" line and defaulting to "mac".

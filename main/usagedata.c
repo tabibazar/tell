@@ -77,6 +77,8 @@ ud_kind_t usagedata_parse(usagedata_t *d, const char *payload,
     else if (starts_with(payload, "!particles")) return UD_PARTICLES;
     else if (starts_with(payload, "!level")) return UD_LEVEL;
     else if (starts_with(payload, "!game")) return UD_GAME;
+    else if (starts_with(payload, "!flip")) return UD_FLIP;
+    else if (starts_with(payload, "!zero")) return UD_ZERO;
     else return UD_NONE;
 
     if (kind == UD_CLOCK) {
