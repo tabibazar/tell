@@ -313,7 +313,7 @@ void app_main(void)
         if (bmp280_init() == ESP_OK) seed = bmp280_entropy();
         if (seed == 0) seed = (uint32_t)esp_timer_get_time() | 1u;
         ESP_LOGI(TAG, "particles seeded with 0x%08X", (unsigned)seed);
-        particles_init(&s_particles, 380, c->w, c->h, seed);
+        particles_init(&s_particles, 190, c->w, c->h, seed);
     }
 #endif
     pages_init(&s_pages, available);
