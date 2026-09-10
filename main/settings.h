@@ -2,6 +2,7 @@
 #define SETTINGS_H
 
 #include <stdbool.h>
+#include <stdint.h>
 
 /*
  * The few things worth changing from the screen itself, kept across power
@@ -45,5 +46,12 @@ bool settings_save(const settings_t *s);
    Not a setting anyone chooses, but the same flash and the same rules. */
 bool settings_load_zone(int *utc_offset_min, char *tz, int tz_size);
 bool settings_save_zone(int utc_offset_min, const char *tz);
+
+/* The pages the cycling screensaver has been told to leave out, as a bit per
+   page. Chosen by double-tapping a tile on the menu rather than from the
+   settings page: there are twenty pages and the menu already shows them all,
+   where a settings row per page would be a screen of its own. */
+bool settings_load_cycle_off(uint32_t *mask);
+bool settings_save_cycle_off(uint32_t mask);
 
 #endif /* SETTINGS_H */

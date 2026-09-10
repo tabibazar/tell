@@ -15,16 +15,19 @@ style of Claude Code's own `/stats` screen, a weekday-by-hour heatmap of when
 you work, a live page for today with whether Claude is busy right now, the
 tokens by repository, the prompt-cache hit rate and what caching saved, which
 tools Claude calls and the programs behind its Bash calls, how much of its
-output is thinking, this week against
-last, your personal records, what it all would have cost at API list
-prices, and a recap of the day written by Claude from your prompts, plus an
+output is thinking, how much of your
+session and weekly limits is gone with a countdown to each reset, your
+personal records, what it all would have cost at API list prices, and a recap of the day written by Claude from your prompts, plus an
 almanac and a Settings page. While Claude is busy the board shows the live page on its own and
 returns to the clock when the work stops; Settings can turn that off.
 
 On the touch panel a tap on the right half of the screen goes to the next
 page and one on the left half to the previous; the amber MENU tab at the top
 left of every page opens a menu with a tile per page, so any page is two taps
-away. After ten minutes with no tap
+away, and double-tapping a tile there strikes that page off the
+screensaver's round rather than opening it, so a page you never want to see
+drift past is two taps from being skipped and two more from coming back.
+After ten minutes with no tap
 and no message the screensaver cycles through the pages, twenty seconds each,
 so nothing sits still long enough to burn in; a tap brings back whatever page
 is showing. The Settings page (last in the
@@ -168,17 +171,42 @@ the big panel's pages, which shows the local time with its zone and UTC beside
 it; the offset and the zone's name (`utc -240`, `tz EDT`) ride along in the
 clock payload the `push-clock` agent sends every five minutes.
 
-## A spirit level, on the small board
+## Limits, counting down
 
-The Feather has a QMI8658 accelerometer left over from its stock firmware, so
-that board is a bullseye level. Rings at 5, 10 and 15 degrees and a bubble
-that floats to the high side, as a real one does; beside it, how far off it is
-altogether, and the two times.
+One page is not from the transcripts at all. It asks the same endpoint
+Claude Code's own `/usage` command reads for the account's rate limits: the
+five-hour session window, the weekly allowance, and whichever per-model
+weekly limit is in force. Each gets a bar and a countdown to its reset, and
+the one currently binding is the one drawn in white.
 
-The board comes up on it: the level is why that board has a screen.
+The countdowns run on the board. A reset goes out as the seconds that were
+left when the payload was written, not as a wall-clock time, so the board
+subtracts however long the payload has been sitting there and needs no
+calendar to do it. That also means a board nobody has pushed to for an hour
+shows a countdown an hour short rather than a confident wrong time.
+
+The token comes from the login keychain, read by `tools/claude-stats.py` and
+handed to `curl` on stdin so it is never a command-line argument. A Mac that
+cannot read it, or that is offline, sends the marker with no rows and the
+page says it has nothing yet; nothing else on the board is affected.
+
+## Sand and a spirit level, on the small board
+
+The Feather has a QMI8658 accelerometer left over from its stock firmware, and
+it drives two pages.
+
+The board comes up as a bullseye level: rings at 5, 10 and 15 degrees and a
+bubble that floats to the high side, as a real one does; beside it, how far off
+it is altogether, and the two times. The level is why that board has a screen.
+
+Send `!particles` and it is a bottle of sand: a couple of hundred
+coloured grains that pour whichever way you tilt it, pile up against the low
+edge with real depth, and slosh when the board moves. Shake it and the pile
+scatters; spin it and the grains stir.
 
 ```sh
-tell --device small "!level"     # if you have navigated away
+tell --device small "!level"     # back to the level
+tell --device small "!particles" # the sand
 tell --device small "!zero"      # take this surface as true
 tell --device small "!newgame"   # wipe the scoreboard
 ```
@@ -194,6 +222,13 @@ and this board reads about 3.7 degrees off on one axis wherever you put it.
 And the axis signs cannot be worked out from a still reading, because gravity
 has no component along an axis that is level, so `!flip x`, `!flip y` and
 `!flip swap` set them from the Mac and the board remembers.
+
+The sand is `main/particles.c`: pure C, taking a gravity vector, so it is
+tested on the host with the rest of the project. Grains push each other apart
+pairwise, against a bucket grid so each one only looks at its neighbours; an
+earlier density-grid version was cheaper but could not hold a column of liquid
+up. The pile is seeded from the radio's entropy, so it lands somewhere new
+every boot.
 
 None of this exists on the big board, which has no IMU and is not compiled
 with any of it.
@@ -240,7 +275,7 @@ firmware bugs apart from client bugs.
 
 **Data payloads.** A text message that starts with `!stats`, `!daily`,
 `!year`, `!cost`, `!rhythm`, `!now`, `!projects`, `!cache`, `!tools`,
-`!thinking`, `!week`, `!records`, `!runs`, `!turns`, `!story`, `!clock` or
+`!thinking`, `!limits`, `!records`, `!runs`, `!turns`, `!story`, `!clock` or
 `!today` is data for a page rather than a
 message to show, and replaces that section for the sending machine (named on
 a `host` line) without changing what is on screen. `tools/claude-stats.py

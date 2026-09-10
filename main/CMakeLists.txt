@@ -3,11 +3,11 @@
 # directory only when it configures, so after adding a file run
 # `idf.py -B <build dir> reconfigure` (or touch this file) before building.
 # The exceptions to "every .c" are per board. Each has its own display driver
-# and only one may be compiled; and the IMU, the barometer and the spirit
-# level they feed exist only on the Feather, so the big board does not carry
+# and only one may be compiled; and the IMU, the sand it pours and the spirit
+# level it drives exist only on the Feather, so the big board does not carry
 # them at all.
 if(CONFIG_SCREEN_BOARD_CROWPANEL_7)
-    set(BOARD_EXCLUDES "display_st7789.c" "qmi8658.c" "level.c")
+    set(BOARD_EXCLUDES "display_st7789.c" "qmi8658.c" "level.c" "particles.c")
 else()
     set(BOARD_EXCLUDES "display_rgb.c")
 endif()

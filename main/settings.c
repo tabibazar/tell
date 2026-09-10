@@ -140,6 +140,28 @@ bool settings_save_zone(int utc_offset_min, const char *tz)
     nvs_close(h);
     return ok;
 }
+
+bool settings_load_cycle_off(uint32_t *mask)
+{
+    nvs_handle_t h;
+    if (nvs_open(NAMESPACE, NVS_READONLY, &h) != ESP_OK) return false;
+    uint32_t v = 0;
+    bool ok = nvs_get_u32(h, "cyc_off", &v) == ESP_OK;
+    nvs_close(h);
+    if (ok) *mask = v;
+    return ok;
+}
+
+bool settings_save_cycle_off(uint32_t mask)
+{
+    nvs_handle_t h;
+    if (nvs_open(NAMESPACE, NVS_READWRITE, &h) != ESP_OK) return false;
+    bool ok = nvs_set_u32(h, "cyc_off", mask) == ESP_OK
+           && nvs_commit(h) == ESP_OK;
+    nvs_close(h);
+    if (!ok) ESP_LOGE(TAG, "nvs write failed; the skipped pages are not kept");
+    return ok;
+}
 #else
 void settings_load(settings_t *s) { settings_defaults(s); }
 bool settings_save(const settings_t *s) { (void)s; return true; }
@@ -153,4 +175,6 @@ bool settings_save_zone(int utc_offset_min, const char *tz)
     (void)utc_offset_min; (void)tz;
     return true;
 }
+bool settings_load_cycle_off(uint32_t *mask) { (void)mask; return false; }
+bool settings_save_cycle_off(uint32_t mask) { (void)mask; return true; }
 #endif

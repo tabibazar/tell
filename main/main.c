@@ -2,7 +2,9 @@
 #include "ble_uart.h"
 #include "gt911.h"
 #include "level.h"
+#include "particles.h"
 #include "qmi8658.h"
+#include "esp_random.h"
 #include "pagedefs.h"
 #include "pages.h"
 #include "view_common.h"
@@ -77,11 +79,43 @@ static bool claude_busy(const ud_view_t *v, int64_t now)
     return since < UD_BUSY_SECS;
 }
 
-/* The spirit level, on the Feather only, driven by its QMI8658. The big board
-   has no IMU and is not compiled with any of this. */
+/* The sand and the spirit level, on the Feather only, both driven by its
+   QMI8658. The big board has no IMU and is not compiled with any of this. */
 #ifdef CONFIG_SCREEN_BOARD_FEATHER_S3_TFT
 #define HAVE_LEVEL 1
 static bool s_imu;
+
+/* The sand. Static, not on the stack: a few hundred grains with their bucket
+   grid is tens of kilobytes, and the main task's stack is small. */
+static particles_t s_particles;
+static int64_t s_particles_last_us;
+static float s_gx, s_gy;      /* low-passed gravity, panel pixels/s^2 */
+
+/* Gravity in pixels per second squared. A full 1 g tilt crosses the short
+   axis of the panel in about half a second, which reads as sand rather than
+   as a screensaver. */
+#define GRAVITY_PX 900.0f
+/* First-order low pass, roughly a 150 ms time constant at 20 fps. Raw
+   accelerometer output at rest is noisy enough to make a heap shiver. */
+#define GRAVITY_ALPHA 0.25f
+/* Degrees per second of twist, converted to a tangential nudge. */
+#define SWIRL_SCALE 0.00015f
+
+/*
+ * Shaking is not a direction, it is energy, so it must not go through the
+ * filter above. That filter has a corner around 1 Hz, which is what stops the
+ * settled heap shivering on sensor noise -- but a real shake is five to ten
+ * times faster, so the filter removes precisely the thing we want, and the
+ * board ends up moving less the harder it is shaken.
+ *
+ * The residual is the other half of the same filter and has the opposite
+ * response: near zero when the board is still, and near the full amplitude
+ * when the reading is changing faster than the filter can follow. Feeding it
+ * in as agitation scatters the pile instead of tilting it.
+ */
+#define SHAKE_FLOOR 250.0f     /* residual below this is noise, not a shake */
+#define SHAKE_GAIN  0.06f      /* residual px/s^2 -> scatter px/s */
+#define SHAKE_MAX   200.0f     /* enough to lift the pile, not to blur it */
 
 /*
  * Which sensor axis is which on the panel. An accelerometer at rest reads
@@ -355,6 +389,47 @@ static void draw_level(canvas_t *c)
     display_blit();
 }
 
+static void draw_particles(canvas_t *c, int64_t now)
+{
+    float dt = s_particles_last_us
+             ? (float)(now - s_particles_last_us) / 1000000.0f : 0.05f;
+    s_particles_last_us = now;
+    if (dt > 0.2f) dt = 0.2f;     /* a long stall must not teleport anything */
+
+    qmi8658_sample_t sample;
+    if (qmi8658_read(&sample) == ESP_OK) {
+        float gx, gy;
+        gravity_from(&sample, &gx, &gy);
+        /* The level and the sand read the same mapping and disagree about
+           this one axis: with the bubble floating to the high side as it
+           should, the sand poured uphill. Flipping the shared mapping would
+           trade one wrong page for the other, so the sand takes it
+           negated here and the level is left alone. */
+        gy = -gy;
+
+        /* The filter's own error, before it is applied: how far the board is
+           from where the slow view of gravity thinks it is. */
+        float rx = gx * GRAVITY_PX - s_gx;
+        float ry = gy * GRAVITY_PX - s_gy;
+
+        s_gx += rx * GRAVITY_ALPHA;
+        s_gy += ry * GRAVITY_ALPHA;
+
+        float shake = sqrtf(rx * rx + ry * ry) - SHAKE_FLOOR;
+        if (shake > 0.0f) {
+            float scatter = shake * SHAKE_GAIN;
+            if (scatter > SHAKE_MAX) scatter = SHAKE_MAX;
+            particles_agitate(&s_particles, scatter);
+        }
+        /* Spinning the board stirs the pile. Garnish; nothing depends on it. */
+        particles_swirl(&s_particles, sample.gz * SWIRL_SCALE);
+    }
+
+    particles_step(&s_particles, s_gx, s_gy, dt);
+    particles_draw(&s_particles, c);
+    display_blit();
+}
+
 #else
 #define HAVE_LEVEL 0
 #endif
@@ -390,16 +465,49 @@ static page_t home_page(void)
     return PAGE_CLOCK;
 }
 
+/*
+ * Pages the screensaver has been told to leave out, one bit each, chosen by
+ * double-tapping a tile on the menu and kept in flash.
+ *
+ * A double tap costs the single tap its immediacy: opening a page has to wait
+ * MENU_DOUBLE_US to find out whether a second tap is coming. That delay is
+ * paid only on the menu, and only because the alternative -- opening the page
+ * and then undoing it when the second tap lands -- would flash a page nobody
+ * asked for. The tile lights up under the finger as soon as it is touched, so
+ * the wait is visible rather than felt as lag.
+ */
+static uint32_t s_cycle_off;
+#define MENU_DOUBLE_US 400000
+static page_t s_menu_held = PAGE_COUNT;   /* the tile waiting to see a second tap */
+static int64_t s_menu_held_us;
+
 /* The pages the cycling saver leaves out: settings, because a slideshow
-   should not land on a control panel, and the message page when nothing
-   has been sent, because "nothing sent yet" is not worth twenty seconds. */
+   should not land on a control panel, the message page when nothing has been
+   sent, because "nothing sent yet" is not worth twenty seconds, and whatever
+   has been struck off on the menu. */
 static unsigned cycle_skip(void)
 {
-    unsigned skip = 0;
+    unsigned skip = s_cycle_off;
     for (int i = 0; i < PAGE_COUNT; i++)
         if (!page_defs[i].in_saver) skip |= PAGE_BIT(i);
     if (s_message[0] == '\0') skip |= PAGE_BIT(PAGE_MESSAGE);
     return skip;
+}
+
+/* A tile's second tap: strike the page off the saver's round, or put it
+   back. Only pages the saver would visit anyway can be struck off -- the
+   menu and the settings page are never in it, so double-tapping them would
+   set a bit that changes nothing and show a mark that means nothing. */
+static void toggle_cycle(page_t page)
+{
+    if (!page_defs[page].in_saver) {
+        ESP_LOGI(TAG, "page %d is never in the saver; nothing to skip", (int)page);
+        return;
+    }
+    s_cycle_off ^= PAGE_BIT(page);
+    settings_save_cycle_off(s_cycle_off);
+    ESP_LOGI(TAG, "page %d %s the saver", (int)page,
+             (s_cycle_off & PAGE_BIT(page)) ? "struck off" : "back in");
 }
 
 static void on_time(uint32_t secs)
@@ -432,6 +540,11 @@ static void on_message(const char *text, size_t len)
 #if HAVE_LEVEL
     /* Commands, not data: unlike the charts these were asked for, so they do
        take the view. */
+    if (kind == UD_PARTICLES) {
+        pages_show(&s_pages, PAGE_PARTICLES, now);
+        s_drawn_page = PAGE_COUNT;
+        return;
+    }
     if (kind == UD_LEVEL || kind == UD_FLIP || kind == UD_ZERO
      || kind == UD_NEWGAME) {
         if (kind == UD_FLIP) axis_command(text);
@@ -569,12 +682,13 @@ void app_main(void)
         available |= PAGE_BIT(i);
     }
 #if HAVE_LEVEL
-    /* The level needs a sensor, which the page table cannot know about: it
-       describes boards, and this is a question about one board's hardware. */
+    /* The sand and the level need a sensor, which the page table cannot know
+       about: it describes boards, and this is a question about one board's
+       hardware. */
     s_imu = qmi8658_init() == ESP_OK;
-    if (!s_imu) available &= ~PAGE_BIT(PAGE_LEVEL);
+    if (!s_imu) available &= ~(PAGE_BIT(PAGE_PARTICLES) | PAGE_BIT(PAGE_LEVEL));
 #else
-    available &= ~PAGE_BIT(PAGE_LEVEL);
+    available &= ~(PAGE_BIT(PAGE_PARTICLES) | PAGE_BIT(PAGE_LEVEL));
 #endif
 #ifdef CONFIG_SCREEN_BOARD_CROWPANEL_7
     /* The clock chip shares the touch bus. If it knows the time, start from
@@ -605,8 +719,17 @@ void app_main(void)
        any Mac has spoken this boot. */
     if (settings_load_zone(&s_data.utc_offset_min, s_data.tz, (int)sizeof s_data.tz))
         s_data.have_utc = true;
+    settings_load_cycle_off(&s_cycle_off);
 #if HAVE_LEVEL
-    if (s_imu) { axis_load(); zero_load(); }
+    if (s_imu) {
+        axis_load();
+        zero_load();
+        /* Seeded from the radio's entropy rather than a constant, so the
+           grains do not land in the same places every boot. */
+        uint32_t seed = esp_random();
+        if (seed == 0) seed = (uint32_t)esp_timer_get_time() | 1u;
+        particles_init(&s_particles, 190, c->w, c->h, seed);
+    }
 #endif
     pages_show(&s_pages, home_page(), esp_timer_get_time());
 
@@ -622,8 +745,9 @@ void app_main(void)
            not 30. The tick is 10 ms, so this lands on the tick below. */
         int64_t period_us = (int64_t)TICK_MS * 1000;
 #if HAVE_LEVEL
-        if (s_imu && s_pages.current == PAGE_LEVEL)
-            period_us = 33000;      /* 30 fps while the bubble is moving */
+        if (s_imu && (s_pages.current == PAGE_LEVEL
+                   || s_pages.current == PAGE_PARTICLES))
+            period_us = 33000;      /* 30 fps while the sensor drives it */
 #endif
         int64_t rest_ms = (period_us - (esp_timer_get_time() - last_wake)) / 1000;
         vTaskDelay(rest_ms > 1 ? pdMS_TO_TICKS(rest_ms) : 1);
@@ -678,9 +802,22 @@ void app_main(void)
                 ESP_LOGI(TAG, "tap at %d,%d -> menu tab", tx, ty);
             } else if (s_pages.current == PAGE_MENU
                        && views_menu_hit(c, &s_pages, tx, ty, &target)) {
-                pages_show(&s_pages, target, now);
+                if (s_menu_held == target && now - s_menu_held_us < MENU_DOUBLE_US) {
+                    /* The second tap. The page is not opened at all: whoever
+                       double-tapped was setting the tile, not going there. */
+                    toggle_cycle(target);
+                    s_menu_held = PAGE_COUNT;
+                    s_pages.last_activity_us = now;
+                    ESP_LOGI(TAG, "tap at %d,%d -> menu -> toggled page %d",
+                             tx, ty, (int)target);
+                } else {
+                    s_menu_held = target;
+                    s_menu_held_us = now;
+                    s_pages.last_activity_us = now;
+                    ESP_LOGI(TAG, "tap at %d,%d -> menu -> holding page %d",
+                             tx, ty, (int)target);
+                }
                 s_drawn_page = PAGE_COUNT;
-                ESP_LOGI(TAG, "tap at %d,%d -> menu -> page %d", tx, ty, (int)target);
             } else if (s_pages.current == PAGE_SETTINGS
                        && views_settings_hit(c, tx, ty, &row, &choice)) {
                 if (settings_select(&s_settings, row, choice)) {
@@ -700,6 +837,18 @@ void app_main(void)
                 ESP_LOGI(TAG, "tap at %d,%d -> page %d", tx, ty, (int)p);
             }
             s_auto_jumped = false;          /* a tap means a person is choosing */
+        }
+
+        /* The double-tap window has closed with no second tap, so the first
+           one meant what it said. */
+        if (s_menu_held != PAGE_COUNT && now - s_menu_held_us >= MENU_DOUBLE_US) {
+            page_t target = s_menu_held;
+            s_menu_held = PAGE_COUNT;
+            if (s_pages.current == PAGE_MENU) {
+                pages_show(&s_pages, target, now);
+                ESP_LOGI(TAG, "menu -> page %d", (int)target);
+            }
+            s_drawn_page = PAGE_COUNT;
         }
 
         if (now - s_busy_check_us > BUSY_CHECK_US) {
@@ -725,11 +874,12 @@ void app_main(void)
         }
 
 #if HAVE_LEVEL
-        /* The level is a thing you are using, not a thing left on display, so
-           the saver must not take it away underneath you -- and reading one
-           sends the board nothing, which is exactly what looks like idling.
-           It needs no protecting from burn-in either: the bubble moves. */
-        if (s_pages.current == PAGE_LEVEL) s_pages.last_activity_us = now;
+        /* The level and the sand are things you are using, not things left
+           on display, so the saver must not take them away underneath you --
+           and tilting a board sends it nothing, which is exactly what looks
+           like idling. Neither needs protecting from burn-in: both move. */
+        if (s_pages.current == PAGE_LEVEL || s_pages.current == PAGE_PARTICLES)
+            s_pages.last_activity_us = now;
 #endif
         bool saver_now = s_synced && pages_saver_active(&s_pages, now);
         if (saver_now != s_saver) {
@@ -796,7 +946,7 @@ void app_main(void)
                 case PAGE_MESSAGE:  draw_message(c); display_blit(); break;
                 case PAGE_TODAY:    views_today(c, &s_data); display_blit(); break;
                 case PAGE_SETTINGS: views_settings(c, &s_settings); display_blit(); break;
-                case PAGE_MENU:     views_menu(c, &s_pages); display_blit(); break;
+                case PAGE_MENU:     views_menu(c, &s_pages, s_cycle_off, s_menu_held); display_blit(); break;
                 default: break;
                 }
             }
@@ -817,7 +967,10 @@ void app_main(void)
 
         if (s_pages.current == PAGE_CLOCK) draw_clock(c, now);
 #if HAVE_LEVEL
-        if (s_pages.current == PAGE_LEVEL && s_imu) draw_level(c);
+        if (s_imu) {
+            if (s_pages.current == PAGE_LEVEL) draw_level(c);
+            else if (s_pages.current == PAGE_PARTICLES) draw_particles(c, now);
+        }
 #endif
         /* Pages with ages on them redraw on their own so the ages keep counting. */
         if (pd->refresh_us > 0 && now - s_page_drawn_us > pd->refresh_us)

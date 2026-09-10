@@ -6,7 +6,13 @@
 #include "pages.h"
 
 /* The menu: tiles four across, five down, one per available page, in tap
-   order. Each is a raised plate the size of a fingertip several times over. */
+   order. Each is a raised plate the size of a fingertip several times over.
+ *
+ * A tile also says whether the screensaver will stop on that page. Pages the
+ * saver has been told to skip are struck through, which reads as "off"
+ * without needing a legend or a second colour. The tile under a finger is
+ * drawn lit while the board waits to see whether a second tap is coming.
+ */
 #define MENU_COLS   4
 #define MENU_TOP    30
 #define MENU_PITCH  88
@@ -38,25 +44,36 @@ static void menu_tile_rect(canvas_t *c, int n, int *x, int *y, int *w, int *h)
     *h = MENU_TILE_H;
 }
 
-void views_menu(canvas_t *c, const pages_t *p)
+void views_menu(canvas_t *c, const pages_t *p, unsigned cycle_off, page_t held)
 {
     canvas_clear(c);
     canvas_fill_rect(c, 0, 0, c->w, c->cell_h, PAL_TITLE_BG);
     canvas_puts(c, 1, 0, "MENU", PAL_FG);
-    vw_right_text(c, 0, c->cols - 1, "tap a page", PAL_DIM);
+    vw_right_text(c, 0, c->cols - 1, "tap a page; twice to skip it in the saver",
+                  PAL_DIM);
     for (int n = 0; ; n++) {
         page_t page = menu_tile_page(p, n);
         if (page == PAGE_COUNT) break;
         int x, y, w, h;
         menu_tile_rect(c, n, &x, &y, &w, &h);
         if (y + h > c->h) break;
-        canvas_fill_rect(c, x, y, w, h, 0x2124);
-        canvas_fill_rect(c, x, y, w, 3, 0x4208);
+
+        bool skipped = (cycle_off & PAGE_BIT(page)) != 0;
+        canvas_fill_rect(c, x, y, w, h, page == held ? 0x39C7 : 0x2124);
+        canvas_fill_rect(c, x, y, w, 3, page == held ? pal_heat(PAL_HEAT_STEPS) : 0x4208);
         canvas_fill_rect(c, x, y + h, w, 2, 0x18C3);
+
         const char *name = menu_name(page);
         int tw = (int)strlen(name) * c->cell_w;
-        canvas_puts_px(c, x + (w - tw) / 2, y + (h - c->cell_h) / 2, name,
-                       page == p->current ? pal_heat(PAL_HEAT_STEPS) : PAL_FG);
+        int tx = x + (w - tw) / 2, ty = y + (h - c->cell_h) / 2;
+        uint16_t colour = skipped ? PAL_DIM
+                        : page == p->current ? pal_heat(PAL_HEAT_STEPS) : PAL_FG;
+        canvas_puts_px(c, tx, ty, name, colour);
+        /* Struck through rather than merely dimmed: dim is what an unselected
+           tile already looks like, and the difference has to survive being
+           read from across a desk. */
+        if (skipped)
+            canvas_fill_rect(c, tx - 4, ty + c->cell_h / 2, tw + 8, 2, PAL_DIM);
     }
 }
 

@@ -11,7 +11,7 @@ typedef enum {
     PAGE_MENU,       /* a tile per page; first tap from the clock opens it */
     PAGE_NOW,        /* today so far, and whether Claude is busy */
     PAGE_STORY,      /* a recap of the day, written by Claude */
-    PAGE_WEEK,       /* the last seven days against the seven before */
+    PAGE_LIMITS,     /* session and weekly limits, counting down */
     PAGE_STATS,
     PAGE_TODAY,
     PAGE_MODELS,     /* tokens per day, one line per model */
@@ -27,6 +27,7 @@ typedef enum {
     PAGE_TURNS,      /* how long Claude takes */
     PAGE_MESSAGE,
     PAGE_DAILY,      /* tokens per day as bars */
+    PAGE_PARTICLES,  /* the Feather's sand, poured by its IMU */
     PAGE_LEVEL,      /* the Feather's spirit level; needs its IMU */
     PAGE_SETTINGS,   /* touch-only; last, so it is out of the way */
     PAGE_COUNT

@@ -11,7 +11,7 @@ const page_def_t page_defs[PAGE_COUNT] = {
     [PAGE_MENU]     = { "Menu",          0,                             NULL,           false, 0,        false, true,  false },
     [PAGE_NOW]      = { "Today, live",   UD_FEED(UD_NOW),               views_now,      false, SEC(10),  false, false, true  },
     [PAGE_STORY]    = { "Today's story", UD_FEED(UD_STORY),             views_story,    false, 0,        false, false, true  },
-    [PAGE_WEEK]     = { "Week vs last",  UD_FEED(UD_WEEK),              views_week,     true,  0,        false, false, true  },
+    [PAGE_LIMITS]   = { "Limits",        UD_FEED(UD_LIMITS),            views_limits,   false, SEC(1),   false, false, true  },
     [PAGE_STATS]    = { "By model",      UD_FEED(UD_STATS),             views_stats,    true,  0,        false, false, true  },
     [PAGE_TODAY]    = { "Almanac",       UD_FEED(UD_TODAY),             NULL,           false, 0,        false, false, true  },
     [PAGE_MODELS]   = { "Models per day", UD_FEED(UD_STATS),            views_models,   true,  0,        false, false, true  },
@@ -27,6 +27,7 @@ const page_def_t page_defs[PAGE_COUNT] = {
     [PAGE_TURNS]    = { "Turns",         UD_FEED(UD_TURNS),             views_turns,    true,  0,        false, false, true  },
     [PAGE_MESSAGE]  = { "Message",       0,                             NULL,           false, 0,        true,  false, true  },
     [PAGE_DAILY]    = { "Tokens per day", UD_FEED(UD_DAILY),            views_daily,    true,  0,        false, false, true  },
+    [PAGE_PARTICLES]= { "Sand",          0,                             NULL,           false, 0,        true,  false, false },
     [PAGE_LEVEL]    = { "Level",         0,                             NULL,           false, 0,        true,  false, false },
     [PAGE_SETTINGS] = { "Settings",      0,                             NULL,           false, 0,        false, true,  false },
 };

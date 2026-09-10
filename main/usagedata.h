@@ -153,14 +153,31 @@ typedef struct {
     int model_count;
 } ud_thinking_t;
 
-/* The last seven days against the seven before, one machine. */
-#define UD_WEEK_ROWS 6
+/* The account's rate limits, as reported by whichever machine pushed last.
+   A reset is the seconds that were left when the payload was written, so the
+   board can count it down without knowing the date. */
+#define UD_LIMIT_MAX 6
+#define UD_LIMIT_KIND 9
+#define UD_LIMIT_SCOPE 15
+#define UD_LIMIT_CCY 4
+typedef struct {
+    char kind[UD_LIMIT_KIND + 1];    /* session, weekly, model */
+    char scope[UD_LIMIT_SCOPE + 1];  /* the model it covers, empty for all */
+    uint32_t reset_secs;             /* until reset, when this was sent */
+    uint8_t percent;
+    uint8_t severity;                /* 0 normal, 1 warning, 2 critical */
+    bool active;                     /* this is the one currently binding */
+} ud_limit_t;
+
 typedef struct {
     bool used;
-    int32_t today;
-    uint64_t this_week[UD_WEEK_ROWS], last_week[UD_WEEK_ROWS];
-    char grid[15];               /* fourteen days of tokens, oldest first */
-} ud_week_t;
+    ud_limit_t rows[UD_LIMIT_MAX];
+    int count;
+    bool have_credits;
+    uint32_t credit_used, credit_limit;   /* hundredths of the currency */
+    uint8_t credit_pct;
+    char currency[UD_LIMIT_CCY + 1];
+} ud_limits_t;
 
 /* Personal bests, one machine: a value and the day it happened. */
 #define UD_RECORD_MAX 10
@@ -227,7 +244,7 @@ typedef struct {
     ud_cache_t cache;
     ud_tools_t tools;
     ud_thinking_t thinking;
-    ud_week_t week;
+    ud_limits_t limits;
     ud_records_t records;
     ud_runs_t runs;
     ud_turns_t turns;
@@ -361,14 +378,19 @@ typedef struct {
     int8_t pct[UD_MDAYS];                 /* -1 when no machine reported that day */
 } ud_thinking_view_t;
 
-/* Every machine's week, summed. Row order: tokens, cost (cents), messages,
-   sessions, tool calls, active days. */
+/* The account's limits: the freshest report rather than a sum, since every
+   machine sees the same account. `sent_us` is when the countdowns were true;
+   the page subtracts however long ago that was. */
 typedef struct {
     bool present;
-    int32_t today;
-    uint64_t this_week[UD_WEEK_ROWS], last_week[UD_WEEK_ROWS];
-    uint64_t day[14];            /* tokens, oldest first */
-} ud_week_view_t;
+    ud_limit_t rows[UD_LIMIT_MAX];
+    int count;
+    bool have_credits;
+    uint32_t credit_used, credit_limit;
+    uint8_t credit_pct;
+    char currency[UD_LIMIT_CCY + 1];
+    int64_t sent_us;
+} ud_limits_view_t;
 
 /* Every machine's records: the best across machines for each key, except
    "early", where the smallest wins. */
@@ -434,7 +456,7 @@ typedef struct {
     ud_cache_view_t cache;
     ud_tools_view_t tools;
     ud_thinking_view_t thinking;
-    ud_week_view_t week;
+    ud_limits_view_t limits;
     ud_records_view_t records;
     ud_runs_view_t runs;
     ud_turns_view_t turns;
@@ -450,11 +472,11 @@ typedef struct {
 typedef enum {
     UD_NONE = 0, UD_STATS, UD_DAILY, UD_CLOCK, UD_TODAY, UD_YEAR, UD_COST,
     UD_RHYTHM, UD_NOW, UD_PROJECTS, UD_CACHE, UD_TOOLS, UD_THINKING,
-    UD_WEEK, UD_RECORDS, UD_RUNS, UD_TURNS, UD_STORY,
+    UD_LIMITS, UD_RECORDS, UD_RUNS, UD_TURNS, UD_STORY,
     /* Commands rather than data: they carry no payload and exist so the
-       Feather's spirit level can be reached and adjusted from a Mac. The big
+       Feather's sand and spirit level can be reached and adjusted from a Mac. The big
        board never registers them; the kinds cost it nothing but a name. */
-    UD_LEVEL, UD_FLIP, UD_ZERO, UD_NEWGAME,
+    UD_PARTICLES, UD_LEVEL, UD_FLIP, UD_ZERO, UD_NEWGAME,
     UD_KIND_COUNT
 } ud_kind_t;
 

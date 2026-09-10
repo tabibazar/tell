@@ -72,6 +72,7 @@ int main(void)
     parse("!stats\n");
     expect("empty section yields no rows", v.model_count == 0);
 
+    expect("particles marker recognised", parse("!particles\n") == UD_PARTICLES);
     expect("level marker recognised", parse("!level\n") == UD_LEVEL);
     expect("an unknown marker is still nothing", parse("!nope\n") == UD_NONE);
 
@@ -575,27 +576,49 @@ int main(void)
     parse("!thinking\nhost air\nstart 1\ntoday 3\n");
     expect("thinking without models is not drawn", !v.thinking.present);
 
-    /* This week against last. */
+    /* The account's limits. */
     memset(&d, 0, sizeof d);
-    expect("week marker recognised",
-           parse("!week\nhost air\ntoday 20703\nw tokens 28000 1000\nw cost 500 200\n"
-                 "w msgs 15 40\nw sessions 2 5\nw tools 42 7\nw days 7 2\n"
-                 "grid ......5......A\n") == UD_WEEK);
-    expect("week rows kept in order",
-           v.week.present && v.week.this_week[0] == 28000 && v.week.last_week[0] == 1000
-           && v.week.this_week[1] == 500 && v.week.this_week[2] == 15
-           && v.week.this_week[3] == 2 && v.week.this_week[4] == 42
-           && v.week.this_week[5] == 7 && v.week.last_week[5] == 2);
-    expect("week days decoded oldest first",
-           v.week.day[6] > 5000 && v.week.day[13] == 32000 && v.week.day[0] == 0);
-    parse("!week\nhost studio\ntoday 20702\nw tokens 100 100\nw days 3 3\ngrid .............5\n");
-    expect("weeks sum across machines and cap active days",
-           v.week.this_week[0] == 28100 && v.week.this_week[5] == 7 && v.week.last_week[5] == 5);
-    expect("an older machine's days shift onto the newest today",
-           v.week.day[12] > 5000 && v.week.today == 20703);
-    parse("!week\nhost studio\ntoday 20702\nw bogus 1 1\n");
-    expect("a week with only unknown rows is dropped for that machine",
-           v.week.this_week[0] == 28000);
+    expect("limits marker recognised",
+           parse("!limits\nhost air\nlim session 4 14400 0 0 -\n"
+                 "lim weekly 56 54000 0 0 -\n"
+                 "lim model 100 54000 1 2 Fable\n"
+                 "credits 10574 15000 70 CAD\n") == UD_LIMITS);
+    expect("limit rows kept in order",
+           v.limits.present && v.limits.count == 3
+           && strcmp(v.limits.rows[0].kind, "session") == 0
+           && v.limits.rows[0].percent == 4 && v.limits.rows[0].reset_secs == 14400
+           && v.limits.rows[1].percent == 56
+           && v.limits.rows[2].percent == 100 && v.limits.rows[2].severity == 2
+           && v.limits.rows[2].active);
+    expect("a dash scope is no scope at all",
+           v.limits.rows[0].scope[0] == '\0'
+           && strcmp(v.limits.rows[2].scope, "Fable") == 0);
+    expect("extra usage credits parsed",
+           v.limits.have_credits && v.limits.credit_used == 10574
+           && v.limits.credit_limit == 15000 && v.limits.credit_pct == 70
+           && strcmp(v.limits.currency, "CAD") == 0);
+    /* Limits belong to the account, not to the machine that saw them, so a
+       later report replaces rather than adds -- and the page dates its
+       countdowns from whenever that report arrived. */
+    memset(&d, 0, sizeof d);
+    usagedata_parse(&d, "!limits\nhost air\nlim session 4 14400 0 0 -\n", 1000000);
+    usagedata_merge(&d, &v);
+    expect("the countdown is dated from the payload", v.limits.sent_us == 1000000);
+    usagedata_parse(&d, "!limits\nhost studio\nlim session 9 100 0 0 -\n", 5000000);
+    usagedata_merge(&d, &v);
+    expect("the freshest machine's limits win outright",
+           v.limits.count == 1 && v.limits.rows[0].percent == 9
+           && v.limits.sent_us == 5000000);
+    expect("a percentage above a hundred is clamped",
+           usagedata_parse(&d, "!limits\nhost air\nlim session 900 10 0 0 -\n",
+                           9000000) == UD_LIMITS);
+    usagedata_merge(&d, &v);
+    expect("the clamp shows in the view", v.limits.rows[0].percent == 100);
+
+    memset(&d, 0, sizeof d);
+    parse("!limits\nhost air\nbogus 1\n");
+    expect("a limits payload with only unknown rows is dropped",
+           !v.limits.present);
 
     /* Records. */
     memset(&d, 0, sizeof d);

@@ -18,7 +18,7 @@ static void expect(const char *what, int cond)
              | PAGE_BIT(PAGE_SETTINGS) | PAGE_BIT(PAGE_NOW) \
              | PAGE_BIT(PAGE_RHYTHM) | PAGE_BIT(PAGE_PROJECTS) \
              | PAGE_BIT(PAGE_CACHE) | PAGE_BIT(PAGE_TOOLS) \
-             | PAGE_BIT(PAGE_THINKING) | PAGE_BIT(PAGE_WEEK) \
+             | PAGE_BIT(PAGE_THINKING) | PAGE_BIT(PAGE_LIMITS) \
              | PAGE_BIT(PAGE_RECORDS) | PAGE_BIT(PAGE_RUNS) \
              | PAGE_BIT(PAGE_MENU) | PAGE_BIT(PAGE_TURNS) | PAGE_BIT(PAGE_STORY))
 #define FEATHER (PAGE_BIT(PAGE_CLOCK) | PAGE_BIT(PAGE_MESSAGE))
@@ -32,7 +32,7 @@ int main(void)
     expect("advance goes to the menu", pages_advance(&p, 850) == PAGE_MENU);
     expect("then now", pages_advance(&p, 900) == PAGE_NOW);
     expect("then the story", pages_advance(&p, 920) == PAGE_STORY);
-    expect("then the week", pages_advance(&p, 950) == PAGE_WEEK);
+    expect("then the limits", pages_advance(&p, 950) == PAGE_LIMITS);
     expect("then stats", pages_advance(&p, 1000) == PAGE_STATS);
     expect("then today", pages_advance(&p, 2000) == PAGE_TODAY);
     expect("then models", pages_advance(&p, 3000) == PAGE_MODELS);
@@ -56,15 +56,18 @@ int main(void)
     expect("back again", pages_back(&p, 200) == PAGE_DAILY);
     expect("back is activity", p.last_activity_us == 200);
     pages_show(&p, PAGE_STATS, 300);
-    expect("back from stats skips nothing", pages_back(&p, 400) == PAGE_WEEK);
+    expect("back from stats skips nothing", pages_back(&p, 400) == PAGE_LIMITS);
     pages_init(&p, FEATHER);
     expect("feather back skips absent pages", pages_back(&p, 500) == PAGE_MESSAGE);
 
-    /* The Feather with its IMU: the clock, the message, and the level. */
-    pages_init(&p, FEATHER | PAGE_BIT(PAGE_LEVEL));
+    /* The Feather with its IMU: the clock, the message, the sand and the
+       level. */
+    pages_init(&p, FEATHER | PAGE_BIT(PAGE_PARTICLES) | PAGE_BIT(PAGE_LEVEL));
     expect("feather+imu starts on the clock", p.current == PAGE_CLOCK);
     pages_show(&p, PAGE_LEVEL, 1000);
     expect("it can be sent to the level", p.current == PAGE_LEVEL);
+    pages_show(&p, PAGE_PARTICLES, 2000);
+    expect("and to the sand", p.current == PAGE_PARTICLES);
 
     /* The level is where a board with the sensor comes up: it is the only
        reason that board has a screen. main picks the home page, but the
@@ -73,8 +76,10 @@ int main(void)
     expect("the level is available when the sensor is",
            (p.available & PAGE_BIT(PAGE_LEVEL)) != 0);
 
-    /* A board without the sensor never lands there. */
+    /* A board without the sensor never lands on either. */
     pages_init(&p, FEATHER);
+    pages_show(&p, PAGE_PARTICLES, 1000);
+    expect("sand ignored when unavailable", p.current == PAGE_CLOCK);
     pages_show(&p, PAGE_LEVEL, 1000);
     expect("level ignored when unavailable", p.current == PAGE_CLOCK);
 

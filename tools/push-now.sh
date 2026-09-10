@@ -1,7 +1,11 @@
 #!/bin/sh
-# Send only the "today, live" section, every minute. The thirteen heavier
-# sections go every five minutes from push-stats.sh; this one is small and is
-# what tells the board whether Claude is busy right now.
+# Send the two sections that want to be fresh, every minute: "today, live",
+# which is what tells the board whether Claude is busy right now, and the
+# account's limits. The heavier sections go every five minutes from
+# push-stats.sh.
+#
+# The limits' countdowns keep running on the board between pushes, so this is
+# about the percentages moving, not about the clock.
 set -e
 cd "$(dirname "$0")/.."
 DEVICE="${1:-big}"
@@ -16,4 +20,5 @@ if ! mkdir "$LOCK" 2>/dev/null; then exit 0; fi
 trap 'rmdir "$LOCK"' EXIT
 
 ./tools/claude-stats.py --format data --section now | ./tools/tell-locked.sh --device "$DEVICE"
-echo "pushed now to $DEVICE"
+./tools/claude-stats.py --format data --section limits | ./tools/tell-locked.sh --device "$DEVICE"
+echo "pushed now and limits to $DEVICE"

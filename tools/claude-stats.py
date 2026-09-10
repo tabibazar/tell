@@ -12,7 +12,7 @@
     tools/claude-stats.py --format data --section cache  # prompt-cache hit rate
     tools/claude-stats.py --format data --section tools  # which tools Claude calls
     tools/claude-stats.py --format data --section thinking  # thinking vs visible output
-    tools/claude-stats.py --format data --section week   # last 7 days vs the 7 before
+    tools/claude-stats.py --format data --section limits # session and weekly limits
     tools/claude-stats.py --format data --section records  # personal bests
     tools/claude-stats.py --format data --section runs   # programs behind the Bash calls
     tools/claude-stats.py --format data --section turns  # how long Claude takes
@@ -32,7 +32,9 @@ import glob
 import json
 import math
 import os
+import subprocess
 import sys
+import time
 
 TRANSCRIPTS = os.path.expanduser("~/.claude/projects/**/*.jsonl")
 STATS_CACHE = os.path.expanduser("~/.claude/stats-cache.json")
@@ -1026,28 +1028,104 @@ def sessions_on(stats, day):
     return stats.get("cache_sessions_by_day", {}).get(day, 0)
 
 
-def render_week(stats, today=None):
-    """The !week payload: the last seven days against the seven before."""
-    today = today or dt.date.today()
-    days = [(today - dt.timedelta(days=i)).isoformat() for i in range(14)]
-    this, last = days[:7], days[7:]
+LIMITS_URL = "https://api.anthropic.com/api/oauth/usage"
+LIMITS_TIMEOUT = 10
 
-    def total(series, window):
-        return sum(series.get(d, 0) for d in window)
 
-    daily, daily_cost = stats["daily"], stats.get("daily_cost", {})
-    msgs, tools_by_day = stats.get("msgs_by_day", {}), stats.get("daily_tools", {})
-    lines = ["!week", "host %s" % host_name(), "today %d" % day_number(today),
-             "w tokens %d %d" % (total(daily, this), total(daily, last)),
-             "w cost %d %d" % (cents(total(daily_cost, this)), cents(total(daily_cost, last))),
-             "w msgs %d %d" % (total(msgs, this), total(msgs, last)),
-             "w sessions %d %d" % (sum(sessions_on(stats, d) for d in this),
-                                   sum(sessions_on(stats, d) for d in last)),
-             "w tools %d %d" % (total(tools_by_day, this), total(tools_by_day, last)),
-             "w days %d %d" % (sum(1 for d in this if daily.get(d, 0) > 0),
-                               sum(1 for d in last if daily.get(d, 0) > 0))]
-    # Fourteen days of tokens, oldest first, for the two rows of bars.
-    lines.append("grid %s" % "".join(grid_char(daily.get(d, 0)) for d in reversed(days)))
+def oauth_token():
+    """Claude Code's own access token, from the login keychain.
+
+    The limits are account state, not anything on disk: /usage asks the API
+    for them, and so must we. Read-only, and the token is never printed --
+    a failure here is reported as "no token", not as the thing it read.
+    """
+    try:
+        raw = subprocess.run(
+            ["security", "find-generic-password", "-s", "Claude Code-credentials", "-w"],
+            capture_output=True, text=True, timeout=10).stdout
+        creds = json.loads(raw).get("claudeAiOauth") or {}
+        token = creds.get("accessToken")
+        # An expired token would earn a 401 and a confusing empty page; say so.
+        if creds.get("expiresAt", 0) / 1000.0 < time.time():
+            return None
+        return token
+    except Exception:
+        return None
+
+
+def fetch_limits(url=LIMITS_URL):
+    """The account's rate limits as /usage sees them, or None.
+
+    Through curl rather than urllib: a stock macOS python has no CA bundle of
+    its own and every request fails to verify, while curl uses the system
+    trust store. The token goes in on stdin as a curl config file, so it is
+    never an argument and never shows up in the process list.
+    """
+    token = oauth_token()
+    if not token:
+        return None
+    config = 'url = "%s"\nheader = "Authorization: Bearer %s"\n' \
+             'header = "anthropic-beta: oauth-2025-04-20"\n' \
+             'user-agent = "claude-cli (tell)"\nsilent\nfail\n' % (url, token)
+    try:
+        out = subprocess.run(["curl", "--config", "-"], input=config,
+                             capture_output=True, text=True,
+                             timeout=LIMITS_TIMEOUT).stdout
+        return json.loads(out) if out.strip() else None
+    except Exception:
+        return None
+
+
+def seconds_until(stamp, now=None):
+    """Seconds from now to an ISO-8601 instant, floored at zero."""
+    if not stamp:
+        return 0
+    try:
+        when = dt.datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+    except ValueError:
+        return 0
+    now = now or dt.datetime.now(dt.timezone.utc)
+    return max(0, int((when - now).total_seconds()))
+
+
+SEVERITY = {"normal": 0, "warning": 1, "critical": 2}
+
+
+def render_limits(usage=None, now=None):
+    """The !limits payload: each limit window as a percentage and a countdown.
+
+    The reset goes out as seconds remaining rather than a wall-clock time, so
+    the board counts it down against its own uptime and needs no calendar.
+    """
+    if usage is None:
+        usage = fetch_limits()
+    lines = ["!limits", "host %s" % host_name()]
+    if not usage:
+        return lines
+
+    for row in usage.get("limits") or ():
+        kind = {"session": "session",
+                "weekly_all": "weekly",
+                "weekly_scoped": "model"}.get(row.get("kind"))
+        if kind is None:
+            continue
+        scope = ((row.get("scope") or {}).get("model") or {}).get("display_name")
+        lines.append("lim %s %d %d %d %d %s" % (
+            kind,
+            int(round(row.get("percent") or 0)),
+            seconds_until(row.get("resets_at"), now),
+            1 if row.get("is_active") else 0,
+            SEVERITY.get(row.get("severity"), 0),
+            (scope or "-").replace(" ", "_")[:15]))
+
+    # Extra usage: what carries on paying once the weekly allowance is gone.
+    extra = usage.get("extra_usage") or {}
+    if extra.get("is_enabled"):
+        lines.append("credits %d %d %d %s" % (
+            int(round(extra.get("used_credits") or 0)),
+            int(round(extra.get("monthly_limit") or 0)),
+            int(round(extra.get("utilization") or 0)),
+            (extra.get("currency") or "")[:4]))
     return lines
 
 
@@ -1200,8 +1278,8 @@ def render_data(stats, section, today=None):
         return render_turns(stats, today)
     if section == "runs":
         return render_runs(stats)
-    if section == "week":
-        return render_week(stats, today)
+    if section == "limits":
+        return render_limits()
     if section == "records":
         return render_records(stats)
     if section == "tools":
@@ -1494,14 +1572,36 @@ def self_test():
     fake["sessions_by_day"] = {"2026-09-07": {"a", "b"}}
     fake["cache_sessions_by_day"] = {"2026-08-30": 5}
     fake["daily_tools"] = collections.Counter({"2026-09-07": 42, "2026-08-31": 7})
-    payload = "\n".join(render_week(fake, dt.date(2026, 9, 7)))
-    grid = [l for l in payload.split("\n") if l.startswith("grid ")][0][5:]
-    if "w tokens 28000 1000" not in payload or "w msgs 15 40" not in payload \
-            or "w sessions 2 5" not in payload or "w tools 42 7" not in payload \
-            or "w days 7 2" not in payload or len(grid) != 14 or grid[-1] == "." or grid[0] != ".":
-        print("FAIL week payload:\n%s" % payload)
+    # Limits, from a canned reply rather than the network: the shape of the
+    # payload is what is being checked, and a self-test must not need an
+    # account or a token to run.
+    now = dt.datetime(2026, 9, 10, 12, 0, tzinfo=dt.timezone.utc)
+    usage = {"limits": [
+        {"kind": "session", "percent": 4, "severity": "normal",
+         "resets_at": "2026-09-10T16:00:00+00:00", "scope": None, "is_active": False},
+        {"kind": "weekly_all", "percent": 56, "severity": "normal",
+         "resets_at": "2026-09-11T03:00:00+00:00", "scope": None, "is_active": False},
+        {"kind": "weekly_scoped", "percent": 100, "severity": "critical",
+         "resets_at": "2026-09-11T03:00:00+00:00", "is_active": True,
+         "scope": {"model": {"display_name": "Fable"}}},
+        {"kind": "something_new", "percent": 3, "resets_at": None},
+    ], "extra_usage": {"is_enabled": True, "monthly_limit": 15000,
+                       "used_credits": 10574.0, "utilization": 70.49,
+                       "currency": "CAD"}}
+    payload = "\n".join(render_limits(usage, now))
+    if "lim session 4 14400 0 0 -" not in payload \
+            or "lim weekly 56 54000 0 0 -" not in payload \
+            or "lim model 100 54000 1 2 Fable" not in payload \
+            or "credits 10574 15000 70 CAD" not in payload \
+            or "something_new" in payload:
+        print("FAIL limits payload:\n%s" % payload)
         failures += 1
-    print("ok   week payload (%d bytes)" % len(payload))
+    print("ok   limits payload (%d bytes)" % len(payload))
+
+    if render_limits({}, now) != ["!limits", "host %s" % host_name()]:
+        print("FAIL limits payload with nothing to report")
+        failures += 1
+    print("ok   limits payload is empty when the account says nothing")
 
     fake["session_spans"] = {"a": [dt.datetime(2026, 9, 1, 9).timestamp(),
                                    dt.datetime(2026, 9, 1, 12).timestamp()]}
@@ -1594,7 +1694,7 @@ def main():
     ap.add_argument("--format", choices=("ascii", "data"), default="ascii")
     ap.add_argument("--section",
                     choices=("stats", "daily", "year", "cost", "rhythm", "now",
-                             "projects", "cache", "tools", "thinking", "week",
+                             "projects", "cache", "tools", "thinking", "limits",
                              "records", "runs", "turns"),
                     default="stats")
     ap.add_argument("--no-cache", action="store_true",
@@ -1610,7 +1710,7 @@ def main():
     if a.all:
         os.makedirs(a.all, exist_ok=True)
         for section in ("stats", "daily", "year", "cost", "rhythm", "now",
-                        "projects", "cache", "tools", "thinking", "week", "records",
+                        "projects", "cache", "tools", "thinking", "limits", "records",
                         "runs", "turns"):
             with open(os.path.join(a.all, section + ".txt"), "w") as f:
                 f.write("\n".join(render_data(stats, section)) + "\n")

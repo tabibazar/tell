@@ -123,6 +123,52 @@ units that touch hardware.
 make -C host_tests && for t in host_tests/test_*; do [ -x "$t" ] && "$t"; done
 ```
 
+## Double-tapping a menu tile
+
+A tile on the menu opens its page on a single tap and strikes it off the
+screensaver's round on a double tap. The struck-off set is a bit per page in
+NVS under `cyc_off`, and `cycle_skip()` in `main.c` ORs it into the pages the
+saver already refuses to visit.
+
+**The single tap is deliberately late.** It cannot fire until the double-tap
+window (`MENU_DOUBLE_US`, 400 ms) has passed without a second tap, because
+the alternative -- open the page, then undo it when the second tap arrives --
+flashes a page nobody asked for. The delay is paid on the menu alone. The
+tile lights up the instant it is touched, so the wait is something you can
+see rather than lag you feel.
+
+**Only pages the saver would visit can be struck off.** `toggle_cycle()`
+refuses pages whose `in_saver` is false, because setting a bit that changes
+nothing would still draw a mark that claims it did.
+
+## The limits page talks to the API
+
+Every other page is derived from files on this Mac. `!limits` is not: it is
+the account's rate limits, which live only behind Claude Code's `/usage`
+endpoint, so `render_limits` in `tools/claude-stats.py` fetches
+`https://api.anthropic.com/api/oauth/usage` with the OAuth token from the
+login keychain.
+
+Two things about that are worth knowing before you touch it.
+
+**It goes through `curl`, not `urllib`.** A stock macOS Python has no CA
+bundle of its own, so every `urllib` request to that host fails to verify;
+`curl` uses the system trust store and just works. The token is written into
+a `curl` config file on stdin rather than passed as an argument, so it never
+appears in the process list.
+
+**Every failure is silent and total.** No token, an expired one, no network:
+`fetch_limits` returns `None`, the payload goes out as a bare marker, and the
+page says it has nothing yet. That is deliberate -- this runs on a timer with
+no one watching, and a collector that raised would take the other thirteen
+sections down with it.
+
+The reset times are converted to *seconds remaining* before they are sent.
+The board has no calendar, only an uptime and a clock it was told, so a
+wall-clock reset would need timezone and date arithmetic on the firmware
+side. Seconds remaining need a subtraction, and the arithmetic that matters
+already happened on a machine that knows what day it is.
+
 ## The Feather's IMU
 
 The small board has a QMI8658 on its STEMMA QT bus at `0x6B` — SDA 42, SCL 41,
@@ -130,17 +176,25 @@ powered from GPIO21 along with the panel — left over from its stock firmware.
 The I²C pins are board dependent, `CONFIG_SCREEN_I2C_SDA`/`_SCL`, because the
 CrowPanel wires its GT911 to GPIO19/20 instead.
 
-It drives one page, `!level`: a bullseye spirit level that doubles as a game,
-since holding a board flat by hand is harder than it sounds. `main/level.c` is
-pure C and takes two angles, so it is tested on the host like everything else
-here. Only the axis mapping needed the board.
+It drives two pages, neither of which exists on the big board:
+
+| | |
+|---|---|
+| `!level` | a bullseye spirit level that doubles as a game, since holding a board flat by hand is harder than it sounds |
+| `!particles` | a bottle of sand that pours as you tilt it, scatters when shaken and stirs when spun |
+
+`main/level.c` takes two angles and `main/particles.c` a gravity vector; both
+are pure C, so they are tested on the host like everything else here. Only the
+axis mapping needed the board. The sand keeps its own fast gravity filter in
+`main.c`, separate from the level's slow one: the liquid wants to feel the
+board move, and an instrument wants to be read.
 
 **The big board is not compiled with any of it.** `main/CMakeLists.txt`
-excludes `qmi8658.c` and `level.c` from the CrowPanel build the same way it
-excludes the wrong display driver. What remains shared is one row in
-`pagedefs.c` and three rows in `ud_sections.c`; `main.c` clears
-`PAGE_BIT(PAGE_LEVEL)` on any board without the sensor, so the page is never
-offered and the markers do nothing.
+excludes `qmi8658.c`, `level.c` and `particles.c` from the CrowPanel build the
+same way it excludes the wrong display driver. What remains shared is two rows
+in `pagedefs.c` and five rows in `ud_sections.c`; `main.c` clears both page
+bits on any board without the sensor, so the pages are never offered and the
+markers do nothing.
 
 **The axis signs cannot be worked out from a still reading.** Gravity has no
 component along an axis that is level, so the only way to know is to tilt the

@@ -46,9 +46,8 @@ void views_tools(canvas_t *c, const ud_view_t *d, float t, int64_t now_us);
 /* Thinking share: how much of each model's output was thinking. */
 void views_thinking(canvas_t *c, const ud_view_t *d, float t, int64_t now_us);
 
-/* This week against last: six figures with their change, and two rows of
-   daily bars. `t` grows the bars. */
-void views_week(canvas_t *c, const ud_view_t *d, float t, int64_t now_us);
+/* The account's limits: a bar and a live countdown for each window. */
+void views_limits(canvas_t *c, const ud_view_t *d, float t, int64_t now_us);
 
 /* Records: personal bests, each with the day it happened. */
 void views_records(canvas_t *c, const ud_view_t *d, float t, int64_t now_us);
@@ -61,7 +60,9 @@ void views_runs(canvas_t *c, const ud_view_t *d, float t, int64_t now_us);
 void views_turns(canvas_t *c, const ud_view_t *d, float t, int64_t now_us);
 
 /* The menu: a tile per available page. Tap one to go there. */
-void views_menu(canvas_t *c, const pages_t *p);
+/* `cycle_off` is a bit per page the screensaver skips, drawn struck
+   through; `held` is the tile under a finger, or PAGE_COUNT for none. */
+void views_menu(canvas_t *c, const pages_t *p, unsigned cycle_off, page_t held);
 
 /* True when a tap at display pixel (x, y) landed on a menu tile, with the
    page it stands for. */

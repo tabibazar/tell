@@ -12,11 +12,12 @@ extern const ud_section_t ud_section_projects;
 extern const ud_section_t ud_section_cache;
 extern const ud_section_t ud_section_tools;
 extern const ud_section_t ud_section_thinking;
-extern const ud_section_t ud_section_week;
+extern const ud_section_t ud_section_limits;
 extern const ud_section_t ud_section_records;
 extern const ud_section_t ud_section_runs;
 extern const ud_section_t ud_section_turns;
 extern const ud_section_t ud_section_story;
+extern const ud_section_t ud_section_particles;
 extern const ud_section_t ud_section_level;
 extern const ud_section_t ud_section_flip;
 extern const ud_section_t ud_section_zero;
@@ -37,15 +38,16 @@ const ud_section_t *const ud_sections[] = {
     &ud_section_cache,
     &ud_section_tools,
     &ud_section_thinking,
-    &ud_section_week,
+    &ud_section_limits,
     &ud_section_records,
     &ud_section_runs,
     &ud_section_turns,
     &ud_section_story,
-    /* The Feather's level. The big board has no IMU and never offers the
+    /* The Feather's sand and level. The big board has no IMU and never offers the
        page, so these three do nothing there; they are registered anyway
        because the registry is a plain table and a board-conditional one
        would cost more clarity than the three rows are worth. */
+    &ud_section_particles,
     &ud_section_level,
     &ud_section_flip,
     &ud_section_zero,

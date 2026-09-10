@@ -1,10 +1,14 @@
 #!/bin/sh
-# Push the usage pages to a board, every five minutes. Fourteen messages,
-# because each marker replaces exactly one section: models (the bar and line pages), days, the
-# year heatmap, the API-equivalent cost, the weekday-by-hour rhythm, today,
-# projects, cache use, tools, thinking, this week against last, records, the
-# programs behind the Bash calls, and turn timing. Data updates the board silently; it does not
-# steal whatever page you are looking at.
+# Push the usage pages to a board, every five minutes. Thirteen messages,
+# because each marker replaces exactly one section: models (the bar and line
+# pages), days, the year heatmap, the API-equivalent cost, the weekday-by-hour
+# rhythm, today, projects, cache use, tools, thinking, records, the programs
+# behind the Bash calls, and turn timing. Data updates the board silently; it
+# does not steal whatever page you are looking at.
+#
+# The account's limits are not here: they come from the API rather than the
+# transcripts and want to be fresher than five minutes, so push-now.sh sends
+# them every minute alongside the live section.
 set -e
 cd "$(dirname "$0")/.."
 DEVICE="${1:-big}"
@@ -26,7 +30,7 @@ trap 'rmdir "$LOCK"' EXIT
 OUT=$(mktemp -d /tmp/claude-stats.XXXXXX)
 trap 'rmdir "$LOCK"; rm -rf "$OUT"' EXIT
 ./tools/claude-stats.py --format data --all "$OUT"
-for section in stats daily year cost rhythm now projects cache tools thinking week records runs turns; do
+for section in stats daily year cost rhythm now projects cache tools thinking records runs turns; do
     [ -s "$OUT/$section.txt" ] && ./tools/tell-locked.sh --device "$DEVICE" < "$OUT/$section.txt"
 done
-echo "pushed fourteen sections to $DEVICE"
+echo "pushed thirteen sections to $DEVICE"

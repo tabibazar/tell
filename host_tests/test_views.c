@@ -47,6 +47,19 @@ static int lit_in(int x0, int y0, int x1, int y1)
     return n;
 }
 
+/* How much of a bar is filled, as opposed to trough: the empty part of a
+   bar is drawn in a dark grey rather than left black, so "lit" would count a
+   bar that is entirely empty. */
+#define TROUGH 0x2124
+static int filled_in(int x0, int y0, int x1, int y1)
+{
+    int n = 0;
+    for (int y = y0; y < y1; y++)
+        for (int x = x0; x < x1; x++)
+            if (fb[y * W + x] != PAL_BG && fb[y * W + x] != TROUGH) n++;
+    return n;
+}
+
 static int count_colour(uint16_t colour)
 {
     int n = 0;
@@ -198,9 +211,10 @@ static void synthetic(void)
         usagedata_parse(&data, think, 1000000);
     }
 
-    usagedata_parse(&data, "!week\nhost air\ntoday 20703\nw tokens 638480337 1807285709\n"
-                           "w cost 71205 123980\nw msgs 5105 10751\nw sessions 12 9\n"
-                           "w tools 1760 2356\nw days 4 5\ngrid ZWcc..bZZY...Y\n", 1000000);
+    usagedata_parse(&data, "!limits\nhost air\nlim session 4 9012 0 0 -\n"
+                           "lim weekly 56 281012 0 0 -\n"
+                           "lim model 100 281012 1 2 Fable\n"
+                           "credits 10574 15000 70 CAD\n", 1000000);
     usagedata_parse(&data, "!records\nhost air\nr bigday 1448000000 20686\n"
                            "r costday 36200 20686\nr msgs 4400 20686\nr streak 12 20703\n"
                            "r session 1628367 20651\nr toolsess 1200 20690\n"
@@ -373,17 +387,28 @@ int main(int argc, char **argv)
     views_thinking(&cv, &empty, 1.0f, now);
     expect("empty thinking page shows a message", lit_in(0, 48, W, 72) > 0);
 
-    /* This week against last. */
-    views_week(&cv, &view, 1.0f, now);
-    save(prefix, "week");
-    expect("week present", view.week.present);
-    expect("week table drawn", lit_in(0, 3 * 24, W, 9 * 24) > 500);
-    expect("week bars drawn on both sides",
-           lit_in(2 * 12, 11 * 24, 30 * 12, 17 * 24) > 200 && lit_in(34 * 12, 11 * 24, 62 * 12, 17 * 24) > 200);
-    expect("weekday letters drawn", lit_in(2 * 12, 17 * 24, 62 * 12, 18 * 24) > 0);
-    expect("week text stops short of the right edge", lit_in(W - 12, 24, W, H) == 0);
-    views_week(&cv, &empty, 1.0f, now);
-    expect("empty week page shows a message", lit_in(0, 48, W, 72) > 0);
+    /* The account's limits, with their countdowns. */
+    views_limits(&cv, &view, 1.0f, now);
+    save(prefix, "limits");
+    expect("limits present", view.limits.present && view.limits.count == 3);
+    expect("a trough drawn for each of the three limits",
+           lit_in(2 * 12, 3 * 24, 62 * 12, 4 * 24) > 200
+           && lit_in(2 * 12, 7 * 24, 62 * 12, 8 * 24) > 200
+           && lit_in(2 * 12, 11 * 24, 62 * 12, 12 * 24) > 200);
+    expect("each bar is filled in proportion",
+           filled_in(2 * 12, 3 * 24, 62 * 12, 4 * 24)
+             < filled_in(2 * 12, 7 * 24, 62 * 12, 8 * 24)
+           && filled_in(2 * 12, 7 * 24, 62 * 12, 8 * 24)
+             < filled_in(2 * 12, 11 * 24, 62 * 12, 12 * 24));
+    expect("the spent limit's bar reaches the right edge",
+           filled_in(60 * 12, 11 * 24, 62 * 12, 12 * 24) > 0);
+    expect("the barely-used one's stops early",
+           filled_in(40 * 12, 3 * 24, 62 * 12, 4 * 24) == 0);
+    expect("the spent limit is drawn in the warning colour",
+           count_colour(PAL_A5) > 500);
+    expect("limits text stops short of the right edge", lit_in(W - 12, 24, W, H) == 0);
+    views_limits(&cv, &empty, 1.0f, now);
+    expect("empty limits page shows a message", lit_in(0, 48, W, 72) > 0);
 
     /* Records. */
     views_records(&cv, &view, 1.0f, now);
@@ -482,10 +507,13 @@ int main(int argc, char **argv)
         for (int i = 0; i < PAGE_COUNT; i++) all |= PAGE_BIT(i);
         pages_init(&pg, all);
         pages_show(&pg, PAGE_MENU, 1000);
-        views_menu(&cv, &pg);
+        views_menu(&cv, &pg, 0, PAGE_COUNT);
         save(prefix, "menu");
         expect("menu draws tiles", lit_in(0, 30, W, H) > 5000);
         expect("menu stays inside the panel", lit_in(W - 4, 24, W, H) == 0);
+        /* Tile plates already cover the panel in a non-black grey, so "lit"
+           cannot see either mark. Count the colours instead. */
+        int plain_dim = count_colour(PAL_DIM), plain_held = count_colour(0x39C7);
         int hits = 0, misses = 0, wrong = 0, tiles = 0;
         for (int i = 0; i < PAGE_COUNT; i++) {
             if (i == PAGE_MENU) continue;
@@ -502,8 +530,29 @@ int main(int argc, char **argv)
         expect("and each names its page", wrong == 0);
         page_t got;
         expect("the title bar is not a tile", !views_menu_hit(&cv, &pg, 400, 10, &got));
+        /* A page struck off the saver is marked, and the mark is drawn on
+           top of the tile rather than in place of it: the page is still
+           there to be opened. */
+        views_menu(&cv, &pg, PAGE_BIT(PAGE_CLOCK), PAGE_COUNT);
+        save(prefix, "menu-skipped");
+        expect("striking a page off marks its tile", count_colour(PAL_DIM) > plain_dim);
+        page_t still;
+        expect("a struck-off tile can still be opened",
+               views_menu_hit(&cv, &pg, W / 8, 30 + 40, &still) && still == PAGE_CLOCK);
+        expect("and only that tile is marked",
+               (views_menu(&cv, &pg, PAGE_BIT(PAGE_CLOCK) | PAGE_BIT(PAGE_STATS), PAGE_COUNT),
+                count_colour(PAL_DIM) > plain_dim));
+
+        /* The tile under a finger, while the board waits for a second tap. */
+        views_menu(&cv, &pg, 0, PAGE_CLOCK);
+        save(prefix, "menu-held");
+        expect("the held tile is lit", count_colour(0x39C7) > 1000);
+        views_menu(&cv, &pg, 0, PAGE_COUNT);
+        expect("and unlit again once it is let go",
+               count_colour(0x39C7) == plain_held && count_colour(PAL_DIM) == plain_dim);
+
         pages_init(&pg, PAGE_BIT(PAGE_CLOCK) | PAGE_BIT(PAGE_MENU) | PAGE_BIT(PAGE_MESSAGE));
-        views_menu(&cv, &pg);
+        views_menu(&cv, &pg, 0, PAGE_COUNT);
         expect("a board with two pages shows two tiles",
                views_menu_hit(&cv, &pg, W / 8, 70, &got) && got == PAGE_CLOCK
                && views_menu_hit(&cv, &pg, W / 4 + W / 8, 70, &got) && got == PAGE_MESSAGE
