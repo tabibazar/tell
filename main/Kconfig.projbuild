@@ -12,11 +12,15 @@ config SCREEN_BOARD_FEATHER_S3_TFT
 config SCREEN_BOARD_CROWPANEL_7
     bool "Elecrow CrowPanel 7.0 HMI (800x480, 16-bit RGB)"
 
+config SCREEN_BOARD_TDISPLAY_S3
+    bool "LilyGO T-Display-S3 (ST7789 320x170, 8-bit i80)"
+
 endchoice
 
 config SCREEN_DEVICE_NAME
     string "Advertised BLE name"
     default "big" if SCREEN_BOARD_CROWPANEL_7
+    default "lilly" if SCREEN_BOARD_TDISPLAY_S3
     default "small"
     help
         The name this board advertises. Give each board on your desk a
@@ -25,14 +29,17 @@ config SCREEN_DEVICE_NAME
 config SCREEN_I2C_SDA
     int "I2C SDA pin"
     default 19 if SCREEN_BOARD_CROWPANEL_7
+    default 18 if SCREEN_BOARD_TDISPLAY_S3
     default 42
     help
         The CrowPanel wires its GT911 touch controller to GPIO19/20. The
         Feather's STEMMA QT port is GPIO42/41, from Adafruit's board variant.
+        The T-Display-S3 brings its bus out on GPIO18/17.
 
 config SCREEN_I2C_SCL
     int "I2C SCL pin"
     default 20 if SCREEN_BOARD_CROWPANEL_7
+    default 17 if SCREEN_BOARD_TDISPLAY_S3
     default 41
 
 endmenu

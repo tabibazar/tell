@@ -44,7 +44,16 @@ idf.py -B build-crowpanel \
   -D SDKCONFIG=sdkconfig.crowpanel build
 esptool.py --chip esp32s3 --port /dev/cu.usbserial-* write_flash \
   0x10000 build-crowpanel/screen.bin
+
+# T-Display-S3, lilly
+idf.py -B build-lilly \
+  -D SDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.defaults.lilly" \
+  -D SDKCONFIG=sdkconfig.lilly build
+tools/flash-lilly.sh --full     # first flash only; app alone after that
 ```
+
+See [hardware/t-display-s3.md](hardware/t-display-s3.md) for lilly's pin map
+and the offsets that still need confirming on hardware.
 
 ## Traps, each of which cost an hour or more
 
@@ -58,7 +67,9 @@ flash in chunks with retries rather than in one pass.
 also write the bootloader and partition table, destroying TinyUF2 — the
 double-tap-RESET recovery drive. `idf.py` even *suggests* `0x2d0000` for the
 app, because the partition table labels the TinyUF2 slot `factory`. Ignore it.
-The CrowPanel has no TinyUF2, so it takes all three images.
+The CrowPanel has no TinyUF2, so it takes all three images. Neither does
+lilly, but only on her first flash — `tools/flash-lilly.sh` writes the app
+alone unless you pass `--full`.
 
 **Check the binary's timestamp before flashing.** A failed build leaves the
 previous `screen.bin` in place, and esptool will happily flash it. This has

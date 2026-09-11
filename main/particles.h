@@ -28,10 +28,17 @@
 
 /* The bucket grid, one cell per CELL pixels. CELL must be at least twice the
    radius, so every grain close enough to matter is in one of the nine cells
-   around this one. */
+   around this one.
+
+   The grid is sized for the largest panel that runs this, lilly's 320x170:
+   320/10+1 by 170/10+1, which also covers the Feather's 240x135. It must
+   never be smaller than the panel it is given,
+   because particles_init clamps rather than growing, and a clamped grid folds
+   the far columns together so grains there stop separating. A panel wider
+   than 320 therefore needs these raised, not just a bigger n. */
 #define PARTICLES_CELL 10
-#define PARTICLES_GRID_W 40
-#define PARTICLES_GRID_H 24
+#define PARTICLES_GRID_W 33
+#define PARTICLES_GRID_H 18
 #define PARTICLES_CELLS (PARTICLES_GRID_W * PARTICLES_GRID_H)
 
 typedef struct {
@@ -54,6 +61,13 @@ typedef struct {
     float vgx[PARTICLES_CELLS];         /* mean velocity, for viscosity */
     float vgy[PARTICLES_CELLS];
 } particles_t;
+
+/* How many grains a w x h panel wants, so the bottle looks equally full on
+   any of them. The density is the one the Feather's 240x135 was tuned to by
+   eye at 190 grains; lilly's 320x170 comes out at 320. Clamped to
+   PARTICLES_MAX. */
+#define PARTICLES_PIXELS_EACH 170
+int particles_for(int w, int h);
 
 /* Scatters `n` grains over a w x h panel. `n` is clamped to PARTICLES_MAX. */
 void particles_init(particles_t *s, int n, int w, int h, uint32_t seed);

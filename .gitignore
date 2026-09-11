@@ -1,5 +1,6 @@
 *.dSYM/
 build-crowpanel/
+build-lilly/
 build/
 dist/
 firmware-backup/
@@ -8,6 +9,7 @@ host_tests/test_font
 host_tests/test_font_clock
 host_tests/test_logview
 host_tests/test_pages
+host_tests/test_particles
 host_tests/test_level
 host_tests/test_particles
 host_tests/test_textwrap
@@ -20,6 +22,8 @@ mac/tell
 sdkconfig
 sdkconfig.crowpanel
 sdkconfig.crowpanel.old
+sdkconfig.lilly
+sdkconfig.lilly.old
 sdkconfig.old
 .claude/settings.local.json
 

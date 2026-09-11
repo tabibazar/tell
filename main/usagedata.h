@@ -481,8 +481,9 @@ typedef enum {
     UD_RHYTHM, UD_NOW, UD_PROJECTS, UD_CACHE, UD_TOOLS, UD_THINKING,
     UD_LIMITS, UD_RECORDS, UD_RUNS, UD_TURNS, UD_STORY,
     /* Commands rather than data: they carry no payload and exist so the
-       Feather's sand and spirit level can be reached and adjusted from a Mac. The big
-       board never registers them; the kinds cost it nothing but a name. */
+       boards' IMU pages can be reached and adjusted from a Mac -- the
+       sand or liquid, and the Feather's spirit level. A board without the
+       sensor never offers the page; the kinds cost it nothing but a name. */
     UD_PARTICLES, UD_LEVEL, UD_FLIP, UD_ZERO, UD_NEWGAME,
     UD_KIND_COUNT
 } ud_kind_t;

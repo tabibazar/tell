@@ -3,13 +3,15 @@
 #include <stddef.h>
 
 /*
- * The Feather's spirit level is reached and adjusted by marker, like
- * everything else, but these markers carry no data: they are commands. They
+ * The IMU pages -- the Feather's spirit level and lilly's liquid -- are
+ * reached and adjusted by marker, like everything else, but these markers
+ * carry no data: they are commands. They
  * are sections anyway so that every marker the board understands lives in one
  * registry rather than as special cases scattered through the parser, and
  * main acts on the kind that comes back.
  *
- * This file is not compiled for the big board, which has no IMU.
+ * Every board compiles this. A board with no IMU never offers the pages, so
+ * the markers simply do nothing there.
  */
 static void no_payload(usagedata_t *d, ud_host_t *h,
                        const char *tag, const char *rest)

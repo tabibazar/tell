@@ -36,6 +36,13 @@ static float frand(particles_t *s, float lo, float hi)
     return lo + (float)(next_rand(s) % 10000u) / 10000.0f * (hi - lo);
 }
 
+int particles_for(int w, int h)
+{
+    if (w <= 0 || h <= 0) return 0;
+    int n = w * h / PARTICLES_PIXELS_EACH;
+    return n > PARTICLES_MAX ? PARTICLES_MAX : n;
+}
+
 void particles_init(particles_t *s, int n, int w, int h, uint32_t seed)
 {
     if (n > PARTICLES_MAX) n = PARTICLES_MAX;

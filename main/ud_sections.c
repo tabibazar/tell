@@ -43,10 +43,11 @@ const ud_section_t *const ud_sections[] = {
     &ud_section_runs,
     &ud_section_turns,
     &ud_section_story,
-    /* The Feather's sand and level. The big board has no IMU and never offers the
-       page, so these three do nothing there; they are registered anyway
-       because the registry is a plain table and a board-conditional one
-       would cost more clarity than the three rows are worth. */
+    /* The IMU pages: the sand or liquid, and the Feather's spirit level.
+       A board with no sensor never offers them, so they do nothing there;
+       they are registered anyway because the registry is a plain table and
+       a board-conditional one would cost more clarity than the rows are
+       worth. */
     &ud_section_particles,
     &ud_section_level,
     &ud_section_flip,

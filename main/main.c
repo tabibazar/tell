@@ -1,10 +1,12 @@
 #include "display.h"
 #include "ble_uart.h"
+#include "buttons.h"
 #include "gt911.h"
 #include "level.h"
 #include "particles.h"
 #include "qmi8658.h"
 #include "esp_random.h"
+#include "particles.h"
 #include "pagedefs.h"
 #include "pages.h"
 #include "view_common.h"
@@ -18,6 +20,7 @@
 
 #include "esp_log.h"
 #include "nvs.h"
+#include "esp_random.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -30,7 +33,16 @@
 
 static const char *TAG = "main";
 
-#define TICK_MS 50            /* also the touch poll interval */
+#define TICK_MS 50            /* also the touch and button poll interval */
+
+/* lilly has two push buttons where the big board has a touch panel. They are
+   the only on-board way to change the page, so they matter more there than a
+   tap does here. */
+#ifdef CONFIG_SCREEN_BOARD_TDISPLAY_S3
+#define HAVE_BUTTONS 1
+#else
+#define HAVE_BUTTONS 0
+#endif
 
 
 static uint32_t s_base_secs;
@@ -79,43 +91,35 @@ static bool claude_busy(const ud_view_t *v, int64_t now)
     return since < UD_BUSY_SECS;
 }
 
-/* The sand and the spirit level, on the Feather only, both driven by its
-   QMI8658. The big board has no IMU and is not compiled with any of this. */
-#ifdef CONFIG_SCREEN_BOARD_FEATHER_S3_TFT
+/*
+ * Anything that needs the IMU. The QMI8658 is a breakout on an I2C bus, not a
+ * part soldered to a board, so which board has it is a question about where it
+ * is plugged in today: the Feather's STEMMA QT, or lilly's GPIO18/17. Only one
+ * of them can have it at a time. The CrowPanel has no IMU at all.
+ */
+#if defined(CONFIG_SCREEN_BOARD_FEATHER_S3_TFT) \
+ || defined(CONFIG_SCREEN_BOARD_TDISPLAY_S3)
+#define HAVE_IMU 1
+#else
+#define HAVE_IMU 0
+#endif
+
+/* What each board does with it. Both pour the grains; only the Feather also
+   reads the sensor as an instrument. The axis mapping below is shared,
+   because it describes the sensor rather than either page -- which is exactly
+   why the sand has to negate one component of it: a bubble floats against
+   gravity and grains fall with it. */
+#if HAVE_IMU && defined(CONFIG_SCREEN_BOARD_FEATHER_S3_TFT)
 #define HAVE_LEVEL 1
+#else
+#define HAVE_LEVEL 0
+#endif
+/* The grains pour on either board that has the sensor. */
+#define HAVE_PARTICLES HAVE_IMU
+
+#if HAVE_IMU
 static bool s_imu;
 
-/* The sand. Static, not on the stack: a few hundred grains with their bucket
-   grid is tens of kilobytes, and the main task's stack is small. */
-static particles_t s_particles;
-static int64_t s_particles_last_us;
-static float s_gx, s_gy;      /* low-passed gravity, panel pixels/s^2 */
-
-/* Gravity in pixels per second squared. A full 1 g tilt crosses the short
-   axis of the panel in about half a second, which reads as sand rather than
-   as a screensaver. */
-#define GRAVITY_PX 900.0f
-/* First-order low pass, roughly a 150 ms time constant at 20 fps. Raw
-   accelerometer output at rest is noisy enough to make a heap shiver. */
-#define GRAVITY_ALPHA 0.25f
-/* Degrees per second of twist, converted to a tangential nudge. */
-#define SWIRL_SCALE 0.00015f
-
-/*
- * Shaking is not a direction, it is energy, so it must not go through the
- * filter above. That filter has a corner around 1 Hz, which is what stops the
- * settled heap shivering on sensor noise -- but a real shake is five to ten
- * times faster, so the filter removes precisely the thing we want, and the
- * board ends up moving less the harder it is shaken.
- *
- * The residual is the other half of the same filter and has the opposite
- * response: near zero when the board is still, and near the full amplitude
- * when the reading is changing faster than the filter can follow. Feeding it
- * in as agitation scatters the pile instead of tilting it.
- */
-#define SHAKE_FLOOR 250.0f     /* residual below this is noise, not a shake */
-#define SHAKE_GAIN  0.06f      /* residual px/s^2 -> scatter px/s */
-#define SHAKE_MAX   200.0f     /* enough to lift the pile, not to blur it */
 
 /*
  * Which sensor axis is which on the panel. An accelerometer at rest reads
@@ -191,6 +195,9 @@ static void gravity_from(const qmi8658_sample_t *s, float *gx, float *gy)
     *gx = (float)s_axis_sx * across;
     *gy = (float)s_axis_sy * along;
 }
+#endif /* HAVE_IMU */
+
+#if HAVE_LEVEL
 
 /* The level keeps its own filtered copy of gravity, in g and much slower than
    the liquid's. The liquid wants to feel the board move; an instrument wants
@@ -388,6 +395,43 @@ static void draw_level(canvas_t *c)
                s_best_hold_s, s_armed);
     display_blit();
 }
+#endif /* HAVE_LEVEL */
+
+#if HAVE_PARTICLES
+/*
+ * The sand: a bottle of grains that pour towards whichever way the board is
+ * actually tilted. The physics is in particles.c, which knows nothing about
+ * sensors or panels and is tested on the host; this is only the wiring from
+ * one to the other. It runs on the Feather at 240x135 and on lilly at
+ * 320x170, which is why everything below is scaled per panel.
+ *
+ * Static, not on the stack: a few hundred grains with their bucket grid is
+ * tens of kilobytes, and the main task's stack is small.
+ */
+static particles_t s_particles;
+static int64_t s_particles_last_us;
+static float s_gx, s_gy;      /* low-passed gravity, panel coordinates */
+
+/*
+ * Gravity, the shake floor and the shake ceiling are all per panel row rather
+ * than absolute, so the liquid behaves the same on any size of screen. The
+ * numbers are the ones tuned by eye on the Feather's 135-row panel -- 900,
+ * 250 and 200 -- divided by 135. On lilly's 170 rows that comes out at about
+ * 1130, 315 and 250: a taller bottle needs proportionally stronger gravity to
+ * fall through it in the same time, or it reads as smoke.
+ */
+#define GRAVITY_PER_ROW    6.67f    /* px/s^2 per row: 1 g crosses in ~0.5 s */
+#define SHAKE_FLOOR_PER_ROW 1.85f   /* residual below this is noise */
+#define SHAKE_MAX_PER_ROW   1.48f   /* enough to lift the pile, not blur it */
+static float s_gravity_px, s_shake_floor, s_shake_max;
+
+/* First-order low pass, roughly a 150 ms time constant at 20 fps. Raw
+   accelerometer output at rest is noisy enough to make a heap shiver. */
+#define GRAVITY_ALPHA 0.25f
+/* Degrees per second of twist, converted to a tangential nudge. */
+#define SWIRL_SCALE 0.00015f
+/* Residual px/s^2 -> scatter px/s. Unitless, so it does not scale. */
+#define SHAKE_GAIN 0.06f
 
 static void draw_particles(canvas_t *c, int64_t now)
 {
@@ -409,16 +453,25 @@ static void draw_particles(canvas_t *c, int64_t now)
 
         /* The filter's own error, before it is applied: how far the board is
            from where the slow view of gravity thinks it is. */
-        float rx = gx * GRAVITY_PX - s_gx;
-        float ry = gy * GRAVITY_PX - s_gy;
+        float rx = gx * s_gravity_px - s_gx;
+        float ry = gy * s_gravity_px - s_gy;
 
         s_gx += rx * GRAVITY_ALPHA;
         s_gy += ry * GRAVITY_ALPHA;
 
-        float shake = sqrtf(rx * rx + ry * ry) - SHAKE_FLOOR;
+        /*
+         * Shaking is not a direction, it is energy, so it must not go through
+         * the filter above. That filter has a corner around 1 Hz, which is
+         * what stops the settled heap shivering on sensor noise -- but a real
+         * shake is five to ten times faster, so the filter removes precisely
+         * the thing we want, and the board ends up moving less the harder it
+         * is shaken. The residual is the other half of the same filter and
+         * has the opposite response.
+         */
+        float shake = sqrtf(rx * rx + ry * ry) - s_shake_floor;
         if (shake > 0.0f) {
             float scatter = shake * SHAKE_GAIN;
-            if (scatter > SHAKE_MAX) scatter = SHAKE_MAX;
+            if (scatter > s_shake_max) scatter = s_shake_max;
             particles_agitate(&s_particles, scatter);
         }
         /* Spinning the board stirs the pile. Garnish; nothing depends on it. */
@@ -429,10 +482,7 @@ static void draw_particles(canvas_t *c, int64_t now)
     particles_draw(&s_particles, c);
     display_blit();
 }
-
-#else
-#define HAVE_LEVEL 0
-#endif
+#endif /* HAVE_PARTICLES */
 
 /* Charts grow into place when a page appears; 0 means no animation running. */
 #define ANIM_US (600 * 1000LL)
@@ -537,17 +587,22 @@ static void on_message(const char *text, size_t len)
         if (s_data.have_utc) s_zone_dirty = true;
         return;
     }
-#if HAVE_LEVEL
+#if HAVE_IMU
     /* Commands, not data: unlike the charts these were asked for, so they do
-       take the view. */
-    if (kind == UD_PARTICLES) {
+       take the view. "!flip" belongs to whichever IMU page this board has,
+       because the axes it corrects are the sensor's, not the page's. */
+    if (kind == UD_FLIP) axis_command(text);
+#endif
+#if HAVE_PARTICLES
+    if (kind == UD_PARTICLES || kind == UD_FLIP) {
         pages_show(&s_pages, PAGE_PARTICLES, now);
         s_drawn_page = PAGE_COUNT;
         return;
     }
+#endif
+#if HAVE_LEVEL
     if (kind == UD_LEVEL || kind == UD_FLIP || kind == UD_ZERO
      || kind == UD_NEWGAME) {
-        if (kind == UD_FLIP) axis_command(text);
         if (kind == UD_ZERO) zero_command(text);
         if (kind == UD_NEWGAME) {
             /* Wipe the scoreboard. A score set before the clock knew to ask
@@ -668,6 +723,10 @@ void app_main(void)
     }
 
     bool touch = false, big = false;
+#if HAVE_BUTTONS
+    /* Losing the buttons costs navigation, not the display, so carry on. */
+    if (buttons_init() != ESP_OK) ESP_LOGW(TAG, "buttons unavailable");
+#endif
 #ifdef CONFIG_SCREEN_BOARD_CROWPANEL_7
     big = true;
     touch = gt911_init() == ESP_OK;
@@ -681,14 +740,21 @@ void app_main(void)
         if (pd->needs_touch && !touch) continue;
         available |= PAGE_BIT(i);
     }
-#if HAVE_LEVEL
-    /* The sand and the level need a sensor, which the page table cannot know
-       about: it describes boards, and this is a question about one board's
-       hardware. */
+    /* Both IMU pages need a sensor, which the page table cannot know about:
+       it describes boards, and this is a question about what is plugged into
+       one today. A board compiled without either never offers them at all. */
+    unsigned imu_pages = PAGE_BIT(PAGE_LEVEL) | PAGE_BIT(PAGE_PARTICLES);
+#if HAVE_IMU
     s_imu = qmi8658_init() == ESP_OK;
-    if (!s_imu) available &= ~(PAGE_BIT(PAGE_PARTICLES) | PAGE_BIT(PAGE_LEVEL));
+    if (!s_imu) available &= ~imu_pages;
 #else
-    available &= ~(PAGE_BIT(PAGE_PARTICLES) | PAGE_BIT(PAGE_LEVEL));
+    available &= ~imu_pages;
+#endif
+#if !HAVE_LEVEL
+    available &= ~PAGE_BIT(PAGE_LEVEL);
+#endif
+#if !HAVE_PARTICLES
+    available &= ~PAGE_BIT(PAGE_PARTICLES);
 #endif
 #ifdef CONFIG_SCREEN_BOARD_CROWPANEL_7
     /* The clock chip shares the touch bus. If it knows the time, start from
@@ -719,16 +785,24 @@ void app_main(void)
        any Mac has spoken this boot. */
     if (settings_load_zone(&s_data.utc_offset_min, s_data.tz, (int)sizeof s_data.tz))
         s_data.have_utc = true;
-    settings_load_cycle_off(&s_cycle_off);
+#if HAVE_IMU
+    if (s_imu) axis_load();      /* the sensor's, so both pages want it */
+#endif
 #if HAVE_LEVEL
+    if (s_imu) zero_load();
+#endif
+#if HAVE_PARTICLES
     if (s_imu) {
-        axis_load();
-        zero_load();
-        /* Seeded from the radio's entropy rather than a constant, so the
-           grains do not land in the same places every boot. */
+        /* Seeded from the hardware RNG rather than a constant, so the grains
+           do not land in the same places every boot. Bluetooth is already
+           running, so it is properly seeded. */
         uint32_t seed = esp_random();
-        if (seed == 0) seed = (uint32_t)esp_timer_get_time() | 1u;
-        particles_init(&s_particles, 190, c->w, c->h, seed);
+        s_gravity_px  = GRAVITY_PER_ROW * (float)c->h;
+        s_shake_floor = SHAKE_FLOOR_PER_ROW * (float)c->h;
+        s_shake_max   = SHAKE_MAX_PER_ROW * (float)c->h;
+        particles_init(&s_particles, particles_for(c->w, c->h), c->w, c->h, seed);
+        ESP_LOGI(TAG, "sand: %d grains on %dx%d, gravity %.0f, seed 0x%08X",
+                 s_particles.n, c->w, c->h, (double)s_gravity_px, (unsigned)seed);
     }
 #endif
     pages_show(&s_pages, home_page(), esp_timer_get_time());
@@ -748,6 +822,10 @@ void app_main(void)
         if (s_imu && (s_pages.current == PAGE_LEVEL
                    || s_pages.current == PAGE_PARTICLES))
             period_us = 33000;      /* 30 fps while the sensor drives it */
+#endif
+#if HAVE_PARTICLES
+        if (s_imu && s_pages.current == PAGE_PARTICLES)
+            period_us = 33000;      /* the liquid wants every frame it can get */
 #endif
         int64_t rest_ms = (period_us - (esp_timer_get_time() - last_wake)) / 1000;
         vTaskDelay(rest_ms > 1 ? pdMS_TO_TICKS(rest_ms) : 1);
@@ -850,6 +928,24 @@ void app_main(void)
             }
             s_drawn_page = PAGE_COUNT;
         }
+#if HAVE_BUTTONS
+        button_t press = buttons_pressed();
+        if (press != BUTTON_NONE) {
+            if (s_saver) {
+                /* As with a tap, the first press only wakes: changing the page
+                   as well would lose whatever was on screen before the saver. */
+                s_pages.last_activity_us = now;
+                ESP_LOGI(TAG, "button -> wake");
+            } else if (press == BUTTON_PREV) {
+                page_t p = pages_back(&s_pages, now);
+                ESP_LOGI(TAG, "button -> back to page %d", (int)p);
+            } else {
+                page_t p = pages_advance(&s_pages, now);
+                ESP_LOGI(TAG, "button -> page %d", (int)p);
+            }
+            s_auto_jumped = false;          /* a press means a person is choosing */
+        }
+#endif
 
         if (now - s_busy_check_us > BUSY_CHECK_US) {
             s_busy_check_us = now;
@@ -880,6 +976,12 @@ void app_main(void)
            like idling. Neither needs protecting from burn-in: both move. */
         if (s_pages.current == PAGE_LEVEL || s_pages.current == PAGE_PARTICLES)
             s_pages.last_activity_us = now;
+#endif
+#if HAVE_PARTICLES
+        /* The liquid is the same case: something you are watching rather than
+           something left on display, and it needs no protecting from burn-in
+           because every grain is moving. */
+        if (s_pages.current == PAGE_PARTICLES) s_pages.last_activity_us = now;
 #endif
         bool saver_now = s_synced && pages_saver_active(&s_pages, now);
         if (saver_now != s_saver) {
@@ -971,6 +1073,9 @@ void app_main(void)
             if (s_pages.current == PAGE_LEVEL) draw_level(c);
             else if (s_pages.current == PAGE_PARTICLES) draw_particles(c, now);
         }
+#endif
+#if HAVE_PARTICLES
+        if (s_pages.current == PAGE_PARTICLES && s_imu) draw_particles(c, now);
 #endif
         /* Pages with ages on them redraw on their own so the ages keep counting. */
         if (pd->refresh_us > 0 && now - s_page_drawn_us > pd->refresh_us)

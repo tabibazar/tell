@@ -3,13 +3,17 @@
 # directory only when it configures, so after adding a file run
 # `idf.py -B <build dir> reconfigure` (or touch this file) before building.
 # The exceptions to "every .c" are per board. Each has its own display driver
-# and only one may be compiled; and the IMU, the sand it pours and the spirit
-# level it drives exist only on the Feather, so the big board does not carry
-# them at all.
+# and only one may be compiled. The IMU driver goes to the two boards that can
+# have the sensor plugged into them, and both pour the grains; the spirit
+# level is the Feather's alone, and so are lilly's buttons hers. The CrowPanel
+# carries none of it.
 if(CONFIG_SCREEN_BOARD_CROWPANEL_7)
-    set(BOARD_EXCLUDES "display_st7789.c" "qmi8658.c" "level.c" "particles.c")
+    set(BOARD_EXCLUDES "display_st7789.c" "display_i80.c" "buttons.c"
+                       "qmi8658.c" "level.c" "particles.c")
+elseif(CONFIG_SCREEN_BOARD_TDISPLAY_S3)
+    set(BOARD_EXCLUDES "display_st7789.c" "display_rgb.c" "level.c")
 else()
-    set(BOARD_EXCLUDES "display_rgb.c")
+    set(BOARD_EXCLUDES "display_rgb.c" "display_i80.c" "buttons.c")
 endif()
 
 idf_component_register(

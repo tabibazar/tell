@@ -37,6 +37,15 @@ int main(void)
     expect("240x135 at scale 1 gives 20 cols", small.cols == 20);
     expect("240x135 at scale 1 gives 5 rows", small.rows == 5);
 
+    /* T-Display-S3 ("lilly") geometry: between the other two, and the reason
+       she reuses the 12x24 cell rather than getting a table of her own. */
+    static uint16_t lilly_fb[320 * 170];
+    canvas_t lilly;
+    canvas_init(&lilly, lilly_fb, 320, 170, 1);
+    expect("320x170 at scale 1 gives 26 cols", lilly.cols == 26);
+    expect("320x170 at scale 1 gives 7 rows", lilly.rows == 7);
+    expect("lilly's cols fit the wrap limit", lilly.cols <= TW_MAX_COLS);
+
     /* CrowPanel 7.0 geometry. */
     static uint16_t big_fb[800 * 480];
     canvas_t big;

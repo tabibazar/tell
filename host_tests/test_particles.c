@@ -121,6 +121,78 @@ int main(void)
     particles_init(&s, PARTICLES_MAX + 500, W, H, 1u);
     expect("n is clamped to PARTICLES_MAX", s.n == PARTICLES_MAX);
 
+    /*
+     * lilly's panel. The bucket grid is sized for exactly this, so a grain at
+     * the far corner must still land in a cell that exists: if the grid were
+     * short the clamp in particles_init would quietly fold the right-hand
+     * columns together and grains there would stop separating.
+     */
+#define LW 320
+#define LH 170
+    static particles_t lilly;
+    particles_init(&lilly, particles_for(LW, LH), LW, LH, 77u);
+    expect("lilly's grid covers her panel", lilly.gw == LW / PARTICLES_CELL + 1
+                                         && lilly.gh == LH / PARTICLES_CELL + 1);
+    expect("lilly's grid fits the arrays",
+           lilly.gw <= PARTICLES_GRID_W && lilly.gh <= PARTICLES_GRID_H);
+
+    /* Same grains per pixel on either panel, so the bottle looks equally full
+       whichever one it is drawn on. */
+    expect("lilly gets 320 grains", particles_for(LW, LH) == 320);
+    expect("the Feather's panel still gets 190", particles_for(W, H) == 190);
+    expect("a huge panel is clamped", particles_for(4000, 4000) == PARTICLES_MAX);
+
+    /*
+     * The physics must hold at this size AND at the gravity this size is
+     * actually driven at. main.c scales gravity per panel row, so lilly gets
+     * GRAVITY_PER_ROW * 170, about 1134 -- a quarter more than the 900 the
+     * Feather's numbers were tuned at. That is the thing resizing could
+     * break: the grains are no bigger, so each one moves further relative to
+     * its own radius per step, and the pairwise separation that holds a
+     * column up has to keep pace. Testing her at 900 would prove nothing.
+     *
+     * A settled grain may sit at exactly y == h: the wall clamp is inclusive
+     * and drawing is what clips, which the guard below is the real test of.
+     */
+#define LILLY_GRAVITY 1134.0f
+    run(&lilly, 0, LILLY_GRAVITY, 300);
+    float bottom = 0;
+    for (int i = 0; i < lilly.n; i++) if (lilly.p[i].y > bottom) bottom = lilly.p[i].y;
+    expect("grains stay within lilly's panel", bottom <= (float)LH);
+    expect("and pour to the bottom of it", centre_y(&lilly) > (float)LH / 2.0f);
+
+    /* The column still stands at her gravity. 320 grains of radius 5 across
+       320 px is about ten rows if they hold each other up, and two or three
+       if they do not -- so this is the assertion that says the separation
+       survived the stronger pull, not merely that the grains fell. */
+    {
+        int rows[LH + 1];
+        for (int i = 0; i <= LH; i++) rows[i] = 0;
+        for (int i = 0; i < lilly.n; i++) {
+            int r = (int)lilly.p[i].y;
+            if (r >= 0 && r <= LH) rows[r]++;
+        }
+        int occupied = 0;
+        for (int i = 0; i <= LH; i++) if (rows[i] > 0) occupied++;
+        printf("     (lilly's pile occupies %d rows at g=%.0f)\n",
+               occupied, (double)LILLY_GRAVITY);
+        expect("the pile still stands a real column at her gravity",
+               occupied > 6);
+    }
+
+    /* The same out-of-bounds guard at her size, where the grid is exactly the
+       panel rather than the Feather's comfortable margin. */
+    static uint16_t lguard[8 + LW * LH + 8];
+    memset(lguard, 0xAB, sizeof lguard);
+    canvas_t lc;
+    canvas_init(&lc, lguard + 8, LW, LH, 1);
+    particles_draw(&lilly, &lc);
+    int lilly_guards = 1;
+    for (int i = 0; i < 8; i++)
+        if (lguard[i] != 0xABAB || lguard[8 + LW * LH + i] != 0xABAB)
+            lilly_guards = 0;
+    expect("draw stays inside lilly's framebuffer", lilly_guards);
+
     printf("%s\n", failures ? "FAILURES" : "all tests passed");
     return failures ? 1 : 0;
 }

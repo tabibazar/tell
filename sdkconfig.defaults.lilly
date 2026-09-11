@@ -1,0 +1,13 @@
+CONFIG_SCREEN_BOARD_TDISPLAY_S3=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions-lilly.csv"
+
+# 16 MB, unlike either 4 MB board, so the base file's setting must be undone.
+CONFIG_ESPTOOLPY_FLASHSIZE_4MB=n
+CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+
+# Native USB-Serial-JTAG like the Feather, so the console settings in
+# sdkconfig.defaults are already right and nothing is overridden here.
+
+# No PSRAM. The board has 8 MB of octal, but the framebuffer is 320*170*2 =
+# 106 KB and fits internal DMA memory. Turning it on is CONFIG_SPIRAM=y plus
+# CONFIG_SPIRAM_MODE_OCT=y, whenever something needs it.
