@@ -76,13 +76,27 @@ than it looks -- she has no RTC, so the clock she would otherwise show after
 every power cycle reads `--:--:--` until a Mac speaks to her. `flash-wave.sh`
 deliberately does not push her a clock for the same reason.
 
-**The axis signs will want setting once.** How the chip sits relative to the
-panel decides them, and no still reading can reveal them, because gravity has
-no component along an axis that is level. Send `!flip x`, `!flip y` or
-`!flip swap` until the grains fall downhill; it persists in NVS. The sand also
-negates one component against the shared mapping — a bubble floats against
-gravity and grains fall with it — which is in `draw_particles()`, not in the
-mapping, so correcting one page cannot break the other.
+**Her axis mapping is `axis +1 -1`, unswapped**, set on 2026-09-11 and living
+in NVS, so it survives a reflash of the app. It was measured rather than
+guessed — see "Finding an axis mapping" in
+[../developing.md](../developing.md), which is the recipe to use on the next
+board. In short:
+
+| held | reading | what it says |
+|---|---|---|
+| flat, screen up | `az +0.96` | **+Z is the screen normal**, out of the glass |
+| left edge down | `ay -0.61` | **+Y points left** along the panel |
+| — | right-handed | therefore **+X points to the top** of the screen |
+
+Only two positions are needed. The third axis follows from the first two,
+because the sensor's axes are orthogonal and right-handed, so asking for a
+third reading is asking someone to hold a board for nothing.
+
+The sand also negates one component against the shared mapping — a bubble
+floats against gravity and grains fall with it — which is in
+`draw_particles()`, not in the mapping, so correcting one page cannot break
+the other. That negation is why her `sy` is `-1` where the raw geometry alone
+would say `+1`.
 
 ## Building and flashing
 

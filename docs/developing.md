@@ -62,6 +62,36 @@ See [hardware/t-display-s3.md](hardware/t-display-s3.md) and
 [hardware/waveshare-lcd-147b.md](hardware/waveshare-lcd-147b.md) for those two
 boards' pin maps. Both are verified on hardware.
 
+## Finding an axis mapping
+
+A board with an IMU needs to know which sensor axis is which on its panel, and
+the signs cannot be reasoned out from the datasheet: they depend on how the
+chip is mounted. `!flip x`, `!flip y` and `!flip swap` change them at runtime
+and keep them in NVS, and `!flip reset` returns to the compiled-in default.
+
+There are eight combinations. Do not hunt through them. **Two measurements
+settle it**, and the third axis follows from the first two because the
+sensor's axes are orthogonal and right-handed:
+
+1. Log the raw `ax`, `ay`, `az` — temporarily, over serial and on the panel.
+2. **Flat, screen up.** Whichever axis reads about +1 is the screen normal. It
+   feeds neither screen direction.
+3. **Left edge down.** Whichever of the remaining two moves is the panel's
+   horizontal; its sign tells you which way the chip's positive points. The
+   last axis is the panel's vertical by elimination, and right-handedness
+   (X x Y = Z) gives its direction without a third reading.
+
+Then set the signs so gravity points the way things should fall, remembering
+that `draw_particles()` negates one component on purpose: a spirit level's
+bubble floats *against* gravity while grains fall *with* it, so the two pages
+cannot share a sign.
+
+**Whoever is holding the board must be told what to hold before the capture
+starts.** An instruction printed by the same command that does the capturing
+arrives after it has finished, and what gets recorded is a board sitting
+still. Three frozen readings in a row look exactly like a dead sensor, which
+is a confusing place to end up when nothing is wrong.
+
 ## Traps, each of which cost an hour or more
 
 **Never raise the baud rate.** `--baud 921600` and `460800` both fail, on the
