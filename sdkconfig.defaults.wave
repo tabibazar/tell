@@ -1,0 +1,12 @@
+CONFIG_SCREEN_BOARD_WAVESHARE_147B=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions-wave.csv"
+
+# 16 MB, so the base file's 4 MB setting must be undone.
+CONFIG_ESPTOOLPY_FLASHSIZE_4MB=n
+CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+
+# Native USB-Serial-JTAG like the Feather and lilly, so the console settings
+# in sdkconfig.defaults are already right and nothing is overridden here.
+
+# No PSRAM. The framebuffer is 320*172*2 = 107 KB and fits internal DMA
+# memory; the board's 8 MB of octal stays off until something needs it.

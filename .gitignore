@@ -1,6 +1,7 @@
 *.dSYM/
 build-crowpanel/
 build-lilly/
+build-wave/
 build/
 dist/
 firmware-backup/
@@ -23,7 +24,9 @@ sdkconfig
 sdkconfig.crowpanel
 sdkconfig.crowpanel.old
 sdkconfig.lilly
+sdkconfig.wave
 sdkconfig.lilly.old
+sdkconfig.wave.old
 sdkconfig.old
 .claude/settings.local.json
 

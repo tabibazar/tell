@@ -92,13 +92,13 @@ static bool claude_busy(const ud_view_t *v, int64_t now)
 }
 
 /*
- * Anything that needs the IMU. The QMI8658 is a breakout on an I2C bus, not a
- * part soldered to a board, so which board has it is a question about where it
- * is plugged in today: the Feather's STEMMA QT, or lilly's GPIO18/17. Only one
- * of them can have it at a time. The CrowPanel has no IMU at all.
+ * Anything that needs the IMU. Two boards have one: the Feather, where a
+ * QMI8658 hangs off the STEMMA QT port, and wave, where the same chip is
+ * soldered to the board at GPIO48/47. lilly and the CrowPanel have no sensor
+ * and are compiled with none of this.
  */
 #if defined(CONFIG_SCREEN_BOARD_FEATHER_S3_TFT) \
- || defined(CONFIG_SCREEN_BOARD_TDISPLAY_S3)
+ || defined(CONFIG_SCREEN_BOARD_WAVESHARE_147B)
 #define HAVE_IMU 1
 #else
 #define HAVE_IMU 0

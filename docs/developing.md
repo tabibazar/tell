@@ -50,10 +50,17 @@ idf.py -B build-lilly \
   -D SDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.defaults.lilly" \
   -D SDKCONFIG=sdkconfig.lilly build
 tools/flash-lilly.sh --full     # first flash only; app alone after that
+
+# Waveshare ESP32-S3-LCD-1.47B, wave -- the one with the IMU on board
+idf.py -B build-wave \
+  -D SDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.defaults.wave" \
+  -D SDKCONFIG=sdkconfig.wave build
+tools/flash-wave.sh --full      # first flash only; app alone after that
 ```
 
-See [hardware/t-display-s3.md](hardware/t-display-s3.md) for lilly's pin map
-and the offsets that still need confirming on hardware.
+See [hardware/t-display-s3.md](hardware/t-display-s3.md) and
+[hardware/waveshare-lcd-147b.md](hardware/waveshare-lcd-147b.md) for those two
+boards' pin maps. Both are verified on hardware.
 
 ## Traps, each of which cost an hour or more
 

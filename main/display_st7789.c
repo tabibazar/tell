@@ -1,4 +1,9 @@
-/* Adafruit Feather ESP32-S3 TFT: ST7789 240x135 over SPI. */
+/*
+ * The two boards whose ST7789 hangs off SPI. Same transport, same panel
+ * driver, different wiring and different glass -- so the constants are per
+ * board and everything below them is shared. The CrowPanel (RGB) and lilly
+ * (i80) are genuinely different buses and have their own files.
+ */
 #include "display.h"
 
 #include "canvas.h"
@@ -10,12 +15,35 @@
 #include "esp_lcd_panel_ops.h"
 #include "esp_lcd_panel_vendor.h"
 #include "esp_log.h"
+#include "sdkconfig.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
 #include <string.h>
 
 
+#ifdef CONFIG_SCREEN_BOARD_WAVESHARE_147B
+/* Waveshare ESP32-S3-LCD-1.47B, from their own Display_ST7789.h. */
+#define PIN_TFT_CS    42
+#define PIN_TFT_DC    41
+#define PIN_TFT_RST   39
+#define PIN_TFT_BL    46
+#define PIN_SCK       40
+#define PIN_MOSI      45
+#define LCD_W 320
+#define LCD_H 172
+#define LCD_PCLK_HZ (80 * 1000 * 1000)
+/* Waveshare give Offset_X 34 for the panel stood upright. Turned landscape
+   the two swap, so the 172 rows sit centred in the controller's 240:
+   (240 - 172) / 2 = 34, which is their number arrived at independently. */
+#define LCD_GAP_X 0
+#define LCD_GAP_Y 34
+#define LCD_MIRROR_X false
+#define LCD_MIRROR_Y true
+/* No switched rail: the panel is powered whenever the board is. */
+#undef PIN_TFT_POWER
+
+#else
 /* Adafruit Feather ESP32-S3 TFT, from the board's Arduino variant. */
 #define PIN_TFT_POWER 21
 #define PIN_TFT_CS     7
@@ -24,9 +52,16 @@
 #define PIN_TFT_BL    45
 #define PIN_SCK       36
 #define PIN_MOSI      35
-
 #define LCD_W 240
 #define LCD_H 135
+#define LCD_PCLK_HZ (40 * 1000 * 1000)
+/* Landscape: with swap_xy the 240px axis maps to the controller's 320-long
+   axis (offset 40) and the 135px axis to the 240-long one (offset 53). */
+#define LCD_GAP_X 40
+#define LCD_GAP_Y 53
+#define LCD_MIRROR_X true
+#define LCD_MIRROR_Y false
+#endif
 #define LCD_HOST SPI2_HOST
 static const char *TAG = "display";
 static esp_lcd_panel_handle_t s_panel;
@@ -36,12 +71,18 @@ static canvas_t s_canvas;
 esp_err_t display_init(void)
 {
     gpio_config_t io = {
-        .pin_bit_mask = (1ULL << PIN_TFT_POWER) | (1ULL << PIN_TFT_BL),
+        .pin_bit_mask = (1ULL << PIN_TFT_BL)
+#ifdef PIN_TFT_POWER
+                      | (1ULL << PIN_TFT_POWER)
+#endif
+        ,
         .mode = GPIO_MODE_OUTPUT,
     };
     ESP_ERROR_CHECK(gpio_config(&io));
+#ifdef PIN_TFT_POWER
     /* The panel is dead until this rail is up; the most common failure here. */
     gpio_set_level(PIN_TFT_POWER, 1);
+#endif
     gpio_set_level(PIN_TFT_BL, 1);
     vTaskDelay(pdMS_TO_TICKS(20));
 
@@ -59,7 +100,7 @@ esp_err_t display_init(void)
     esp_lcd_panel_io_spi_config_t io_cfg = {
         .dc_gpio_num = PIN_TFT_DC,
         .cs_gpio_num = PIN_TFT_CS,
-        .pclk_hz = 40 * 1000 * 1000,
+        .pclk_hz = LCD_PCLK_HZ,
         .lcd_cmd_bits = 8,
         .lcd_param_bits = 8,
         .spi_mode = 0,
@@ -78,11 +119,9 @@ esp_err_t display_init(void)
     ESP_ERROR_CHECK(esp_lcd_panel_reset(s_panel));
     ESP_ERROR_CHECK(esp_lcd_panel_init(s_panel));
     ESP_ERROR_CHECK(esp_lcd_panel_invert_color(s_panel, true));
-    /* Landscape: with swap_xy the 240px axis maps to the controller's 320-long
-       axis (offset 40) and the 135px axis to the 240-long one (offset 53). */
     ESP_ERROR_CHECK(esp_lcd_panel_swap_xy(s_panel, true));
-    ESP_ERROR_CHECK(esp_lcd_panel_mirror(s_panel, true, false));
-    ESP_ERROR_CHECK(esp_lcd_panel_set_gap(s_panel, 40, 53));
+    ESP_ERROR_CHECK(esp_lcd_panel_mirror(s_panel, LCD_MIRROR_X, LCD_MIRROR_Y));
+    ESP_ERROR_CHECK(esp_lcd_panel_set_gap(s_panel, LCD_GAP_X, LCD_GAP_Y));
     ESP_ERROR_CHECK(esp_lcd_panel_disp_on_off(s_panel, true));
 
     s_fb = heap_caps_malloc(LCD_W * LCD_H * sizeof(uint16_t), MALLOC_CAP_DMA);

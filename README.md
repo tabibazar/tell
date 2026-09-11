@@ -62,10 +62,14 @@ ESP32-S3 radio does not implement it.)
 |---|---|---|---|
 | Adafruit Feather ESP32-S3 TFT | ST7789 240×135, SPI | 20 × 5 | Verified |
 | Elecrow CrowPanel 7.0" HMI | 800×480, 16-bit RGB | 64 × 20 | Verified |
-| LilyGO T-Display-S3 | ST7789 320×170, 8-bit i80 | 26 × 7 | Builds; not yet on hardware |
+| LilyGO T-Display-S3 | ST7789 320×170, 8-bit i80 | 26 × 7 | Verified |
+| Waveshare ESP32-S3-LCD-1.47B | ST7789 320×172, SPI | 26 × 7 | Verified |
 
-The T-Display-S3 also runs the tilt-driven `Sand` page, which needs the
-QMI8658 breakout moved onto its I²C bus and off the Feather — see
+The **Waveshare 1.47B** has a QMI8658 soldered on, so it runs the tilt-driven
+`Sand` page out of the box — see
+[docs/hardware/waveshare-lcd-147b.md](docs/hardware/waveshare-lcd-147b.md).
+The Feather runs it too, from a breakout on its STEMMA QT port. The
+**T-Display-S3** has no sensor at all and shows the clock and messages only:
 [docs/hardware/t-display-s3.md](docs/hardware/t-display-s3.md).
 
 No wiring or soldering — the display is part of the board. Select the target
@@ -148,7 +152,7 @@ a shared lock; across machines the client simply retries, five times, ten
 seconds apart.
 
 The screen is **20 characters by 5 lines** on the Feather, **64 by 20** on the
-CrowPanel, and **26 by 7** on the T-Display-S3. Text wraps at word boundaries; a
+CrowPanel, and **26 by 7** on the T-Display-S3 and the Waveshare 1.47B. Text wraps at word boundaries; a
 word longer than a line is broken mid-word. Content past five lines is truncated
 with a visible `...`, so text is never silently dropped. `\n` forces a break.
 Bytes outside printable ASCII render as `?`.

@@ -46,6 +46,15 @@ int main(void)
     expect("320x170 at scale 1 gives 7 rows", lilly.rows == 7);
     expect("lilly's cols fit the wrap limit", lilly.cols <= TW_MAX_COLS);
 
+    /* wave: the Waveshare 1.47B, 172x320 turned landscape. Two rows taller
+       than lilly in pixels and identical in characters, which is the point --
+       the sand and the wrapping carry over untouched. */
+    static uint16_t wave_fb[320 * 172];
+    canvas_t wave;
+    canvas_init(&wave, wave_fb, 320, 172, 1);
+    expect("320x172 at scale 1 gives 26 cols", wave.cols == 26);
+    expect("320x172 at scale 1 gives 7 rows", wave.rows == 7);
+
     /* CrowPanel 7.0 geometry. */
     static uint16_t big_fb[800 * 480];
     canvas_t big;

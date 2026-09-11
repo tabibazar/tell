@@ -19,7 +19,7 @@ The third board: [LilyGO T-Display-S3](https://www.lilygo.cc/products/t-display-
 | Auto-reset | Does not work | Works | **Does not work** |
 | Port | `/dev/cu.usbmodem*` | `/dev/cu.wchusbserial*` | `/dev/cu.usbmodem*` |
 | Navigation | none | touch | **two buttons** |
-| IMU pages | sand + spirit level | none | **sand** |
+| IMU pages | sand + spirit level | none | **none** |
 | Recovery | TinyUF2 | none | none |
 
 lilly sits with the Feather on almost everything that is not the panel: native
@@ -61,12 +61,21 @@ layout was confirmed before the board was ever flashed.
 
 New: `buttons.c` / `buttons.h`, compiled only for this board.
 
-## Pages: there are three
+## Pages: there are two
 
 Pages are gated by the `everywhere` flag in `pagedefs.c`, which means "not only
 the big panel". 26×7 will not hold views laid out for 64×20, so lilly is not
-`big`. That leaves **Clock, Message and Sand** — the buttons cycle them and dismiss
-the screensaver.
+`big`. That leaves **Clock and Message** — the buttons cycle them and dismiss the
+screensaver.
+
+**She has no sand, because she has no sensor.** Her I2C bus was scanned at all
+112 addresses on 2026-09-11 and answered empty: no IMU, and no touch
+controller either, which also settles that she is the plain T-Display-S3 and
+not the `-Touch` variant. The sand lives on
+[wave](waveshare-lcd-147b.md), which has a QMI8658 soldered on, and on the
+Feather, which has one on a breakout. lilly is compiled with neither
+`qmi8658.c` nor `particles.c`, which is worth about 34 KB of `.bss` she would
+otherwise spend on grains she could never move.
 
 If lilly should show more, the question to answer first is which data views
 degrade honestly at 26 columns.

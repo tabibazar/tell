@@ -142,6 +142,13 @@ int main(void)
     expect("the Feather's panel still gets 190", particles_for(W, H) == 190);
     expect("a huge panel is clamped", particles_for(4000, 4000) == PARTICLES_MAX);
 
+    /* wave's panel, which is the one that actually has the IMU. Two pixel
+       rows taller than lilly, so a few more grains, and the bucket grid
+       sized for lilly still covers it -- 172/10+1 is 18. */
+    expect("wave gets 323 grains", particles_for(320, 172) == 323);
+    expect("wave's grid still fits", 320 / PARTICLES_CELL + 1 <= PARTICLES_GRID_W
+                                  && 172 / PARTICLES_CELL + 1 <= PARTICLES_GRID_H);
+
     /*
      * The physics must hold at this size AND at the gravity this size is
      * actually driven at. main.c scales gravity per panel row, so lilly gets

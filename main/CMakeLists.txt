@@ -3,15 +3,20 @@
 # directory only when it configures, so after adding a file run
 # `idf.py -B <build dir> reconfigure` (or touch this file) before building.
 # The exceptions to "every .c" are per board. Each has its own display driver
-# and only one may be compiled. The IMU driver goes to the two boards that can
-# have the sensor plugged into them, and both pour the grains; the spirit
-# level is the Feather's alone, and so are lilly's buttons hers. The CrowPanel
-# carries none of it.
+# and only one may be compiled, though the two SPI boards share theirs. The
+# IMU and the sand go to the boards that have a sensor: the Feather, where it
+# is a breakout on the STEMMA QT port, and wave, where a QMI8658 is soldered
+# on. The spirit level is the Feather's alone; the buttons are lilly's. lilly
+# has no sensor of any kind, so she carries none of it and neither does the
+# CrowPanel.
 if(CONFIG_SCREEN_BOARD_CROWPANEL_7)
     set(BOARD_EXCLUDES "display_st7789.c" "display_i80.c" "buttons.c"
                        "qmi8658.c" "level.c" "particles.c")
 elseif(CONFIG_SCREEN_BOARD_TDISPLAY_S3)
-    set(BOARD_EXCLUDES "display_st7789.c" "display_rgb.c" "level.c")
+    set(BOARD_EXCLUDES "display_st7789.c" "display_rgb.c"
+                       "qmi8658.c" "level.c" "particles.c")
+elseif(CONFIG_SCREEN_BOARD_WAVESHARE_147B)
+    set(BOARD_EXCLUDES "display_rgb.c" "display_i80.c" "buttons.c" "level.c")
 else()
     set(BOARD_EXCLUDES "display_rgb.c" "display_i80.c" "buttons.c")
 endif()
