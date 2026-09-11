@@ -196,6 +196,14 @@ keeps counting down. Tokens expire overnight, and blanking the page every
 time one aged out would be worse than showing a reading that is a few hours
 old.
 
+The board is sent the limits every minute but the endpoint is asked at most
+every five, because asking once a minute earns an HTTP 429 and a rate-limited
+fetch looks exactly like an account with no limits at all. In between, the
+answer comes from `~/.cache/tell/limits.json`. Serving a stale one is safe
+here in a way it would not be for most data: the resets are absolute instants,
+so a countdown recomputed from an hour-old reading is still right to the
+second, and only the percentages age.
+
 ## Sand and a spirit level, on the small board
 
 The Feather has a QMI8658 accelerometer left over from its stock firmware, and

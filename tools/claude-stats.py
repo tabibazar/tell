@@ -1030,6 +1030,25 @@ def sessions_on(stats, day):
 
 LIMITS_URL = "https://api.anthropic.com/api/oauth/usage"
 LIMITS_TIMEOUT = 10
+LIMITS_CACHE = os.path.expanduser("~/.cache/tell/limits.json")
+# The board is sent the limits every minute, but the endpoint is asked at most
+# this often. Polling it once a minute earns an HTTP 429, and a rate-limited
+# fetch reads exactly like an account with no limits at all.
+LIMITS_MIN_INTERVAL = 300
+# How long to stay away after a 429. Long, because being wrong in this
+# direction costs a few stale percentage points and being wrong in the other
+# direction costs the page.
+LIMITS_BACKOFF = 1800
+
+
+def limits_note(why):
+    """Why the limits could not be fetched. To stderr, never to the payload.
+
+    These run on a timer with nobody watching, and the first time the fetch
+    failed silently it cost an afternoon: the board showed an empty page, the
+    log said "pushed", and nothing anywhere said why. Reasons are cheap.
+    """
+    sys.stderr.write("limits: %s\n" % why)
 
 
 def oauth_token():
@@ -1040,40 +1059,128 @@ def oauth_token():
     a failure here is reported as "no token", not as the thing it read.
     """
     try:
-        raw = subprocess.run(
+        got = subprocess.run(
             ["security", "find-generic-password", "-s", "Claude Code-credentials", "-w"],
-            capture_output=True, text=True, timeout=10).stdout
-        creds = json.loads(raw).get("claudeAiOauth") or {}
-        token = creds.get("accessToken")
-        # An expired token would earn a 401 and a confusing empty page; say so.
-        if creds.get("expiresAt", 0) / 1000.0 < time.time():
-            return None
-        return token
-    except Exception:
+            capture_output=True, text=True, timeout=10)
+    except Exception as e:
+        limits_note("could not run security: %s" % e)
         return None
+    if got.returncode != 0:
+        limits_note("keychain read failed (%d): %s"
+                    % (got.returncode, got.stderr.strip()[:120]))
+        return None
+    try:
+        creds = json.loads(got.stdout).get("claudeAiOauth") or {}
+    except ValueError as e:
+        limits_note("keychain entry is not the JSON expected: %s" % e)
+        return None
+    token = creds.get("accessToken")
+    if not token:
+        limits_note("keychain entry has no access token")
+        return None
+    # An expired token would earn a 401 and a confusing empty page; say so.
+    left = creds.get("expiresAt", 0) / 1000.0 - time.time()
+    if left < 0:
+        limits_note("token expired %d minutes ago; open Claude Code to refresh it"
+                    % (-left / 60))
+        return None
+    return token
 
 
 def fetch_limits(url=LIMITS_URL):
-    """The account's rate limits as /usage sees them, or None.
+    """Ask the endpoint. Returns (usage or None, HTTP status or None).
 
     Through curl rather than urllib: a stock macOS python has no CA bundle of
     its own and every request fails to verify, while curl uses the system
     trust store. The token goes in on stdin as a curl config file, so it is
     never an argument and never shows up in the process list.
+
+    The status comes back because a 429 has to be told apart from everything
+    else: it means "ask less often", which is a thing this program can do.
     """
     token = oauth_token()
     if not token:
-        return None
+        return None, None
     config = 'url = "%s"\nheader = "Authorization: Bearer %s"\n' \
              'header = "anthropic-beta: oauth-2025-04-20"\n' \
-             'user-agent = "claude-cli (tell)"\nsilent\nfail\n' % (url, token)
+             'user-agent = "claude-cli (tell)"\nsilent\nshow-error\n' \
+             'write-out = "\\n%%{http_code}"\n' % (url, token)
     try:
-        out = subprocess.run(["curl", "--config", "-"], input=config,
+        got = subprocess.run(["curl", "--config", "-"], input=config,
                              capture_output=True, text=True,
-                             timeout=LIMITS_TIMEOUT).stdout
-        return json.loads(out) if out.strip() else None
+                             timeout=LIMITS_TIMEOUT)
+    except Exception as e:
+        limits_note("could not run curl: %s" % e)
+        return None, None
+    if got.returncode != 0:
+        limits_note("curl failed (%d): %s"
+                    % (got.returncode, got.stderr.strip()[:160] or "no message"))
+        return None, None
+
+    body, _, code = got.stdout.rpartition("\n")
+    try:
+        status = int(code.strip())
+    except ValueError:
+        status = None
+    if status == 429:
+        limits_note("rate limited by the endpoint")
+        return None, status
+    if status is None or status >= 400:
+        limits_note("the endpoint answered %s" % code.strip())
+        return None, status
+    try:
+        return json.loads(body), status
+    except ValueError as e:
+        limits_note("the endpoint did not return JSON: %s" % e)
+        return None, status
+
+
+def read_limits_cache():
+    try:
+        with open(LIMITS_CACHE) as f:
+            return json.load(f)
     except Exception:
-        return None
+        return {}
+
+
+def write_limits_cache(cache):
+    try:
+        os.makedirs(os.path.dirname(LIMITS_CACHE), exist_ok=True)
+        with open(LIMITS_CACHE, "w") as f:
+            json.dump(cache, f)
+    except Exception as e:
+        limits_note("could not write the cache: %s" % e)
+
+
+def cached_usage(now=None):
+    """The limits, from the endpoint if it is time to ask and from the last
+    good answer otherwise.
+
+    Serving a stale answer is safe in a way it would not be for most data,
+    because the resets are absolute instants: the countdown recomputed from a
+    reading an hour old is still correct to the second. Only the percentages
+    age, and they age slowly.
+    """
+    now = now or time.time()
+    cache = read_limits_cache()
+    usage, fetched = cache.get("usage"), cache.get("fetched", 0)
+
+    if usage and now - fetched < LIMITS_MIN_INTERVAL:
+        return usage
+    if usage and now < cache.get("retry_after", 0):
+        return usage
+
+    fresh, status = fetch_limits()
+    if fresh is not None:
+        write_limits_cache({"usage": fresh, "fetched": now})
+        return fresh
+
+    cache["retry_after"] = now + (LIMITS_BACKOFF if status == 429 else LIMITS_MIN_INTERVAL)
+    write_limits_cache(cache)
+    if usage:
+        limits_note("keeping the reading from %d minutes ago; the resets in it "
+                    "are still right" % ((now - fetched) / 60))
+    return usage
 
 
 def seconds_until(stamp, now=None):
@@ -1098,7 +1205,7 @@ def render_limits(usage=None, now=None):
     the board counts it down against its own uptime and needs no calendar.
     """
     if usage is None:
-        usage = fetch_limits()
+        usage = cached_usage()
     lines = ["!limits", "host %s" % host_name()]
     if not usage:
         return lines

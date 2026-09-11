@@ -157,13 +157,25 @@ bundle of its own, so every `urllib` request to that host fails to verify;
 a `curl` config file on stdin rather than passed as an argument, so it never
 appears in the process list.
 
-**Every failure is silent and total.** No token, an expired one, no network:
-`fetch_limits` returns `None` and the payload goes out as a bare marker. That
-is deliberate -- this runs on a timer with no one watching, and a collector
-that raised would take the other thirteen sections down with it. The firmware
-treats an empty payload as "nothing to say" rather than "nothing is left":
-`ud_limits.c` counts the rows down to nothing in `begin` and puts them back in
-`end` if none arrived, so an expired token does not blank the page.
+**Every failure is quiet in the payload and loud on stderr.** No token, an
+expired one, no network: `fetch_limits` returns `None` and the payload goes
+out as a bare marker, because this runs on a timer with no one watching and a
+collector that raised would take the other thirteen sections down with it. But
+every one of those paths calls `limits_note`, which writes the reason to
+stderr and so into the agent's `.err` log. The first time this failed silently
+it cost an afternoon: the board showed an empty page, the log said "pushed",
+and nothing anywhere said why. Reasons are cheap.
+
+The firmware treats an empty payload as "nothing to say" rather than "nothing
+is left": `ud_limits.c` counts the rows down to nothing in `begin` and puts
+them back in `end` if none arrived, so a failed fetch does not blank the page.
+
+**Do not ask the endpoint every minute.** It answers 429, and a rate-limited
+fetch is indistinguishable from an account with no limits. `cached_usage`
+asks at most every `LIMITS_MIN_INTERVAL` (five minutes) and backs off for half
+an hour after a 429, serving `~/.cache/tell/limits.json` in between. That is
+safe here only because the resets are absolute instants: a countdown
+recomputed from an old reading is still right to the second.
 
 The reset times are converted to *seconds remaining* before they are sent.
 The board has no calendar, only an uptime and a clock it was told, so a
