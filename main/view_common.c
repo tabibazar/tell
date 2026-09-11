@@ -46,8 +46,13 @@ const char *vw_clock_strip(void)
     return s_strip;
 }
 
+static bool s_has_touch = true;
+
+void vw_set_touch(bool has_touch) { s_has_touch = has_touch; }
+
 void vw_menu_tab(canvas_t *c)
 {
+    if (!s_has_touch) return;
     int w = VW_TAB_COLS * c->cell_w;
     canvas_fill_rect(c, 0, 0, w, c->cell_h, PAL_A1);
     canvas_fill_rect(c, 0, 0, w, 2, pal_lighten(PAL_A1));
@@ -56,14 +61,18 @@ void vw_menu_tab(canvas_t *c)
 
 bool vw_menu_tab_hit(canvas_t *c, int x, int y)
 {
-    return x < (VW_TAB_COLS + 2) * c->cell_w && y < 3 * c->cell_h;
+    return s_has_touch
+        && x < (VW_TAB_COLS + 2) * c->cell_w && y < 3 * c->cell_h;
 }
 
 void vw_title(canvas_t *c, const char *left, const char *right)
 {
     canvas_fill_rect(c, 0, 0, c->w, c->cell_h, PAL_TITLE_BG);
     vw_menu_tab(c);
-    canvas_puts(c, VW_TAB_COLS + 1, 0, left, PAL_FG);
+    /* With no tab the heading starts at the edge instead of behind it, which
+       is worth six columns on a 26-column panel. */
+    int head_col = s_has_touch ? VW_TAB_COLS + 1 : 1;
+    canvas_puts(c, head_col, 0, left, PAL_FG);
 
     /* The clock strip takes the right edge when it is known; the page's own
        note sits left of it, and is dropped rather than overlapped if the
@@ -76,7 +85,7 @@ void vw_title(canvas_t *c, const char *left, const char *right)
     }
     if (right == NULL) return;
     int col = edge - (int)strlen(right);
-    if (col > VW_TAB_COLS + 1 + (int)strlen(left) + 1)
+    if (col > head_col + (int)strlen(left) + 1)
         canvas_puts(c, col, 0, right, PAL_DIM);
 }
 

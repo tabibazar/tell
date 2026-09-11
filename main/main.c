@@ -731,6 +731,9 @@ void app_main(void)
     big = true;
     touch = gt911_init() == ESP_OK;
 #endif
+    /* No finger, no MENU tab: it cannot be pressed, and draw_message paints
+       it over the text's first six columns. */
+    vw_set_touch(touch);
     /* Which pages this board offers: the data pages need the big panel, and
        the menu and settings need a finger. */
     unsigned available = 0;

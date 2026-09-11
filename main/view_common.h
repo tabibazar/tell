@@ -52,6 +52,13 @@ const char *vw_clock_strip(void);
    vw_title draws it; the clock and message pages, which have no title bar,
    draw it themselves. The hit area is bigger than the tab (fingertips). */
 #define VW_TAB_COLS 6
+
+/* Whether this board has a touch panel. The MENU tab is drawn only when it
+   does: without a finger it is an affordance nothing can press, and on the
+   message page it is painted over text that is already there, so the first
+   VW_TAB_COLS columns of the first line disappear under it. Boards default
+   to having touch; main says otherwise once it knows. */
+void vw_set_touch(bool has_touch);
 void vw_menu_tab(canvas_t *c);
 bool vw_menu_tab_hit(canvas_t *c, int x, int y);
 

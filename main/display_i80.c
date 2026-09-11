@@ -81,20 +81,26 @@ esp_err_t display_init(void)
         .trans_queue_depth = 10,
         .lcd_cmd_bits = 8,
         .lcd_param_bits = 8,
-        /* swap_color_bytes stays off, which is not an oversight. With it off
-           the peripheral sends the framebuffer in memory order, low byte
-           first -- exactly what the Feather's SPI path does, and the palette
-           is already field-tested there on the level page's greens and
-           oranges. Turning it on here would make lilly the odd one out.
-           If colour comes out wrong on this panel and right on the Feather,
-           this flag is the first thing to try, but then the two boards
-           disagree and one of them is lying. */
         .dc_levels = {
             .dc_idle_level = 0,
             .dc_cmd_level = 0,
             .dc_dummy_level = 0,
             .dc_data_level = 1,
         },
+        /*
+         * The framebuffer holds RGB565 in native little-endian order and the
+         * ST7789 wants the high byte first, so the peripheral has to swap the
+         * two bytes of every pixel on its way out.
+         *
+         * Verified on the panel, and worth writing down because the symptom
+         * lies. Monochrome text proves nothing here: 0xFFFF and 0x0000 are
+         * byte-symmetric, so the clock and messages look perfect either way.
+         * The first coloured thing gives it away -- the menu tab is PAL_A1,
+         * orange (R230 G157 B0), and unswapped it came out red (R230 G28
+         * B32). That reads as a wrong palette entry rather than a bus
+         * setting, which is the trap.
+         */
+        .flags.swap_color_bytes = 1,
     };
     ESP_ERROR_CHECK(esp_lcd_new_panel_io_i80(bus, &io_cfg, &io_handle));
 
