@@ -177,6 +177,13 @@ typedef struct {
     uint32_t credit_used, credit_limit;   /* hundredths of the currency */
     uint8_t credit_pct;
     char currency[UD_LIMIT_CCY + 1];
+    /* When these rows arrived, which is not the same as when this machine
+       last sent anything: the countdowns are measured from here, and the
+       live section alone lands sixty times an hour. */
+    int64_t at_us;
+    int64_t pending_us;                   /* the payload being parsed now */
+    int prev_count;                       /* so an empty one can change nothing */
+    bool prev_credits;
 } ud_limits_t;
 
 /* Personal bests, one machine: a value and the day it happened. */

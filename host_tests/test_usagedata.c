@@ -615,6 +615,31 @@ int main(void)
     usagedata_merge(&d, &v);
     expect("the clamp shows in the view", v.limits.rows[0].percent == 100);
 
+    /* The countdown is measured from the limits' own arrival, not from the
+       machine's last word of any kind: the live section alone lands sixty
+       times an hour, and dating the countdown from that would reset it to
+       its pushed value every minute and look frozen. */
+    memset(&d, 0, sizeof d);
+    usagedata_parse(&d, "!limits\nhost air\nlim session 4 14400 0 0 -\n", 1000000);
+    usagedata_parse(&d, "!now\nhost air\ntokens 5\n", 60000000);
+    usagedata_merge(&d, &v);
+    expect("another section does not restart the countdown",
+           v.limits.sent_us == 1000000);
+
+    /* A Mac that cannot reach the endpoint sends the bare marker. That must
+       not erase a good reading, or the page would blank every time the
+       token aged out overnight. */
+    usagedata_parse(&d, "!limits\nhost air\n", 90000000);
+    usagedata_merge(&d, &v);
+    expect("an empty limits payload leaves the last reading alone",
+           v.limits.present && v.limits.count == 1
+           && v.limits.rows[0].percent == 4 && v.limits.sent_us == 1000000);
+    usagedata_parse(&d, "!limits\nhost air\nlim session 7 60 0 0 -\n", 120000000);
+    usagedata_merge(&d, &v);
+    expect("but a payload with rows replaces it, and redates the countdown",
+           v.limits.count == 1 && v.limits.rows[0].percent == 7
+           && v.limits.sent_us == 120000000);
+
     memset(&d, 0, sizeof d);
     parse("!limits\nhost air\nbogus 1\n");
     expect("a limits payload with only unknown rows is dropped",

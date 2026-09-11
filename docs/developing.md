@@ -158,16 +158,24 @@ a `curl` config file on stdin rather than passed as an argument, so it never
 appears in the process list.
 
 **Every failure is silent and total.** No token, an expired one, no network:
-`fetch_limits` returns `None`, the payload goes out as a bare marker, and the
-page says it has nothing yet. That is deliberate -- this runs on a timer with
-no one watching, and a collector that raised would take the other thirteen
-sections down with it.
+`fetch_limits` returns `None` and the payload goes out as a bare marker. That
+is deliberate -- this runs on a timer with no one watching, and a collector
+that raised would take the other thirteen sections down with it. The firmware
+treats an empty payload as "nothing to say" rather than "nothing is left":
+`ud_limits.c` counts the rows down to nothing in `begin` and puts them back in
+`end` if none arrived, so an expired token does not blank the page.
 
 The reset times are converted to *seconds remaining* before they are sent.
 The board has no calendar, only an uptime and a clock it was told, so a
 wall-clock reset would need timezone and date arithmetic on the firmware
 side. Seconds remaining need a subtraction, and the arithmetic that matters
 already happened on a machine that knows what day it is.
+
+The subtraction has one trap in it, and it was fallen into: the section keeps
+its own `at_us` rather than reading the host's `updated_us`. The latter moves
+whenever *any* section arrives from that machine, so a countdown dated from it
+was reset to its pushed value every time the live section landed -- once a
+minute -- and read as a clock that would not tick.
 
 ## The Feather's IMU
 

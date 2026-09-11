@@ -182,13 +182,19 @@ the one currently binding is the one drawn in white.
 The countdowns run on the board. A reset goes out as the seconds that were
 left when the payload was written, not as a wall-clock time, so the board
 subtracts however long the payload has been sitting there and needs no
-calendar to do it. That also means a board nobody has pushed to for an hour
-shows a countdown an hour short rather than a confident wrong time.
+calendar to do it. It measures that from when the *limits* last arrived, not
+from the machine's last word of any kind: the live section alone lands sixty
+times an hour, and dating the countdown from that would reset it every minute
+and look frozen. A board nobody has pushed to for an hour therefore shows a
+countdown an hour short rather than a confident wrong time.
 
 The token comes from the login keychain, read by `tools/claude-stats.py` and
 handed to `curl` on stdin so it is never a command-line argument. A Mac that
-cannot read it, or that is offline, sends the marker with no rows and the
-page says it has nothing yet; nothing else on the board is affected.
+cannot read it, or that is offline, sends the marker with no rows, and an
+empty payload deliberately changes nothing: the last good reading stays and
+keeps counting down. Tokens expire overnight, and blanking the page every
+time one aged out would be worse than showing a reading that is a few hours
+old.
 
 ## Sand and a spirit level, on the small board
 

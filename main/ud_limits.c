@@ -19,10 +19,38 @@
  * a stale payload reads as a countdown that has run out, which is honest --
  * the board cannot know what happened after the last push.
  */
+/*
+ * The rows are not cleared here, only counted down to nothing, so that a
+ * payload which turns out to be empty can put the old ones back. A Mac that
+ * cannot reach the endpoint -- no token, an expired one, no network -- sends
+ * the bare marker, and erasing a good reading because of a failed fetch would
+ * blank the page every time the token aged out overnight.
+ */
 static void begin_limits(usagedata_t *d, ud_host_t *h, int64_t now_us)
 {
-    (void)d; (void)now_us;
-    memset(&h->limits, 0, sizeof h->limits);
+    (void)d;
+    ud_limits_t *l = &h->limits;
+    l->pending_us = now_us;
+    l->prev_count = l->count;
+    l->prev_credits = l->have_credits;
+    l->count = 0;
+    l->have_credits = false;
+}
+
+/* Only now is the payload known to have said anything. `at_us` is what the
+   countdowns are measured against, so it must move when the limits move and
+   not when some other section arrives from the same machine. */
+static void end_limits(usagedata_t *d, ud_host_t *h)
+{
+    (void)d;
+    ud_limits_t *l = &h->limits;
+    if (l->count > 0 || l->have_credits) {
+        l->at_us = l->pending_us;
+        l->used = true;
+    } else {
+        l->count = l->prev_count;
+        l->have_credits = l->prev_credits;
+    }
 }
 
 static void line_limits(usagedata_t *d, ud_host_t *h, const char *tag, const char *q)
@@ -57,7 +85,6 @@ static void line_limits(usagedata_t *d, ud_host_t *h, const char *tag, const cha
          && strcmp(row->scope, "-") == 0)
             row->scope[0] = '\0';
         l->count++;
-        l->used = true;
     } else if (strcmp(tag, "credits") == 0) {
         q = ud_token(q, num, sizeof num - 1);
         if (q == NULL) return;
@@ -71,7 +98,6 @@ static void line_limits(usagedata_t *d, ud_host_t *h, const char *tag, const cha
         l->credit_pct = (uint8_t)(pct < 0 ? 0 : (pct > 100 ? 100 : pct));
         ud_token(q, l->currency, UD_LIMIT_CCY);
         l->have_credits = true;
-        l->used = true;
     }
 }
 
@@ -84,7 +110,7 @@ static void merge_limits(const usagedata_t *d, ud_view_t *out)
     for (int i = 0; i < UD_MAX_HOSTS; i++) {
         const ud_host_t *h = &d->hosts[i];
         if (!h->used || !h->limits.used) continue;
-        if (best == NULL || h->updated_us > best->updated_us) best = h;
+        if (best == NULL || h->limits.at_us > best->limits.at_us) best = h;
     }
     if (best == NULL) return;
 
@@ -97,8 +123,9 @@ static void merge_limits(const usagedata_t *d, ud_view_t *out)
     v->credit_pct = best->limits.credit_pct;
     memcpy(v->currency, best->limits.currency, sizeof v->currency);
     /* When the countdowns were true. Everything on the page is measured
-       from here. */
-    v->sent_us = best->updated_us;
+       from here, so it is the limits' own arrival time and not the machine's
+       last word of any kind. */
+    v->sent_us = best->limits.at_us;
 }
 
 static bool used_limits(const ud_host_t *h)
@@ -108,5 +135,5 @@ static bool used_limits(const ud_host_t *h)
 
 const ud_section_t ud_section_limits = {
     "!limits", UD_LIMITS, true,
-    begin_limits, line_limits, NULL, merge_limits, used_limits
+    begin_limits, line_limits, end_limits, merge_limits, used_limits
 };
