@@ -62,6 +62,28 @@ See [hardware/t-display-s3.md](hardware/t-display-s3.md) and
 [hardware/waveshare-lcd-147b.md](hardware/waveshare-lcd-147b.md) for those two
 boards' pin maps. Both are verified on hardware.
 
+## Reading a boot log over USB-Serial-JTAG
+
+The ROM and bootloader output is thrown away when no host is attached, so a
+boot log has to be captured by holding the port open across a reset. Two traps
+make this harder than it sounds, and both look like broken hardware:
+
+**Opening the port can reset the board.** pyserial asserts DTR and RTS when it
+opens, and on these boards DTR is IO0 and RTS is EN -- so merely connecting to
+look at the log can drop the chip into the ROM downloader, where it says
+nothing at all. Set `dtr` and `rts` to false on an unopened `serial.Serial()`
+and open it afterwards.
+
+**The reset polarity decides where it lands.** Pulsing RTS with DTR
+de-asserted boots the application (`boot:0x8 SPI_FAST_FLASH_BOOT`). Driving
+DTR during the reset boots the downloader instead (`waiting for download`).
+esptool's own `--after hard_reset` prints that it is resetting and frequently
+does not stick on these boards.
+
+**The heartbeat is every 30 seconds**, so a board that has just booted looks
+silent for half a minute. Watch for the `display:` and `sand:` lines instead
+if you need an answer sooner than that.
+
 ## Finding an axis mapping
 
 A board with an IMU needs to know which sensor axis is which on its panel, and

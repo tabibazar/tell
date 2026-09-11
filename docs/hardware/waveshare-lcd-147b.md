@@ -122,9 +122,14 @@ DTR is IO0.
 
 `firmware-backup/wave-stock-0x0-0x310000.bin` is her bootloader, partition
 table and `app0` as shipped — an Arduino build, `idf v5.1.4`, June 2024. Her
-stock table is `docs/hardware/wave-fingerprint.md`. `fingerprint.sh` returned
-an empty partition table on this board, having caught it in the ROM
-downloader; the table there was read separately and pasted in.
+stock table is `docs/hardware/wave-fingerprint.md`. That file was captured
+before her stock image was overwritten, so it is not regenerated: running
+`fingerprint.sh` on her now would record our firmware over the record of
+theirs.
+
+Its partition table was pasted in by hand, because `fingerprint.sh` returned
+that section empty on her. That was a bug in the script -- it assumed an
+earlier step had left the board in the bootloader -- and it is fixed.
 
 ## Not implemented
 
