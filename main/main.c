@@ -511,6 +511,12 @@ static page_t home_page(void)
        is home. The big board keeps the clock: it is a display of Claude's
        usage that happens to know the time, and this one is an instrument. */
     if (s_pages.available & PAGE_BIT(PAGE_LEVEL)) return PAGE_LEVEL;
+    /* And a board whose sensor exists to pour sand rests on the sand. The
+       level is checked first, so the Feather, which has both, still comes
+       home to the instrument rather than to the toy. This matters most on a
+       board with no RTC: the clock it would otherwise show after every power
+       cycle reads --:--:-- until a Mac speaks to it. */
+    if (s_pages.available & PAGE_BIT(PAGE_PARTICLES)) return PAGE_PARTICLES;
     if (s_settings.home_now && (s_pages.available & PAGE_BIT(PAGE_NOW))) return PAGE_NOW;
     return PAGE_CLOCK;
 }

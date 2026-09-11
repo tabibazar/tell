@@ -69,6 +69,13 @@ I (315) qmi8658: QMI8658 at 0x6B, revision 0x7C
 I (395) main:    sand: 323 grains on 320x172, gravity 1147, seed 0xBE4CFFF9
 ```
 
+**The sand is her home page.** `home_page()` rests a board on its sensor: the
+Feather comes home to the spirit level (checked first, so a board with both
+prefers the instrument), and wave comes home to the sand. It matters more here
+than it looks -- she has no RTC, so the clock she would otherwise show after
+every power cycle reads `--:--:--` until a Mac speaks to her. `flash-wave.sh`
+deliberately does not push her a clock for the same reason.
+
 **The axis signs will want setting once.** How the chip sits relative to the
 panel decides them, and no still reading can reveal them, because gravity has
 no component along an axis that is level. Send `!flip x`, `!flip y` or

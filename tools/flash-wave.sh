@@ -50,9 +50,9 @@ echo "flashing $BIN to $PORT${FULL:+ (full)}"
   "$HOME/esp/esp-idf/components/esptool_py/esptool/esptool.py" \
   --chip esp32s3 --port "$PORT" --after hard_reset write_flash $ARGS
 
-echo "flashed; waiting for the board to advertise"
-sleep 6
-DEVICE="${DEVICE:-wave}"
-# wave has no RTC, so she starts at --:--:-- until a Mac tells her the time.
-./tools/push-clock.sh "$DEVICE" || true
+echo "flashed"
+# No clock push here. wave comes home to the sand, not to a clock, so sending
+# her the clock-and-weather payload would only pull her off the page she
+# exists to show. Send one by hand if you want it:
+#   ./tools/push-clock.sh wave
 echo "done"

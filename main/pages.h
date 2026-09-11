@@ -27,7 +27,7 @@ typedef enum {
     PAGE_TURNS,      /* how long Claude takes */
     PAGE_MESSAGE,
     PAGE_DAILY,      /* tokens per day as bars */
-    PAGE_PARTICLES,  /* sand on the Feather, liquid on lilly; one page, one IMU */
+    PAGE_PARTICLES,  /* tilt-poured sand; the Feather and wave, which have IMUs */
     PAGE_LEVEL,      /* the Feather's spirit level; needs its IMU */
     PAGE_SETTINGS,   /* touch-only; last, so it is out of the way */
     PAGE_COUNT
