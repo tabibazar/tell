@@ -10,6 +10,10 @@ set -e
 cd "$(dirname "$0")/.."
 DEVICE="${1:-big}"
 
+# Every line this prints carries the time, because the question these logs get
+# asked is "is the board current?" and a bare "pushed" cannot answer it.
+say() { printf '%s %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*"; }
+
 LOCK="/tmp/push-now-$DEVICE.lock"
 # A lock left by a killed run (a flash or a bootout mid-push) would stop
 # every later run; break it once it is clearly abandoned.
@@ -21,4 +25,4 @@ trap 'rmdir "$LOCK"' EXIT
 
 ./tools/claude-stats.py --format data --section now | ./tools/tell-locked.sh --device "$DEVICE"
 ./tools/claude-stats.py --format data --section limits | ./tools/tell-locked.sh --device "$DEVICE"
-echo "pushed now and limits to $DEVICE"
+say "pushed now and limits to $DEVICE"

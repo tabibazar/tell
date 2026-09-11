@@ -13,6 +13,10 @@ set -e
 cd "$(dirname "$0")/.."
 DEVICE="${1:-big}"
 
+# Every line this prints carries the time, because the question these logs get
+# asked is "is the board current?" and a bare "pushed" cannot answer it.
+say() { printf '%s %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*"; }
+
 # Runs on a five-minute timer, so refuse to overlap a slow previous run.
 LOCK="/tmp/push-stats-$DEVICE.lock"
 # A lock left by a killed run (a flash or a bootout mid-push) would stop
@@ -21,7 +25,7 @@ if [ -d "$LOCK" ] && [ $(( $(date +%s) - $(stat -f %m "$LOCK" 2>/dev/null || ech
     rmdir "$LOCK" 2>/dev/null || true
 fi
 if ! mkdir "$LOCK" 2>/dev/null; then
-    echo "another push to $DEVICE is still running" >&2
+    echo "$(date '+%Y-%m-%d %H:%M:%S') another push to $DEVICE is still running" >&2
     exit 0
 fi
 trap 'rmdir "$LOCK"' EXIT
@@ -33,4 +37,4 @@ trap 'rmdir "$LOCK"; rm -rf "$OUT"' EXIT
 for section in stats daily year cost rhythm now projects cache tools thinking records runs turns; do
     [ -s "$OUT/$section.txt" ] && ./tools/tell-locked.sh --device "$DEVICE" < "$OUT/$section.txt"
 done
-echo "pushed thirteen sections to $DEVICE"
+say "pushed thirteen sections to $DEVICE"
