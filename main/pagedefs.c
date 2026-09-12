@@ -31,6 +31,7 @@ const page_def_t page_defs[PAGE_COUNT] = {
     [PAGE_TIMER]    = { "Timer",         0,                             NULL,           false, 0,        true,  false, false },
     [PAGE_STOPWATCH]= { "Stopwatch",     0,                             NULL,           false, 0,        true,  false, false },
     [PAGE_TEMPS]    = { "Temps",         0,                             NULL,           false, SEC(2),   true,  false, true  },
+    [PAGE_WIFI]     = { "WiFi",          0,                             NULL,           false, SEC(2),   true,  false, false },
     [PAGE_RTC]      = { "RTC",           0,                             NULL,           false, SEC(1),   true,  false, false },
     [PAGE_LEVEL]    = { "Level",         0,                             NULL,           false, 0,        true,  false, false },
     [PAGE_SETTINGS] = { "Settings",      0,                             NULL,           false, 0,        false, true,  false },

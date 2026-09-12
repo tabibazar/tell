@@ -126,7 +126,22 @@ esp_err_t display_init(void)
     ESP_ERROR_CHECK(esp_lcd_panel_set_gap(s_panel, LCD_GAP_X, LCD_GAP_Y));
     ESP_ERROR_CHECK(esp_lcd_panel_disp_on_off(s_panel, true));
 
+    /*
+     * The framebuffer goes to PSRAM where there is any, and internal DMA
+     * memory where there is not.
+     *
+     * It fits internal memory perfectly well on its own -- it did for months
+     * -- but it is 107 KB of the ~220 KB there is, and the WiFi radio needs
+     * internal DMA memory of its own that cannot come from anywhere else.
+     * Two things that both must be internal do not fit; one of them can live
+     * elsewhere, and a buffer written once a frame and read by DMA is far
+     * less bothered by the move than a radio would be.
+     */
+#if CONFIG_SPIRAM
+    s_fb = heap_caps_malloc(LCD_W * LCD_H * sizeof(uint16_t), MALLOC_CAP_SPIRAM);
+#else
     s_fb = heap_caps_malloc(LCD_W * LCD_H * sizeof(uint16_t), MALLOC_CAP_DMA);
+#endif
     if (s_fb == NULL) {
         ESP_LOGE(TAG, "no DMA memory for framebuffer");
         return ESP_ERR_NO_MEM;

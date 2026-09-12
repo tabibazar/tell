@@ -6,6 +6,7 @@
 #include "level.h"
 #include "particles.h"
 #include "qmi8658.h"
+#include "esp_heap_caps.h"
 #include "esp_random.h"
 #include "particles.h"
 #include "pagedefs.h"
@@ -16,6 +17,8 @@
 #include "shaketimer.h"
 #include "templog.h"
 #include "tempsense.h"
+#include "rssi.h"
+#include "wifi.h"
 #include "timecalc.h"
 #include "usagedata.h"
 
@@ -109,8 +112,20 @@ static bool claude_busy(const ud_view_t *v, int64_t now)
  * soldered to the board at GPIO48/47. lilly and the CrowPanel have no sensor
  * and are compiled with none of this.
  */
-#if defined(CONFIG_SCREEN_BOARD_FEATHER_S3_TFT) \
- || defined(CONFIG_SCREEN_BOARD_WAVESHARE_147B)
+#ifdef CONFIG_SCREEN_WIFI
+#define HAVE_WIFI 1
+#else
+#define HAVE_WIFI 0
+#endif
+
+/*
+ * The radio and the sensor pages do not fit together. WiFi needs about fifty
+ * kilobytes of internal DMA memory and cannot take it from PSRAM; with the
+ * sand's grain array in .bss there are twenty-seven free. So a build has one
+ * or the other, and this is where that is said.
+ */
+#if (defined(CONFIG_SCREEN_BOARD_FEATHER_S3_TFT) \
+  || defined(CONFIG_SCREEN_BOARD_WAVESHARE_147B)) && !HAVE_WIFI
 #define HAVE_IMU 1
 #else
 #define HAVE_IMU 0
@@ -929,6 +944,72 @@ static void rtc_refresh_date(void)
     }
 }
 
+#if HAVE_WIFI
+/*
+ * What is on the air. The point of putting a radio on a board with a battery
+ * and a screen is that you can carry it to where the question is: which
+ * access point actually reaches the far bedroom, and on what channel.
+ *
+ * Rescanned on a timer rather than on arrival, so walking about with it shows
+ * the numbers moving, which is the whole use.
+ */
+/*
+ * Three at a time, two rows each, under a title. Three readable entries beat
+ * six unreadable ones on a panel twenty-six characters wide.
+ */
+#define WIFI_APS 3
+#define WIFI_SCAN_EVERY_US (6 * 1000000LL)
+
+static wifi_ap_t s_aps[WIFI_APS];
+static int s_ap_count;
+static int64_t s_scan_us;
+
+static void draw_wifi(canvas_t *c, int64_t now)
+{
+    if (s_scan_us == 0 || now - s_scan_us > WIFI_SCAN_EVERY_US) {
+        s_scan_us = now;
+        s_ap_count = wifi_scan(s_aps, WIFI_APS);
+    }
+
+    canvas_clear(c);
+    canvas_fill_rect(c, 0, 0, c->w, c->cell_h, PAL_TITLE_BG);
+    char buf[48];
+    snprintf(buf, sizeof buf, "WIFI  %d seen", s_ap_count);
+    canvas_puts(c, 0, 0, buf, PAL_FG);
+
+    if (s_ap_count <= 0) {
+        canvas_puts(c, 1, 2, "listening...", PAL_DIM);
+        display_blit();
+        return;
+    }
+
+    for (int i = 0; i < s_ap_count; i++) {
+        int row = 1 + i * 2;
+        if (row + 1 >= c->rows) break;
+
+        /* The name on its own line, in white on black. Nothing is drawn
+           behind text: a bar under a word is how the last version of this
+           page became unreadable. */
+        canvas_puts(c, 0, row, s_aps[i].ssid[0] ? s_aps[i].ssid : "(hidden)", PAL_FG);
+
+        snprintf(buf, sizeof buf, "%d dBm  ~%dm  ch%d", s_aps[i].rssi,
+                 (int)(rssi_distance_m(s_aps[i].rssi) + 0.5f), s_aps[i].channel);
+        canvas_puts(c, 1, row + 1, buf, PAL_DIM);
+
+        /*
+         * A strip along the bottom of the second row, four pixels tall, so
+         * it reads as strength at a glance without sitting under anything.
+         * Colour says good, fair or poor; length says how much.
+         */
+        int bars = rssi_bars(s_aps[i].rssi);
+        uint16_t colour = bars >= 3 ? PAL_A2 : bars == 2 ? PAL_A4 : PAL_A5;
+        int y = (row + 2) * c->cell_h - 4;
+        canvas_fill_rect(c, 0, y, c->w * bars / 4, 3, colour);
+    }
+    display_blit();
+}
+#endif /* HAVE_WIFI */
+
 /*
  * The clock chip, and what it says about itself.
  *
@@ -1128,6 +1209,9 @@ void app_main(void)
 #if !HAVE_LEVEL
     available &= ~PAGE_BIT(PAGE_LEVEL);
 #endif
+#if !HAVE_WIFI
+    available &= ~PAGE_BIT(PAGE_WIFI);
+#endif
 #if !HAVE_PARTICLES
     available &= ~(PAGE_BIT(PAGE_PARTICLES) | PAGE_BIT(PAGE_TIMER)
                  | PAGE_BIT(PAGE_STOPWATCH));
@@ -1167,6 +1251,16 @@ void app_main(void)
        any Mac has spoken this boot. */
     if (settings_load_zone(&s_data.utc_offset_min, s_data.tz, (int)sizeof s_data.tz))
         s_data.have_utc = true;
+#if HAVE_WIFI
+    /* The radio is the expensive tenant here -- it wants internal DMA memory
+       that the framebuffer and BLE also want -- so say what is left before
+       bringing it up. A failure is quiet and permanent: the survey page simply
+       finds nothing and every other page carries on. */
+    ESP_LOGW(TAG, "internal heap free %u, largest block %u",
+             (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+             (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
+    wifi_start();
+#endif
     tempsense_init();
     templog_init(&s_templog, TEMPLOG_EVERY_S);
     /* Not finding one is ordinary: the board does without, as it does
@@ -1387,6 +1481,27 @@ void app_main(void)
         }
 #endif
 
+#if HAVE_WIFI
+        /*
+         * One scan a few seconds after boot, written to the log. The survey
+         * page needs someone to turn to it, and turning to it needs BLE or a
+         * button -- so a board that is being carried round a house should say
+         * what it heard without being asked.
+         */
+        {
+            static bool scanned;
+            if (!scanned && now > 8000000) {
+                scanned = true;
+                wifi_ap_t aps[10];
+                int n = wifi_scan(aps, 10);
+                ESP_LOGW(TAG, "heard %d access points:", n);
+                for (int i = 0; i < n; i++)
+                    ESP_LOGW(TAG, "   %-24s %4d dBm  channel %d",
+                             aps[i].ssid[0] ? aps[i].ssid : "(hidden)",
+                             aps[i].rssi, aps[i].channel);
+            }
+        }
+#endif
         templog_sample(now);
 
         if (now - s_busy_check_us > BUSY_CHECK_US) {
@@ -1515,6 +1630,9 @@ void app_main(void)
 
         if (s_pages.current == PAGE_CLOCK) draw_clock(c, now);
         if (s_pages.current == PAGE_RTC) draw_rtc(c, now);
+#if HAVE_WIFI
+        if (s_pages.current == PAGE_WIFI) draw_wifi(c, now);
+#endif
         if (s_pages.current == PAGE_TEMPS) {
             templog_draw(&s_templog, c);
             display_blit();

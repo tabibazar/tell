@@ -9,7 +9,8 @@ CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
 # in sdkconfig.defaults are already right and nothing is overridden here.
 
 # No PSRAM. The framebuffer is 320*172*2 = 107 KB and fits internal DMA
-# memory; the board's 8 MB of octal stays off until something needs it.
+# memory; the 8 MB of octal stays off because nothing in this build needs it.
+# The WiFi variant does, and turns it on -- see sdkconfig.defaults.wave-wifi.
 
 # Ten per cent. A desk ornament does not need a lit panel at full, and the
 # backlight is the largest steady draw on the board -- the die sat at about

@@ -49,6 +49,20 @@ config SCREEN_I2C_SCL
     default 47 if SCREEN_BOARD_WAVESHARE_147B
     default 41
 
+config SCREEN_WIFI
+    bool "Build the WiFi variant instead of the sensor pages"
+    default n
+    help
+        The radio needs about fifty kilobytes of internal DMA memory and
+        cannot take it from PSRAM. With the sand, the level and the IMU
+        compiled in there are twenty-seven kilobytes free, and WiFi fails at
+        init with ESP_ERR_NO_MEM rather than degrading.
+
+        So it is one or the other on this board, and saying so out loud is
+        better than half of each: this switch trades the sensor pages for the
+        radio. The clock, the message page, the temperature chart and the RTC
+        page stay either way.
+
 config SCREEN_BRIGHTNESS
     int "Panel brightness, 0 to 100"
     range 0 100

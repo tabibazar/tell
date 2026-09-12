@@ -21,8 +21,16 @@ else()
     set(BOARD_EXCLUDES "display_rgb.c" "display_i80.c")
 endif()
 
+# The radio and the sensor pages do not fit together in internal RAM, so a
+# build has one or the other. See SCREEN_WIFI in Kconfig.projbuild.
+if(CONFIG_SCREEN_WIFI)
+    list(APPEND BOARD_EXCLUDES "particles.c" "shaketimer.c" "level.c" "qmi8658.c")
+else()
+    list(APPEND BOARD_EXCLUDES "wifi.c")
+endif()
+
 idf_component_register(
     SRC_DIRS "."
     EXCLUDE_SRCS ${BOARD_EXCLUDES}
     INCLUDE_DIRS "."
-    REQUIRES esp_lcd driver esp_driver_ledc esp_driver_i2c esp_driver_tsens esp_timer bt nvs_flash)
+    REQUIRES esp_lcd driver esp_driver_ledc esp_driver_i2c esp_driver_tsens esp_timer bt nvs_flash esp_wifi esp_netif esp_event)
