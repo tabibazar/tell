@@ -93,6 +93,25 @@ config SCREEN_BUTTON_B
         The Waveshare 1.47B has two buttons on it but only one that software
         can see: its other key pulls EN to ground and is a hardware reset.
 
+config SCREEN_ROTATE_SECS
+    int "Seconds on each page before moving to the next, or 0 to stay put"
+    default 20 if SCREEN_BOARD_TDISPLAY_S3
+    default 0
+    help
+        A board with no touch panel and two buttons is better at showing you
+        things in turn than at being navigated. Rotation makes the pages a
+        slideshow you watch rather than a menu you drive, and it replaces the
+        screensaver: nothing sits still long enough to burn in, so the saver
+        has nothing left to protect.
+
+        A button press holds the current page for a minute before the
+        rotation picks up again. Pages struck off the round on the menu, and
+        the ones that are never in it -- the sand, the level, a running
+        stopwatch -- are left out here too.
+
+        0 leaves the display wherever it was last put, which is what the big
+        panel and the Feather do.
+
 config SCREEN_I2C_AUX_SDA
     int "Second I2C SDA pin, or -1 for none"
     default 10 if SCREEN_BOARD_WAVESHARE_147B

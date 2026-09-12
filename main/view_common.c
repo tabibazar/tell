@@ -46,6 +46,18 @@ const char *vw_clock_strip(void)
     return s_strip;
 }
 
+/* Just the local time, for a panel with no room for the zones. The full strip
+   is twenty characters and a small panel has twenty-six altogether, so the
+   choice is the short form or nothing -- and a board whose job is to be
+   glanced at should show the time. */
+const char *vw_clock_short(void)
+{
+    static char out[8];
+    if (s_strip[0] == '\0') return "";
+    snprintf(out, sizeof out, "%.5s", s_strip);
+    return out;
+}
+
 static bool s_has_touch = true;
 
 void vw_set_touch(bool has_touch) { s_has_touch = has_touch; }

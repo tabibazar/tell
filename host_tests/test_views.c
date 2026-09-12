@@ -511,7 +511,7 @@ int main(int argc, char **argv)
         expect("feeds name real payload kinds and animation needs a drawer", bad_feed == 0);
         expect("the live page refreshes itself", page_defs[PAGE_NOW].refresh_us > 0);
         expect("clock and message exist on every board",
-               page_defs[PAGE_CLOCK].everywhere && page_defs[PAGE_MESSAGE].everywhere);
+               (page_defs[PAGE_CLOCK].where & PG_SMALL) && (page_defs[PAGE_MESSAGE].where & PG_SMALL));
         expect("menu and settings need touch and stay out of the saver",
                page_defs[PAGE_MENU].needs_touch && page_defs[PAGE_SETTINGS].needs_touch
                && !page_defs[PAGE_MENU].in_saver && !page_defs[PAGE_SETTINGS].in_saver);
@@ -632,6 +632,78 @@ int main(int argc, char **argv)
     views_models(&cv, &view, 0.0f, now);
     expect("at t=0 the lines lie on the baseline",
            count_colour_above(pal_accent(0), 9 * 24 - 8) == 0);
+
+    /*
+     * lilly's panel: 320x170 at scale 1, which is 26 columns by 7 rows --
+     * the geometry display_i80.c actually reports, not a round number.
+     *
+     * Two pages are drawn for it. The assertion that matters is the same one
+     * the chart pages get: a layout written for 64x20 and handed a quarter of
+     * the width is exactly how a view walks off the end of its framebuffer,
+     * and the guard words catch that where an eye on a photograph would not.
+     */
+    {
+#define SW 320
+#define SH 170
+        static uint16_t small[8 + SW * SH + 8];
+        canvas_t sc;
+
+        struct { const char *what; page_t page; } pages[2] = {
+            { "limits", PAGE_LIMITS }, { "usage", PAGE_USAGE },
+        };
+
+        for (int k = 0; k < 2; k++) {
+            memset(small, 0xAB, sizeof small);
+            canvas_init(&sc, small + 8, SW, SH, 1);
+            if (k == 0) {
+                expect("the small panel is 26 by 7", sc.cols == 26 && sc.rows == 7);
+            }
+            page_defs[pages[k].page].draw(&sc, &view, 1.0f, now);
+
+            int intact = 1;
+            for (int i = 0; i < 8; i++)
+                if (small[i] != 0xABAB || small[8 + SW * SH + i] != 0xABAB) intact = 0;
+            char msg[64];
+            snprintf(msg, sizeof msg, "%s stays inside the small framebuffer", pages[k].what);
+            expect(msg, intact);
+
+            int lit = 0;
+            for (int i = 0; i < SW * SH; i++) if (small[8 + i] != PAL_BG) lit++;
+            snprintf(msg, sizeof msg, "%s actually draws something", pages[k].what);
+            expect(msg, lit > 400);
+
+            /* Nothing below the last row: seven rows of 24 leave two pixels
+               of slack at the bottom, and a layout that assumed twenty rows
+               would spill into them and be clipped rather than seen. */
+            int below = 0;
+            for (int y = 7 * 24; y < SH; y++)
+                for (int x = 0; x < SW; x++)
+                    if (small[8 + y * SW + x] != PAL_BG) below++;
+            snprintf(msg, sizeof msg, "%s draws nothing past the last row", pages[k].what);
+            expect(msg, below == 0);
+        }
+
+        /* The limits page is the one with colour on it: three limits, three
+           strips, and the spent one in vermillion because it is at 100%. */
+        memset(small, 0, sizeof small);
+        canvas_init(&sc, small + 8, SW, SH, 1);
+        views_limits(&sc, &view, 1.0f, now);
+        int vermillion = 0;
+        for (int i = 0; i < SW * SH; i++) if (small[8 + i] == PAL_A5) vermillion++;
+        expect("a spent limit is marked in vermillion", vermillion > 100);
+
+        /* Both pages must be offered on a small panel and the limits page on
+           both, which is the whole point of the where flag. */
+        expect("usage is a small-panel page",
+               page_defs[PAGE_USAGE].where == PG_SMALL);
+        expect("limits suits both panels",
+               page_defs[PAGE_LIMITS].where == PG_BOTH);
+        expect("the big data pages stay off small panels",
+               !(page_defs[PAGE_YEAR].where & PG_SMALL)
+               && !(page_defs[PAGE_RHYTHM].where & PG_SMALL));
+#undef SW
+#undef SH
+    }
 
     if (failures == 0) { printf("all tests passed\n"); return 0; }
     printf("%d test(s) failed\n", failures);

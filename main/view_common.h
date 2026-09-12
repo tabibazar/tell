@@ -48,6 +48,9 @@ void vw_set_clock(bool known, uint32_t local_secs, int utc_offset_min,
 /* The strip itself, or an empty string when unknown; for tests and layout. */
 const char *vw_clock_strip(void);
 
+/* The local time alone, "09:52", for panels too narrow for the full strip. */
+const char *vw_clock_short(void);
+
 /* The MENU tab at the top left of a page, and whether a tap landed on it.
    vw_title draws it; the clock and message pages, which have no title bar,
    draw it themselves. The hit area is bigger than the tab (fingertips). */

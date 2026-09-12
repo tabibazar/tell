@@ -1093,18 +1093,49 @@ static void draw_rtc(canvas_t *c, int64_t now)
     display_blit();
 }
 
-/* Date above the digits, weather below, both sent from the Mac. Centred so
-   they read as part of the clock rather than as a caption. */
+/* One line of text, centred on the page. */
+static void centred(canvas_t *c, int row, const char *s, uint16_t colour)
+{
+    int col = (c->cols - (int)strlen(s)) / 2;
+    canvas_puts(c, col < 0 ? 0 : col, row, s, colour);
+}
+
+/*
+ * Date above the digits, weather below, both sent from the Mac. Centred so
+ * they read as part of the clock rather than as a caption.
+ *
+ * The weather is one sentence of about forty characters -- conditions,
+ * temperature, humidity, wind, and the day's high and low -- which is a third
+ * of the big panel's width and half again more than a small one has. On a
+ * narrow panel it is broken over the last two rows at a space rather than
+ * being clipped: canvas_puts stops at the edge, so the untruncated version of
+ * this simply lost the wind and the forecast without saying so.
+ */
 static void draw_clock_extras(canvas_t *c)
 {
-    if (s_data.date[0]) {
-        int col = (c->cols - (int)strlen(s_data.date)) / 2;
-        canvas_puts(c, col < 0 ? 0 : col, 1, s_data.date, PAL_FG);
-    }
-    if (s_data.weather[0]) {
-        int col = (c->cols - (int)strlen(s_data.weather)) / 2;
-        canvas_puts(c, col < 0 ? 0 : col, c->rows - 2, s_data.weather, PAL_A0);
-    }
+    if (s_data.date[0]) centred(c, 1, s_data.date, PAL_FG);
+    if (!s_data.weather[0]) return;
+
+    int len = (int)strlen(s_data.weather);
+    if (len <= c->cols) { centred(c, c->rows - 2, s_data.weather, PAL_A0); return; }
+
+    /* The last space that leaves a first line fitting the panel. Falling back
+       to a hard break keeps a single very long word from vanishing. */
+    int cut = 0;
+    for (int i = 0; i < len && i <= c->cols; i++)
+        if (s_data.weather[i] == ' ') cut = i;
+    if (cut == 0) cut = c->cols < len ? c->cols : len;
+
+    char first[40];
+    int n = cut < (int)sizeof first - 1 ? cut : (int)sizeof first - 1;
+    memcpy(first, s_data.weather, (size_t)n);
+    while (n > 0 && first[n - 1] == ' ') n--;      /* the break sits on a space */
+    first[n] = '\0';
+    centred(c, c->rows - 2, first, PAL_A0);
+
+    const char *rest = s_data.weather + cut;
+    while (*rest == ' ') rest++;
+    if (*rest) centred(c, c->rows - 1, rest, PAL_A0);
 }
 
 /* Draws the clock somewhere new each minute. Deliberately not random per
@@ -1191,7 +1222,7 @@ void app_main(void)
     unsigned available = 0;
     for (int i = 0; i < PAGE_COUNT; i++) {
         const page_def_t *pd = &page_defs[i];
-        if (!pd->everywhere && !big) continue;
+        if (!(pd->where & (big ? PG_BIG : PG_SMALL))) continue;
         if (pd->needs_touch && !touch) continue;
         available |= PAGE_BIT(i);
     }
@@ -1222,6 +1253,17 @@ void app_main(void)
        runtime already. If the chip knows the time, start from it, so the
        display is right before any Mac has said anything. */
     s_rtc = ds3231_init() == ESP_OK;
+
+    /*
+     * The clock chip's own page, and the temperature chart, both exist to
+     * compare two readings: the board's time against the chip's, and the die
+     * against the crystal. With no chip there is nothing to compare -- the
+     * RTC page would report an absent chip and the chart would draw one flat
+     * trace of a number nobody asked about -- so a board without one is not
+     * offered either page rather than being offered an empty one.
+     */
+    if (!s_rtc) available &= ~(PAGE_BIT(PAGE_RTC) | PAGE_BIT(PAGE_TEMPS));
+
     uint32_t rtc_secs;
     if (s_rtc && ds3231_read(&rtc_secs)) {
         on_time(rtc_secs);
@@ -1234,6 +1276,9 @@ void app_main(void)
         rtc_refresh_date();
     }
     pages_init(&s_pages, available);
+    /* A slideshow, on the boards configured for one. Set before the saver is
+       applied, because a rotating board turns the saver off. */
+    pages_set_rotate(&s_pages, (int64_t)CONFIG_SCREEN_ROTATE_SECS * 1000000LL);
     settings_defaults(&s_settings);
 
     canvas_t *c = display_canvas();
@@ -1570,8 +1615,18 @@ void app_main(void)
             pages_step(&s_pages, cycle_skip());
         }
 
-        /* Once idle, cycle the pages so no image sits long enough to burn in. */
-        pages_tick(&s_pages, now);
+        /* Once idle, move on. On a board that rotates this is the normal
+           way it is read -- you watch it rather than drive it -- and it
+           replaces the screensaver rather than running alongside one. */
+        if (pages_tick(&s_pages, now, cycle_skip())) {
+            s_drawn_page = PAGE_COUNT;      /* force a full redraw */
+            s_drawn_second = -1;
+            /* Which pages a board actually rotates through is decided by
+               three things at once -- the panel size, what is plugged in, and
+               what has been struck off the menu -- so it is worth saying
+               rather than inferring from a heartbeat. */
+            ESP_LOGI(TAG, "rotated to %s", page_defs[s_pages.current].name);
+        }
 
         /* The strip in the title bars: local time and UTC, once both the
            board's clock and the Mac's offset are known. */

@@ -112,42 +112,69 @@ int main(void)
     pages_init(&p, ALL);
     expect("the clock is never idle", !pages_idle_expired(&p, PAGES_IDLE_US * 10));
 
-    /* Rotation, which exists to stop a static image burning in. Compiled out
-       when PAGES_ROTATE_US is zero, so the assertions follow the setting. */
-#if PAGES_ROTATE_US > 0
+    /*
+     * Rotation. It used to be a compile-time constant fixed at zero, so this
+     * block never ran; it is a per-board setting now, and a board that has it
+     * is read by watching rather than by pressing.
+     */
+#define ROT (20 * 1000000LL)
     pages_init(&p, ALL);
-    expect("no rotation while freshly pinned", !pages_tick(&p, 1000));
+    expect("rotation is off unless a board asks for it",
+           !pages_tick(&p, PAGES_IDLE_US * 100, 0));
+    expect("and the page does not move", p.current == PAGE_CLOCK);
 
-    int64_t t = PAGES_IDLE_US + PAGES_ROTATE_US + 1;
-    expect("rotates once idle", pages_tick(&p, t));
+    pages_set_rotate(&p, ROT);
+    expect("no rotation while freshly pinned", !pages_tick(&p, 1000, 0));
+
+    /* The pin is a minute, not the five that hold the screensaver off: the
+       point of a rotating board is that it keeps moving. */
+    expect("still pinned just under the minute",
+           !pages_tick(&p, PAGES_ROTATE_PIN_US - 1, 0));
+
+    int64_t t = PAGES_ROTATE_PIN_US + ROT + 1;
+    expect("rotates once the pin expires", pages_tick(&p, t, 0));
     expect("moved off the clock", p.current == PAGE_MENU);
-    expect("does not rotate again immediately", !pages_tick(&p, t + 1));
-    expect("rotates after the interval", pages_tick(&p, t + PAGES_ROTATE_US + 1));
-    expect("advanced again", p.current == PAGE_DAILY);
+    expect("does not rotate again immediately", !pages_tick(&p, t + 1, 0));
+    expect("rotates after the interval", pages_tick(&p, t + ROT + 1, 0));
 
     /* Rotation must not count as activity, or it would pin itself and stop. */
-    expect("rotation keeps rotating",
-           pages_tick(&p, t + 2 * PAGES_ROTATE_US + 2));
-    expect("still advancing", p.current == PAGE_MESSAGE);
+    expect("rotation keeps rotating", pages_tick(&p, t + 2 * ROT + 2, 0));
 
-    /* A touch pins the page again and suspends rotation. */
-    int64_t touched = t + 3 * PAGES_ROTATE_US;
+    /* A button or a touch pins the page again and suspends rotation. */
+    int64_t touched = t + 3 * ROT;
     pages_advance(&p, touched);
-    expect("touch suspends rotation",
-           !pages_tick(&p, touched + PAGES_ROTATE_US + 1));
-    expect("rotation resumes after the pin expires",
-           pages_tick(&p, touched + PAGES_IDLE_US + PAGES_ROTATE_US + 1));
+    expect("a press suspends rotation",
+           !pages_tick(&p, touched + ROT + 1, 0));
+    expect("rotation resumes a minute later",
+           pages_tick(&p, touched + PAGES_ROTATE_PIN_US + ROT + 1, 0));
+
+    /* The skip mask is the screensaver's, so a page struck off the round is
+       off it here too. */
+    {
+        pages_t q;
+        pages_init(&q, PAGE_BIT(PAGE_CLOCK) | PAGE_BIT(PAGE_MENU) | PAGE_BIT(PAGE_MESSAGE));
+        pages_set_rotate(&q, ROT);
+        int64_t u = PAGES_ROTATE_PIN_US + ROT + 1;
+        expect("it rotates past a skipped page",
+               pages_tick(&q, u, PAGE_BIT(PAGE_MENU)));
+        expect("landing on the one that was not skipped", q.current == PAGE_MESSAGE);
+    }
+
+    /* A rotating board is its own screensaver; running both would be two
+       slideshows fighting over the timing. */
+    pages_init(&p, ALL);
+    expect("a still board still gets a saver",
+           pages_saver_active(&p, PAGES_SAVER_US + 1));
+    pages_set_rotate(&p, ROT);
+    expect("a rotating one does not",
+           !pages_saver_active(&p, PAGES_SAVER_US + 1));
 
     /* A board with one page has nothing to rotate to. */
     pages_init(&p, PAGE_BIT(PAGE_CLOCK));
+    pages_set_rotate(&p, ROT);
     expect("a lone page reports no change",
-           !pages_tick(&p, PAGES_IDLE_US + PAGES_ROTATE_US + 1));
-#else
-    pages_init(&p, ALL);
-    expect("rotation disabled: never advances on its own",
-           !pages_tick(&p, PAGES_IDLE_US * 100));
-    expect("and the page does not move", p.current == PAGE_CLOCK);
-#endif
+           !pages_tick(&p, PAGES_ROTATE_PIN_US + ROT + 1, 0));
+#undef ROT
 
     /* Screensaver: on after PAGES_SAVER_US of nothing, off the moment
        anything happens. The assertions track the constant, not a fixed

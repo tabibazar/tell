@@ -11,3 +11,7 @@ CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
 # No PSRAM. The board has 8 MB of octal, but the framebuffer is 320*170*2 =
 # 106 KB and fits internal DMA memory. Turning it on is CONFIG_SPIRAM=y plus
 # CONFIG_SPIRAM_MODE_OCT=y, whenever something needs it.
+
+# The pages rotate every 20 seconds on her -- see CONFIG_SCREEN_ROTATE_SECS,
+# whose Kconfig default already says 20 for this board. She has no touch and
+# two buttons, so a slideshow reads better than a menu.

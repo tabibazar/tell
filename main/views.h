@@ -47,6 +47,7 @@ void views_tools(canvas_t *c, const ud_view_t *d, float t, int64_t now_us);
 void views_thinking(canvas_t *c, const ud_view_t *d, float t, int64_t now_us);
 
 /* The account's limits: a bar and a live countdown for each window. */
+void views_usage(canvas_t *c, const ud_view_t *d, float t, int64_t now_us);
 void views_limits(canvas_t *c, const ud_view_t *d, float t, int64_t now_us);
 
 /* Records: personal bests, each with the day it happened. */

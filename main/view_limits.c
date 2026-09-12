@@ -37,8 +37,74 @@ static void row_label(const ud_limit_t *r, char *out, int size)
         if (*p >= 'a' && *p <= 'z') *p = (char)(*p - 'a' + 'A');
 }
 
+
+/*
+ * The same three limits on 26 columns by 7 rows.
+ *
+ * Two rows each, the way the WiFi survey does it: the name and the percentage
+ * on one line, the countdown under it, and a strip of colour along the bottom
+ * of the pair rather than behind any of it. Nothing is drawn under text --
+ * that is what made the first attempt at a small coloured page unreadable.
+ *
+ * The countdown is the reason this page is worth having on a board at all:
+ * it runs from the board's own clock between pushes, so a number a minute old
+ * still reads as live.
+ */
+static void limits_small(canvas_t *c, const ud_limits_view_t *l, int64_t now_us)
+{
+    canvas_clear(c);
+    canvas_fill_rect(c, 0, 0, c->w, c->cell_h, PAL_TITLE_BG);
+    canvas_puts(c, 0, 0, "LIMITS", PAL_FG);
+    /* The clock strip is twenty characters of the twenty-six, so it goes on
+       the title row only if "LIMITS" leaves room for it. */
+    /* The full strip carries both zones and will not fit beside a title on
+       twenty-six columns, so this panel gets the local time alone. */
+    const char *strip = vw_clock_short();
+    if (strip[0] != '\0') canvas_puts(c, c->cols - (int)strlen(strip), 0, strip, PAL_FG);
+
+    if (!l->present || l->count == 0) {
+        canvas_puts(c, 1, 2, "waiting for a Mac", PAL_DIM);
+        return;
+    }
+
+    int64_t aged = (now_us - l->sent_us) / 1000000;
+    if (aged < 0) aged = 0;
+
+    for (int i = 0; i < l->count && i < 3; i++) {
+        const ud_limit_t *r = &l->rows[i];
+        int row = 1 + i * 2;
+        if (row + 1 >= c->rows) break;
+
+        char label[24], line[40], when[24];
+        row_label(r, label, sizeof label);
+        /* "WEEK, ALL MODELS" does not fit beside a percentage; on this panel
+           the unqualified week is simply the week. */
+        if (strcmp(label, "WEEK, ALL MODELS") == 0)
+            snprintf(label, sizeof label, "WEEK");
+        canvas_puts(c, 0, row, label, r->active ? PAL_FG : PAL_DIM);
+
+        snprintf(line, sizeof line, "%u%%", (unsigned)r->percent);
+        vw_right_text(c, row, c->cols - 1, line, PAL_FG);
+
+        countdown((int64_t)r->reset_secs - aged, when, sizeof when);
+        snprintf(line, sizeof line, "resets %s", when);
+        canvas_puts(c, 1, row + 1, line, PAL_DIM);
+
+        /* Length is how much is spent, colour is how worried to be. */
+        int y = (row + 2) * c->cell_h - 4;
+        unsigned pct = r->percent > 100 ? 100 : r->percent;
+        int w = (int)((long)c->w * pct / 100);
+        canvas_fill_rect(c, 0, y, c->w, 3, 0x2124);
+        canvas_fill_rect(c, 0, y, w, 3, bar_colour(r));
+    }
+}
+
 void views_limits(canvas_t *c, const ud_view_t *d, float t, int64_t now_us)
 {
+    /* A panel this narrow cannot hold the labels, let alone the bars beside
+       them, so it gets its own layout rather than a squeezed one. */
+    if (c->cols < 40) { limits_small(c, &d->limits, now_us); return; }
+
     canvas_clear(c);
     const ud_limits_view_t *l = &d->limits;
     char fresh[24];
