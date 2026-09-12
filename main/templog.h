@@ -22,6 +22,7 @@
 #define TEMPLOG_MAX 160
 
 typedef struct {
+    int   every_s;    /* seconds between samples, for the span in the corner */
     float die[TEMPLOG_MAX];
     float xtal[TEMPLOG_MAX];
     bool  has_xtal[TEMPLOG_MAX];
@@ -29,7 +30,7 @@ typedef struct {
     int   head;       /* where the next one goes */
 } templog_t;
 
-void templog_init(templog_t *t);
+void templog_init(templog_t *t, int seconds_between_samples);
 
 /* Adds a sample, dropping the oldest once full. `xtal` is ignored unless
    `have_xtal`, so a board with no clock chip still charts its own die. */
@@ -42,10 +43,18 @@ float templog_die(const templog_t *t, int i);
 bool  templog_xtal(const templog_t *t, int i, float *out);
 
 /*
- * The lowest and highest of everything held, which is what the chart is
- * scaled to. False when there is nothing to scale yet.
+ * The lowest and highest of one series. Each is scaled to its own range
+ * rather than to a shared one, because they sit tens of degrees apart: a die
+ * at 51 and a crystal at 24 set a range in which neither one's own half-degree
+ * movement is visible at all, which is the whole thing worth looking at.
+ *
+ * The cost is that height no longer means absolute temperature, so each trace
+ * carries its own labelled high and low.
  */
-bool templog_range(const templog_t *t, float *lo, float *hi);
+bool templog_range(const templog_t *t, bool die_series, float *lo, float *hi);
+
+/* How long the log covers, in seconds. */
+int templog_span_s(const templog_t *t);
 
 /* Draws the chart, the two series, and marks the extremes. Clears first. */
 void templog_draw(const templog_t *t, canvas_t *c);

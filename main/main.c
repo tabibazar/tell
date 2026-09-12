@@ -881,7 +881,15 @@ static void draw_message(canvas_t *c)
  * A chart that only filled while its page was open would be empty every time
  * you went to it, which is the opposite of what a chart is for.
  */
-#define TEMPLOG_EVERY_US (2 * 1000000LL)
+/*
+ * Five minutes. Two seconds charted the last five minutes of a board that
+ * barely changes, which is the least interesting window there is; at five
+ * minutes the hundred and sixty samples cover about thirteen hours, so the
+ * page shows a night's worth of the room warming and cooling around the
+ * board and the board's own load moving under it.
+ */
+#define TEMPLOG_EVERY_S  (5 * 60)
+#define TEMPLOG_EVERY_US ((int64_t)TEMPLOG_EVERY_S * 1000000LL)
 static templog_t s_templog;
 static int64_t s_templog_us;
 
@@ -1150,7 +1158,7 @@ void app_main(void)
     if (settings_load_zone(&s_data.utc_offset_min, s_data.tz, (int)sizeof s_data.tz))
         s_data.have_utc = true;
     tempsense_init();
-    templog_init(&s_templog);
+    templog_init(&s_templog, TEMPLOG_EVERY_S);
     /* Not finding one is ordinary: the board does without, as it does
        without a clock. It says so in the log either way, so a module that
        is plugged in but silent is distinguishable from one that is absent. */

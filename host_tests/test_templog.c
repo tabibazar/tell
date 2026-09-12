@@ -19,10 +19,10 @@ static void expect(const char *what, int cond)
 int main(void)
 {
     templog_t t;
-    templog_init(&t);
+    templog_init(&t, 300);
 
     float lo, hi;
-    expect("an empty log has no range", !templog_range(&t, &lo, &hi));
+    expect("an empty log has no range", !templog_range(&t, true, &lo, &hi));
     expect("and nothing in it", templog_count(&t) == 0);
 
     templog_add(&t, 50.0f, true, 24.0f);
@@ -31,12 +31,17 @@ int main(void)
     expect("three samples", templog_count(&t) == 3);
     expect("oldest first", templog_die(&t, 0) == 50.0f);
     expect("newest last", templog_die(&t, 2) == 51.0f);
-    expect("the range spans both series",
-           templog_range(&t, &lo, &hi) && lo == 24.0f && hi == 52.0f);
+    /* Each series has its own range: a shared one would set the scale from
+       the gap between them and flatten what each actually does. */
+    expect("the die has its own range",
+           templog_range(&t, true, &lo, &hi) && lo == 50.0f && hi == 52.0f);
+    expect("and the crystal has its own",
+           templog_range(&t, false, &lo, &hi) && lo == 24.0f && hi == 24.5f);
+    expect("the span is the samples times the interval", templog_span_s(&t) == 600);
 
     /* The ring: once full the oldest falls off the left, which is what makes
        it a rolling window rather than a log that stops. */
-    templog_init(&t);
+    templog_init(&t, 300);
     for (int i = 0; i < TEMPLOG_MAX + 25; i++)
         templog_add(&t, (float)i, true, 20.0f);
     expect("it fills and stops growing", templog_count(&t) == TEMPLOG_MAX);
@@ -45,20 +50,45 @@ int main(void)
            templog_die(&t, TEMPLOG_MAX - 1) == (float)(TEMPLOG_MAX + 24));
 
     /* A board with no clock chip still charts its own die. */
-    templog_init(&t);
+    templog_init(&t, 300);
     templog_add(&t, 55.0f, false, 0.0f);
     float x;
     expect("a missing crystal reads as missing", !templog_xtal(&t, 0, &x));
     expect("but the die is still there", templog_die(&t, 0) == 55.0f);
-    expect("and there is still a range", templog_range(&t, &lo, &hi));
+    expect("and there is still a die range", templog_range(&t, true, &lo, &hi));
+    expect("but no crystal range at all", !templog_range(&t, false, &lo, &hi));
 
     /* A flat trace must not divide by zero when scaled, nor be drawn hard
        against one edge, which would read as a fault rather than steadiness. */
-    templog_init(&t);
+    templog_init(&t, 300);
     for (int i = 0; i < 20; i++) templog_add(&t, 42.0f, true, 42.0f);
-    expect("a flat log still has a range", templog_range(&t, &lo, &hi));
+    expect("a flat log still has a range", templog_range(&t, true, &lo, &hi));
     expect("which is not zero wide", hi > lo);
     expect("and is centred on the value", lo < 42.0f && hi > 42.0f);
+
+    /*
+     * A narrow-moving die must use the height it has. This is the whole
+     * reason each series is scaled to itself: shared with a crystal 27
+     * degrees away, half a degree of movement is a flat line.
+     */
+    {
+        static uint16_t fb[8 + W * H + 8];
+        canvas_t c;
+        memset(fb, 0, sizeof fb);
+        canvas_init(&c, fb + 8, W, H, 1);
+        templog_init(&t, 300);
+        for (int i = 0; i < 80; i++)
+            templog_add(&t, 50.0f + (float)(i % 2) * 0.5f, true, 24.0f);
+        templog_draw(&t, &c);
+        int hi_row = H, lo_row = 0;
+        for (int y = 0; y < H; y++)
+            for (int x = 0; x < W; x++)
+                if (c.fb[y * W + x] == PAL_A1) {
+                    if (y < hi_row) hi_row = y;
+                    if (y > lo_row) lo_row = y;
+                }
+        expect("half a degree still spans the panel", lo_row - hi_row > H / 2);
+    }
 
     /*
      * The chart writes only inside the framebuffer. This is the assertion
@@ -75,7 +105,7 @@ int main(void)
         for (int k = 0; k < 5; k++) {
             memset(guarded, 0xAB, sizeof guarded);
             canvas_init(&c, guarded + 8, W, H, 1);
-            templog_init(&t);
+            templog_init(&t, 300);
             for (int i = 0; i < (k == 0 ? 0 : TEMPLOG_MAX + 5); i++)
                 templog_add(&t, cases[k] + (float)(i % 7), true, cases[k] - 20.0f);
             templog_draw(&t, &c);
@@ -89,7 +119,7 @@ int main(void)
            empty canvas. */
         memset(guarded, 0, sizeof guarded);
         canvas_init(&c, guarded + 8, W, H, 1);
-        templog_init(&t);
+        templog_init(&t, 300);
         for (int i = 0; i < 60; i++)
             templog_add(&t, 50.0f + (float)(i % 9), true, 24.0f);
         templog_draw(&t, &c);
@@ -120,7 +150,7 @@ int main(void)
         canvas_t c;
         memset(small, 0xAB, sizeof small);
         canvas_init(&c, small + 8, 64, 30, 1);
-        templog_init(&t);
+        templog_init(&t, 300);
         for (int i = 0; i < 30; i++) templog_add(&t, 50.0f, true, 24.0f);
         templog_draw(&t, &c);
         int intact = 1;
