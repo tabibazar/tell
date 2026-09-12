@@ -1078,10 +1078,7 @@ void app_main(void)
 
         if (s_pages.current == PAGE_CLOCK) draw_clock(c, now);
 #if HAVE_LEVEL
-        if (s_imu) {
-            if (s_pages.current == PAGE_LEVEL) draw_level(c);
-            else if (s_pages.current == PAGE_PARTICLES) draw_particles(c, now);
-        }
+        if (s_pages.current == PAGE_LEVEL && s_imu) draw_level(c);
 #endif
 #if HAVE_PARTICLES
         if (s_pages.current == PAGE_PARTICLES && s_imu) draw_particles(c, now);
