@@ -31,7 +31,6 @@ const page_def_t page_defs[PAGE_COUNT] = {
     [PAGE_TIMER]    = { "Timer",         0,                             NULL,           false, 0,        PG_BOTH,  false, false },
     [PAGE_STOPWATCH]= { "Stopwatch",     0,                             NULL,           false, 0,        PG_BOTH,  false, false },
     [PAGE_TEMPS]    = { "Temps",         0,                             NULL,           false, SEC(2),   PG_BOTH,  false, true  },
-    [PAGE_WIFI]     = { "WiFi",          0,                             NULL,           false, SEC(2),   PG_BOTH,  false, false },
     [PAGE_RTC]      = { "RTC",           0,                             NULL,           false, SEC(1),   PG_BOTH,  false, false },
     [PAGE_LEVEL]    = { "Level",         0,                             NULL,           false, 0,        PG_BOTH,  false, false },
     /* Small panels only: 26x7 of the figures worth glancing at, where the

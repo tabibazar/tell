@@ -21,8 +21,6 @@ test_timecalc: test_timecalc.c ../main/timecalc.c
 test_canvas: test_canvas.c ../main/canvas.c ../main/textwrap.c
 	cc $(CFLAGS) -o $@ $^
 
-test_rssi: test_rssi.c ../main/rssi.c
-	cc $(CFLAGS) -o $@ $^ -lm
 
 test_templog: test_templog.c ../main/templog.c ../main/canvas.c ../main/textwrap.c
 	cc $(CFLAGS) -o $@ $^

@@ -141,12 +141,23 @@ bool settings_save_zone(int utc_offset_min, const char *tz)
     return ok;
 }
 
+/*
+ * The mask is one bit per page, so it only means anything against the page
+ * enum it was written under. Removing a page shifts every bit above it and a
+ * saved mask would then strike off the wrong pages -- silently, since a page
+ * missing from the saver's round looks like nothing at all. The key carries
+ * the enum's generation for that reason: bump it whenever a page is removed
+ * or inserted anywhere but the end, and old masks are ignored rather than
+ * misread. (Generation 2: the WiFi survey page was removed.)
+ */
+#define CYCLE_OFF_KEY "cyc_off2"
+
 bool settings_load_cycle_off(uint32_t *mask)
 {
     nvs_handle_t h;
     if (nvs_open(NAMESPACE, NVS_READONLY, &h) != ESP_OK) return false;
     uint32_t v = 0;
-    bool ok = nvs_get_u32(h, "cyc_off", &v) == ESP_OK;
+    bool ok = nvs_get_u32(h, CYCLE_OFF_KEY, &v) == ESP_OK;
     nvs_close(h);
     if (ok) *mask = v;
     return ok;
@@ -156,7 +167,7 @@ bool settings_save_cycle_off(uint32_t mask)
 {
     nvs_handle_t h;
     if (nvs_open(NAMESPACE, NVS_READWRITE, &h) != ESP_OK) return false;
-    bool ok = nvs_set_u32(h, "cyc_off", mask) == ESP_OK
+    bool ok = nvs_set_u32(h, CYCLE_OFF_KEY, mask) == ESP_OK
            && nvs_commit(h) == ESP_OK;
     nvs_close(h);
     if (!ok) ESP_LOGE(TAG, "nvs write failed; the skipped pages are not kept");

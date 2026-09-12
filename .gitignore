@@ -4,13 +4,12 @@ build-crow/
 build-big/
 build-lilly/
 build-wave/
-build-wave-wifi/
 build/
 dist/
 .cache/
 firmware-backup/
-# A local file. The firmware no longer reads one -- the radio only scans --
-# but this repository is public, so never let one in.
+# Nothing reads this any more -- the WiFi code is gone -- but the file may
+# still be sitting in a working copy and this repository is public.
 main/wifi_secret.h
 host_tests/test_canvas
 host_tests/test_font
@@ -21,7 +20,6 @@ host_tests/test_particles
 host_tests/test_shaketimer
 host_tests/test_bme280
 host_tests/test_templog
-host_tests/test_rssi
 host_tests/test_level
 host_tests/test_particles
 host_tests/test_shaketimer
@@ -41,7 +39,6 @@ sdkconfig.big
 sdkconfig.crowpanel.old
 sdkconfig.lilly
 sdkconfig.wave
-sdkconfig.wave-wifi
 sdkconfig.lilly.old
 sdkconfig.wave.old
 sdkconfig.old
