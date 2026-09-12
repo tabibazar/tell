@@ -103,6 +103,24 @@ int drift_span_s(const drift_t *d);
  */
 bool drift_ppm(const drift_t *d, float *ppm);
 
+/*
+ * The same figure with the uncertainty that belongs to it: the standard error
+ * of the slope, in ppm.
+ *
+ * This is what decides when there is a reading at all, and it has to, because
+ * the honest answer depends on the board. A crystal twenty ppm out announces
+ * itself in five minutes. One that happens to sit within a few ppm of the chip
+ * -- which wave's does -- produces a few milliseconds of real movement against
+ * a scatter ten times that, and a slope fitted to it will wander tens of ppm
+ * either side of zero and look, reasonably enough, broken. A fixed "wait five
+ * minutes" rule reports the first board correctly and lies about the second.
+ *
+ * So the gate is the error itself: no figure until the fit is worth a few ppm,
+ * which takes about twenty minutes at this sample rate. Until then the page
+ * says it is settling and shows the scatter, which is the truth.
+ */
+bool drift_ppm_err(const drift_t *d, float *ppm, float *se_ppm);
+
 /* The same fit, as a line: milliseconds per second and the phase it implies
    at the oldest sample. The chart draws this rather than joining the points,
    because the points carry poll noise many times larger than the movement

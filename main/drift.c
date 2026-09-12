@@ -2,6 +2,7 @@
 
 #include "palette.h"
 
+#include <math.h>
 #include <string.h>
 
 /* Below this the slope is a measurement of the poll noise rather than of the
@@ -9,6 +10,11 @@
    like. Ten minutes of samples is where the fit starts to mean something. */
 #define DRIFT_MIN_SAMPLES 8
 #define DRIFT_MIN_SPAN_S  300
+
+/* How well the slope must be known before it is worth printing. A few ppm is
+   about what a fit over this sample rate reaches in twenty minutes, and it is
+   also about the precision the figure is quoted to. */
+#define DRIFT_MAX_SE_PPM  3.0f
 
 void drift_init(drift_t *d, int seconds_between_samples)
 {
@@ -124,18 +130,39 @@ bool drift_fit(const drift_t *d, float *slope_ms_per_s, float *intercept_ms)
     return true;
 }
 
-bool drift_ppm(const drift_t *d, float *ppm)
+bool drift_ppm_err(const drift_t *d, float *ppm, float *se_ppm)
 {
-    /* Enough points over enough time, or the slope is a measurement of the
-       poll noise: a handful of samples a few seconds apart can "prove" any
-       ppm you like. */
+    /* Enough points over enough time even to attempt it: a handful of samples
+       a few seconds apart can "prove" any ppm you like. */
     if (d->n < DRIFT_MIN_SAMPLES) return false;
     if (drift_span_s(d) < DRIFT_MIN_SPAN_S) return false;
 
-    float slope;
-    if (!drift_fit(d, &slope, NULL)) return false;
-    *ppm = slope * 1000.0f;
-    return true;
+    float slope, intercept;
+    if (!drift_fit(d, &slope, &intercept)) return false;
+    if (d->n < 3) return false;                  /* no residual degrees of freedom */
+
+    /* The residual scatter about the fit, and from it how well the slope is
+       known: the usual standard error of a least-squares gradient. */
+    double ss_res = 0.0, sxx = 0.0, mean_x = 0.0;
+    for (int i = 0; i < d->n; i++) mean_x += (double)i * (double)d->every_s;
+    mean_x /= (double)d->n;
+    for (int i = 0; i < d->n; i++) {
+        double x = (double)i * (double)d->every_s;
+        double r = (double)drift_phase(d, i) - ((double)intercept + (double)slope * x);
+        ss_res += r * r;
+        sxx += (x - mean_x) * (x - mean_x);
+    }
+    if (sxx <= 0.0) return false;
+    double se = sqrt((ss_res / (double)(d->n - 2)) / sxx) * 1000.0;
+
+    if (ppm) *ppm = slope * 1000.0f;
+    if (se_ppm) *se_ppm = (float)se;
+    return se <= (double)DRIFT_MAX_SE_PPM;
+}
+
+bool drift_ppm(const drift_t *d, float *ppm)
+{
+    return drift_ppm_err(d, ppm, NULL);
 }
 
 /* Where a value sits in the plot, in pixels, clamped to it. */

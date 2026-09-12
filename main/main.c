@@ -1050,10 +1050,14 @@ static void draw_rtc(canvas_t *c, int64_t now)
     int n = drift_count(&s_drift);
     canvas_puts(c, 0, 1, "slip", PAL_A0);
     if (n > 0) {
-        float ppm;
+        float ppm, se;
         int slip = (int)drift_slip_ms(&s_drift);
-        if (drift_ppm(&s_drift, &ppm))
-            snprintf(buf, sizeof buf, "%+dms %+.1fppm", slip, (double)ppm);
+        /* The figure carries its own error bar. Without it a reader has no
+           way to tell a crystal that is genuinely one ppm out from a fit that
+           has not made up its mind, and those look identical on a panel. */
+        if (drift_ppm_err(&s_drift, &ppm, &se))
+            snprintf(buf, sizeof buf, "%+dms %+.1f~%.1fppm", slip,
+                     (double)ppm, (double)se);
         else
             snprintf(buf, sizeof buf, "%+dms  settling", slip);
         vw_right_text(c, 1, c->cols - 1, buf, PAL_FG);
@@ -1692,12 +1696,13 @@ void app_main(void)
             if (s_rtc && drift_count(&s_drift) > 0) {
                 float ppm;
                 int n = drift_count(&s_drift);
-                if (drift_ppm(&s_drift, &ppm))
-                    ESP_LOGI(TAG, "board vs chip: %+d ms over %d min, %+.1f ppm",
+                float se;
+                if (drift_ppm_err(&s_drift, &ppm, &se))
+                    ESP_LOGI(TAG, "board vs chip: %+d ms over %d min, %+.1f +/- %.1f ppm",
                              (int)drift_slip_ms(&s_drift),
-                             drift_span_s(&s_drift) / 60, (double)ppm);
+                             drift_span_s(&s_drift) / 60, (double)ppm, (double)se);
                 else
-                    ESP_LOGI(TAG, "board vs chip: %+d ms, %d samples, still settling",
+                    ESP_LOGI(TAG, "board vs chip: %+d ms, %d samples, slope not yet worth quoting",
                              (int)drift_slip_ms(&s_drift), n);
             }
             if (have_air)

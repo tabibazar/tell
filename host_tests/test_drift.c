@@ -65,6 +65,44 @@ int main(void)
     expect("poll noise does not swamp the fit",
            drift_ppm(&d, &ppm) && fabsf(ppm - 20.0f) < 2.0f);
 
+    /*
+     * The case that actually bit on hardware. wave's crystal sits within a
+     * few ppm of the chip, so six minutes of samples hold a couple of
+     * milliseconds of real movement under sixteen milliseconds of poll noise.
+     * A fit to that wanders tens of ppm either side of zero, and reporting it
+     * puts a number on the panel that swings from +13 to -4 while the board
+     * sits still -- which reads as a broken page, and is in fact a page
+     * honestly reporting a meaningless fit.
+     *
+     * It must refuse to report until the fit is worth something, and it must
+     * decide that from the error rather than from a fixed wait, because the
+     * same wait that is plenty for a twenty-ppm board is nowhere near enough
+     * for this one.
+     */
+    {
+        float se;
+        drift_init(&d, 15);
+        for (int i = 0; i < 24; i++) {              /* six minutes */
+            float jitter = (float)((i * 37) % 33) - 16.0f;
+            drift_add(&d, (float)i * 0.045f + jitter, true, 27.75f);
+        }
+        expect("six minutes of a near-perfect crystal is not a reading",
+               !drift_ppm(&d, &ppm));
+        drift_ppm_err(&d, &ppm, &se);
+        expect("and the reason is that the slope is barely known", se > 5.0f);
+
+        /* Given long enough, the same board does produce a figure, and it is
+           near the truth rather than near the noise. */
+        drift_init(&d, 15);
+        for (int i = 0; i < DRIFT_MAX; i++) {       /* forty minutes */
+            float jitter = (float)((i * 37) % 33) - 16.0f;
+            drift_add(&d, (float)i * 0.045f + jitter, true, 27.75f);
+        }
+        expect("forty minutes of it is", drift_ppm(&d, &ppm));
+        expect("and it lands near three ppm, not near the noise",
+               fabsf(ppm - 3.0f) < 3.0f);
+    }
+
     /* A perfectly steady board is zero ppm, not "no reading". */
     drift_init(&d, 15);
     for (int i = 0; i < 40; i++) drift_add(&d, 7.0f, true, 24.0f);
