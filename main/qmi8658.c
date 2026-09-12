@@ -50,26 +50,26 @@ static esp_err_t write_reg(uint8_t reg, uint8_t value)
 
 esp_err_t qmi8658_init(void)
 {
-    esp_err_t err = i2cbus_init();
+    esp_err_t err = i2cbus_init(I2CBUS_MAIN);
     if (err != ESP_OK) return err;
 
     /* If an address nothing should answer also ACKs, SDA is stuck low and
        "found" means nothing. */
-    if (i2cbus_probe(0x33)) {
+    if (i2cbus_probe(I2CBUS_MAIN, 0x33)) {
         ESP_LOGE(TAG, "bogus address 0x33 answered; the bus is stuck");
         return ESP_ERR_INVALID_STATE;
     }
 
     const uint8_t addrs[2] = { ADDR_A, ADDR_B };
     for (int i = 0; i < 2; i++) {
-        if (!i2cbus_probe(addrs[i])) continue;
+        if (!i2cbus_probe(I2CBUS_MAIN, addrs[i])) continue;
 
         i2c_device_config_t dev = {
             .dev_addr_length = I2C_ADDR_BIT_LEN_7,
             .device_address = addrs[i],
             .scl_speed_hz = 400000,
         };
-        if (i2c_master_bus_add_device(i2cbus_handle(), &dev, &s_dev) != ESP_OK)
+        if (i2c_master_bus_add_device(i2cbus_handle(I2CBUS_MAIN), &dev, &s_dev) != ESP_OK)
             continue;
 
         /* One byte at a time: auto-increment is a CTRL1 bit not yet written,

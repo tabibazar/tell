@@ -75,14 +75,14 @@ static void clear_status(void)
 esp_err_t gt911_init(void)
 {
     /* The bus belongs to i2cbus, so the clock can share it. */
-    s_bus_err = i2cbus_init();
+    s_bus_err = i2cbus_init(I2CBUS_MAIN);
     if (s_bus_err != ESP_OK) return s_bus_err;
 
     /* Probe every address, including one nothing should answer. If the bogus
        address also ACKs, SDA is stuck low and "found" means nothing. */
-    s_probe_a = i2cbus_probe(ADDR_A) ? ESP_OK : ESP_ERR_NOT_FOUND;
-    s_probe_b = i2cbus_probe(ADDR_B) ? ESP_OK : ESP_ERR_NOT_FOUND;
-    s_probe_bogus = i2cbus_probe(0x33) ? ESP_OK : ESP_ERR_NOT_FOUND;
+    s_probe_a = i2cbus_probe(I2CBUS_MAIN, ADDR_A) ? ESP_OK : ESP_ERR_NOT_FOUND;
+    s_probe_b = i2cbus_probe(I2CBUS_MAIN, ADDR_B) ? ESP_OK : ESP_ERR_NOT_FOUND;
+    s_probe_bogus = i2cbus_probe(I2CBUS_MAIN, 0x33) ? ESP_OK : ESP_ERR_NOT_FOUND;
 
     const uint8_t addrs[2] = { ADDR_A, ADDR_B };
     for (int i = 0; i < 2; i++) {
@@ -93,7 +93,7 @@ esp_err_t gt911_init(void)
             .device_address = addrs[i],
             .scl_speed_hz = 100000,
         };
-        ESP_ERROR_CHECK(i2c_master_bus_add_device(i2cbus_handle(), &dev, &s_dev));
+        ESP_ERROR_CHECK(i2c_master_bus_add_device(i2cbus_handle(I2CBUS_MAIN), &dev, &s_dev));
         s_present = true;
         s_addr = addrs[i];
         ESP_LOGI(TAG, "GT911 answered at 0x%02X", addrs[i]);

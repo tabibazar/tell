@@ -25,4 +25,4 @@ idf_component_register(
     SRC_DIRS "."
     EXCLUDE_SRCS ${BOARD_EXCLUDES}
     INCLUDE_DIRS "."
-    REQUIRES esp_lcd driver esp_driver_i2c esp_timer bt nvs_flash)
+    REQUIRES esp_lcd driver esp_driver_i2c esp_driver_tsens esp_timer bt nvs_flash)

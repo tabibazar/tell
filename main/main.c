@@ -12,6 +12,7 @@
 #include "view_common.h"
 #include "ds3231.h"
 #include "settings.h"
+#include "tempsense.h"
 #include "timecalc.h"
 #include "usagedata.h"
 
@@ -421,6 +422,13 @@ static float s_gx, s_gy;      /* low-passed gravity, panel coordinates */
  * fall through it in the same time, or it reads as smoke.
  */
 #define GRAVITY_PER_ROW    6.67f    /* px/s^2 per row: 1 g crosses in ~0.5 s */
+/* What the solver can actually settle. lilly's pile was tested at 1134 and
+   stood twenty-four rows deep; past that a grain travels further per frame
+   than the separation passes can correct, the body never comes to rest, and
+   the whole pile shimmers. No panel here reaches it -- wave's 172 rows ask
+   for 1147 -- but a taller one would, and the failure looks like a display
+   fault rather than a physics one. */
+#define GRAVITY_MAX     1200.0f
 #define SHAKE_FLOOR_PER_ROW 1.85f   /* residual below this is noise */
 #define SHAKE_MAX_PER_ROW   1.48f   /* enough to lift the pile, not blur it */
 static float s_gravity_px, s_shake_floor, s_shake_max;
@@ -765,9 +773,11 @@ void app_main(void)
 #if !HAVE_PARTICLES
     available &= ~PAGE_BIT(PAGE_PARTICLES);
 #endif
-#ifdef CONFIG_SCREEN_BOARD_CROWPANEL_7
-    /* The clock chip shares the touch bus. If it knows the time, start from
-       it, so the display is right before any Mac has said anything. */
+    /* Any board may have a DS3231 wired to its I2C bus, so every board asks.
+       One without simply does without, the way a board without an IMU does --
+       ds3231_init() says which, and everything downstream is gated on s_rtc at
+       runtime already. If the chip knows the time, start from it, so the
+       display is right before any Mac has said anything. */
     s_rtc = ds3231_init() == ESP_OK;
     uint32_t rtc_secs;
     if (s_rtc && ds3231_read(&rtc_secs)) {
@@ -775,7 +785,6 @@ void app_main(void)
         s_rtc_pending = false;          /* it came from the chip; no need to write it back */
         ESP_LOGI(TAG, "clock set from the RTC");
     }
-#endif
     pages_init(&s_pages, available);
     settings_defaults(&s_settings);
 
@@ -794,6 +803,7 @@ void app_main(void)
        any Mac has spoken this boot. */
     if (settings_load_zone(&s_data.utc_offset_min, s_data.tz, (int)sizeof s_data.tz))
         s_data.have_utc = true;
+    tempsense_init();
 #if HAVE_IMU
     if (s_imu) axis_load();      /* the sensor's, so both pages want it */
 #endif
@@ -805,8 +815,12 @@ void app_main(void)
         /* Seeded from the hardware RNG rather than a constant, so the grains
            do not land in the same places every boot. Bluetooth is already
            running, so it is properly seeded. */
-        uint32_t seed = esp_random();
+        /* esp_random() is the real entropy here; the die's own noise is
+           mixed in because it costs nothing and because the barometer that
+           used to seed the grains went out with the board it served. */
+        uint32_t seed = esp_random() ^ tempsense_entropy();
         s_gravity_px  = GRAVITY_PER_ROW * (float)c->h;
+        if (s_gravity_px > GRAVITY_MAX) s_gravity_px = GRAVITY_MAX;
         s_shake_floor = SHAKE_FLOOR_PER_ROW * (float)c->h;
         s_shake_max   = SHAKE_MAX_PER_ROW * (float)c->h;
         particles_init(&s_particles, particles_for(c->w, c->h), c->w, c->h, seed);
@@ -1091,9 +1105,11 @@ void app_main(void)
            log is often missed. A heartbeat makes liveness observable. */
         if (now - last_beat > 30 * 1000000LL) {
             last_beat = now;
-            ESP_LOGI(TAG, "alive, page %d, clock %s, rtc %s",
+            float die = 0.0f;
+            bool have_die = tempsense_read(&die);
+            ESP_LOGI(TAG, "alive, page %d, clock %s, rtc %s, die %.1f C",
                      (int)s_pages.current, s_synced ? "synced" : "unset",
-                     s_rtc ? "present" : "absent");
+                     s_rtc ? "present" : "absent", have_die ? (double)die : -1.0);
         }
     }
 }

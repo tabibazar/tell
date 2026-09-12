@@ -49,4 +49,22 @@ config SCREEN_I2C_SCL
     default 47 if SCREEN_BOARD_WAVESHARE_147B
     default 41
 
+config SCREEN_I2C_AUX_SDA
+    int "Second I2C SDA pin, or -1 for none"
+    default 10 if SCREEN_BOARD_WAVESHARE_147B
+    default -1
+    help
+        A second bus, for chips added to pins the first one cannot reach.
+        wave's QMI8658 is soldered to GPIO48/47 and neither comes out to her
+        header, so anything wired on later -- a DS3231, say -- cannot join
+        that bus. GPIO10 and GPIO11 are on her header and used by nothing.
+
+        -1 means the board has no second bus, which is not a failure: the
+        drivers simply do without.
+
+config SCREEN_I2C_AUX_SCL
+    int "Second I2C SCL pin, or -1 for none"
+    default 11 if SCREEN_BOARD_WAVESHARE_147B
+    default -1
+
 endmenu

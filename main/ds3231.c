@@ -63,24 +63,36 @@ static bool s_present;
 
 esp_err_t ds3231_init(void)
 {
-    if (i2cbus_handle() == NULL) return ESP_ERR_INVALID_STATE;
-    if (!i2cbus_probe(ADDR)) {
-        ESP_LOGW(TAG, "no DS3231 at 0x%02X; the clock waits for a Mac", ADDR);
-        return ESP_ERR_NOT_FOUND;
+    /*
+     * Look on both buses. Where the chip lives is a question about the board,
+     * not about the driver: the CrowPanel's shares the touch bus it was
+     * wired alongside, while a board whose own I2C pins are not brought out
+     * can only take one on the header. Bring each bus up rather than assume
+     * someone else has -- this runs on every board, including ones where no
+     * other driver touches I2C at all.
+     */
+    for (i2cbus_id_t which = I2CBUS_MAIN; which < I2CBUS_COUNT; which++) {
+        if (i2cbus_init(which) != ESP_OK) continue;   /* no such bus here */
+        if (!i2cbus_probe(which, ADDR)) continue;
+
+        i2c_device_config_t dev = {
+            .dev_addr_length = I2C_ADDR_BIT_LEN_7,
+            .device_address = ADDR,
+            .scl_speed_hz = 100000,
+        };
+        esp_err_t err = i2c_master_bus_add_device(i2cbus_handle(which), &dev, &s_dev);
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "attach failed: %s", esp_err_to_name(err));
+            return err;
+        }
+        s_present = true;
+        ESP_LOGI(TAG, "DS3231 answered at 0x%02X on the %s bus", ADDR,
+                 which == I2CBUS_MAIN ? "main" : "aux");
+        return ESP_OK;
     }
-    i2c_device_config_t dev = {
-        .dev_addr_length = I2C_ADDR_BIT_LEN_7,
-        .device_address = ADDR,
-        .scl_speed_hz = 100000,
-    };
-    esp_err_t err = i2c_master_bus_add_device(i2cbus_handle(), &dev, &s_dev);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "attach failed: %s", esp_err_to_name(err));
-        return err;
-    }
-    s_present = true;
-    ESP_LOGI(TAG, "DS3231 answered at 0x%02X", ADDR);
-    return ESP_OK;
+
+    ESP_LOGW(TAG, "no DS3231 at 0x%02X on any bus; the clock waits for a Mac", ADDR);
+    return ESP_ERR_NOT_FOUND;
 }
 
 static bool read_regs(uint8_t first, uint8_t *out, size_t n)
