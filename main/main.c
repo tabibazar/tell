@@ -37,10 +37,10 @@ static const char *TAG = "main";
 
 #define TICK_MS 50            /* also the touch and button poll interval */
 
-/* lilly has two push buttons where the big board has a touch panel. They are
-   the only on-board way to change the page, so they matter more there than a
-   tap does here. */
-#ifdef CONFIG_SCREEN_BOARD_TDISPLAY_S3
+/* Push buttons, where the board has any: on a board with no touch they are
+   the only way to change the page, so they matter more there than a tap does
+   on the big one. Which pins, and how many, is a Kconfig question. */
+#if CONFIG_SCREEN_BUTTON_A >= 0
 #define HAVE_BUTTONS 1
 #else
 #define HAVE_BUTTONS 0

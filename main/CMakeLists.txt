@@ -10,15 +10,15 @@
 # has no sensor of any kind, so she carries none of it and neither does the
 # CrowPanel.
 if(CONFIG_SCREEN_BOARD_CROWPANEL_7)
-    set(BOARD_EXCLUDES "display_st7789.c" "display_i80.c" "buttons.c"
+    set(BOARD_EXCLUDES "display_st7789.c" "display_i80.c"
                        "qmi8658.c" "level.c" "particles.c" "shaketimer.c")
 elseif(CONFIG_SCREEN_BOARD_TDISPLAY_S3)
     set(BOARD_EXCLUDES "display_st7789.c" "display_rgb.c"
                        "qmi8658.c" "level.c" "particles.c" "shaketimer.c")
 elseif(CONFIG_SCREEN_BOARD_WAVESHARE_147B)
-    set(BOARD_EXCLUDES "display_rgb.c" "display_i80.c" "buttons.c" "level.c")
+    set(BOARD_EXCLUDES "display_rgb.c" "display_i80.c" "level.c")
 else()
-    set(BOARD_EXCLUDES "display_rgb.c" "display_i80.c" "buttons.c")
+    set(BOARD_EXCLUDES "display_rgb.c" "display_i80.c")
 endif()
 
 idf_component_register(

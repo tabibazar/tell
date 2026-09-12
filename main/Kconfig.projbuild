@@ -49,6 +49,28 @@ config SCREEN_I2C_SCL
     default 47 if SCREEN_BOARD_WAVESHARE_147B
     default 41
 
+config SCREEN_BUTTON_A
+    int "First button pin, or -1 for none"
+    default 0 if SCREEN_BOARD_TDISPLAY_S3
+    default 0 if SCREEN_BOARD_WAVESHARE_147B
+    default -1
+    help
+        GPIO0 is the BOOT button on both of these boards. It is a strapping
+        pin, so holding it through a reset still enters the bootloader, but
+        once running it is an ordinary input with a pull-up.
+
+        With two buttons the first goes back and the second forward. With only
+        one, a tap goes forward and holding it goes back, because a board with
+        one button still needs both directions.
+
+config SCREEN_BUTTON_B
+    int "Second button pin, or -1 for none"
+    default 14 if SCREEN_BOARD_TDISPLAY_S3
+    default -1
+    help
+        The Waveshare 1.47B has two buttons on it but only one that software
+        can see: its other key pulls EN to ground and is a hardware reset.
+
 config SCREEN_I2C_AUX_SDA
     int "Second I2C SDA pin, or -1 for none"
     default 10 if SCREEN_BOARD_WAVESHARE_147B
