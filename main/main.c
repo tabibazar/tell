@@ -12,6 +12,7 @@
 #include "view_common.h"
 #include "ds3231.h"
 #include "settings.h"
+#include "shaketimer.h"
 #include "tempsense.h"
 #include "timecalc.h"
 #include "usagedata.h"
@@ -490,6 +491,61 @@ static void draw_particles(canvas_t *c, int64_t now)
     particles_draw(&s_particles, c);
     display_blit();
 }
+
+/*
+ * A countdown with one control: shake it and it starts again from the top.
+ *
+ * It replaces an hourglass that wanted the board stood on its edge and turned
+ * over, which is a lot to ask of something that lives flat on a desk. A shake
+ * needs no posture at all, and shakedet reads energy rather than direction,
+ * so it works lying down, in one hand, at any angle.
+ */
+#define TIMER_DEFAULT_S (25 * 60)
+
+static shaketimer_t s_timer;
+static shakedet_t s_shake;
+static int64_t s_timer_last_us;
+
+static void draw_timer(canvas_t *c, int64_t now)
+{
+    float dt = s_timer_last_us
+             ? (float)(now - s_timer_last_us) / 1000000.0f : 0.05f;
+    s_timer_last_us = now;
+    if (dt > 0.5f) dt = 0.5f;
+
+    qmi8658_sample_t sample;
+    if (qmi8658_read(&sample) == ESP_OK
+        && shakedet_update(&s_shake, sample.ax, sample.ay, sample.az, dt, now)) {
+        shaketimer_shake(&s_timer);
+        ESP_LOGI(TAG, "shaken: %d s from the top", s_timer.duration_s);
+    }
+    shaketimer_tick(&s_timer, dt);
+
+    int left = (int)(shaketimer_remaining_s(&s_timer) + 0.5f);
+    char buf[16];
+    snprintf(buf, sizeof buf, "%d:%02d", left / 60, left % 60);
+
+    const char *note;
+    uint16_t colour;
+    switch (shaketimer_state(&s_timer)) {
+    case ST_RUNNING: note = NULL;          colour = PAL_FG;  break;
+    /* Done blinks, because the whole point is to be noticed from across a
+       room by someone who has stopped looking at it. */
+    case ST_DONE:    note = "TIME";           colour = PAL_A5;  break;
+    default:         note = "SHAKE TO START"; colour = PAL_DIM; break;
+    }
+
+    /* canvas_big always paints in the foreground colour, so the state is
+       carried by the note under the digits rather than by their colour --
+       and when the time is up the digits blink, which is louder than any
+       colour and is the one moment this page needs to be noticed. */
+    canvas_clear(c);
+    bool dark = shaketimer_state(&s_timer) == ST_DONE && (now / 500000) % 2;
+    if (!dark) canvas_big(c, buf);
+    if (note) canvas_puts(c, (c->cols - (int)strlen(note)) / 2, c->rows - 1,
+                          note, colour);
+    display_blit();
+}
 #endif /* HAVE_PARTICLES */
 
 /* Charts grow into place when a page appears; 0 means no animation running. */
@@ -607,7 +663,46 @@ static void on_message(const char *text, size_t len)
        because the axes it corrects are the sensor's, not the page's. */
     if (kind == UD_FLIP) axis_command(text);
 #endif
+    if (kind == UD_PAGE) {
+        /*
+         * "!page clock" and the like. A board with no touch and no buttons
+         * has no other way to choose what it shows: the markers that exist
+         * each open one particular page, and the rest were unreachable.
+         * Matched against the names already in pagedefs, so a new page is
+         * reachable the moment it has a row there.
+         */
+        char want[64];
+        size_t n = 0;
+        for (const char *p = text; *p && n + 1 < sizeof want; p++)
+            want[n++] = (*p >= 'A' && *p <= 'Z') ? (char)(*p - 'A' + 'a') : *p;
+        want[n] = '\0';
+
+        for (int i = 0; i < PAGE_COUNT; i++) {
+            if (!(s_pages.available & PAGE_BIT(i))) continue;
+            char name[32];
+            size_t m = 0;
+            for (const char *p = page_defs[i].name; *p && m + 1 < sizeof name; p++)
+                name[m++] = (*p >= 'A' && *p <= 'Z') ? (char)(*p - 'A' + 'a') : *p;
+            name[m] = '\0';
+            if (m == 0 || strstr(want, name) == NULL) continue;
+            pages_show(&s_pages, (page_t)i, now);
+            s_drawn_page = PAGE_COUNT;
+            ESP_LOGI(TAG, "showing %s", page_defs[i].name);
+            return;
+        }
+        ESP_LOGW(TAG, "no page here matches \"%s\"", text);
+        return;
+    }
 #if HAVE_PARTICLES
+    if (kind == UD_TIMER) {
+        long mins = 0;
+        for (const char *p = text; *p; p++)
+            if (*p >= '0' && *p <= '9') { mins = strtol(p, NULL, 10); break; }
+        if (mins > 0 && mins <= 24 * 60) shaketimer_init(&s_timer, (int)mins * 60);
+        pages_show(&s_pages, PAGE_TIMER, now);
+        s_drawn_page = PAGE_COUNT;
+        return;
+    }
     if (kind == UD_PARTICLES || kind == UD_FLIP) {
         pages_show(&s_pages, PAGE_PARTICLES, now);
         s_drawn_page = PAGE_COUNT;
@@ -664,6 +759,89 @@ static void draw_message(canvas_t *c)
     }
     canvas_text(c, s_message);
     vw_menu_tab(c);
+}
+
+/*
+ * The clock chip, and what it says about itself.
+ *
+ * The number that matters is the drift: the board's own sense of time comes
+ * from the ESP timer, which is a bare crystal and wanders seconds a day,
+ * while the DS3231 compensates itself against its own temperature and holds
+ * a couple of parts per million. Showing both and the gap between them says
+ * how much the board would have been wrong by without the chip.
+ */
+static void draw_rtc(canvas_t *c, int64_t now)
+{
+    canvas_clear(c);
+    canvas_fill_rect(c, 0, 0, c->w, c->cell_h, PAL_TITLE_BG);
+    canvas_puts(c, 1, 0, "RTC", PAL_FG);
+    if (s_rtc) {
+        char where[32];
+        i2cbus_id_t bus = ds3231_bus();
+        snprintf(where, sizeof where, "0x68 %s io%d/%d",
+                 bus == I2CBUS_MAIN ? "main" : "aux",
+                 i2cbus_sda(bus), i2cbus_scl(bus));
+        canvas_puts(c, 6, 0, where, PAL_FG);
+    }
+
+    if (!s_rtc) {
+        canvas_puts(c, 1, 2, "no DS3231 on any bus", PAL_DIM);
+        canvas_puts(c, 1, 3, "the clock waits for a Mac", PAL_DIM);
+        display_blit();
+        return;
+    }
+
+    char buf[40];
+    int row = 2;
+
+    uint32_t chip = 0;
+    bool have_chip = ds3231_read(&chip);
+    if (have_chip) {
+        snprintf(buf, sizeof buf, "chip  %02u:%02u:%02u",
+                 (unsigned)(chip / 3600u), (unsigned)((chip / 60u) % 60u),
+                 (unsigned)(chip % 60u));
+        canvas_puts(c, 1, row++, buf, PAL_FG);
+    } else {
+        canvas_puts(c, 1, row++, "chip  unreadable", PAL_A5);
+    }
+
+    if (s_synced) {
+        uint32_t board = now_secs(now);
+        snprintf(buf, sizeof buf, "board %02u:%02u:%02u",
+                 (unsigned)(board / 3600u), (unsigned)((board / 60u) % 60u),
+                 (unsigned)(board % 60u));
+        canvas_puts(c, 1, row++, buf, PAL_DIM);
+
+        if (have_chip) {
+            /* Signed difference across midnight: half a day either way. */
+            long d = (long)board - (long)chip;
+            if (d >  43200) d -= 86400;
+            if (d < -43200) d += 86400;
+            float since = (float)(now - s_base_us) / 1000000.0f;
+            if (since < 1.0f) since = 1.0f;
+            float ppm = (float)d / since * 1000000.0f;
+            snprintf(buf, sizeof buf, "drift %+ld s  %+.1f ppm", d, (double)ppm);
+            canvas_puts(c, 1, row++, buf, d == 0 ? PAL_A2 : PAL_A1);
+        }
+    } else {
+        canvas_puts(c, 1, row++, "board unset; no Mac yet", PAL_DIM);
+    }
+
+    float xtal = 0.0f, die = 0.0f;
+    int8_t aging = 0;
+    bool stopped = false;
+    bool have_xtal = ds3231_temperature(&xtal);
+    bool have_die = tempsense_read(&die);
+    if (have_xtal || have_die) {
+        snprintf(buf, sizeof buf, "xtal %.2fC  die %.0fC",
+                 have_xtal ? (double)xtal : 0.0, have_die ? (double)die : 0.0);
+        canvas_puts(c, 1, row++, buf, PAL_A0);
+    }
+    if (ds3231_aging(&aging) && ds3231_stopped(&stopped)) {
+        snprintf(buf, sizeof buf, "aging %+d  osf %s", aging, stopped ? "SET" : "clear");
+        canvas_puts(c, 1, row++, buf, stopped ? PAL_A5 : PAL_DIM);
+    }
+    display_blit();
 }
 
 /* Date above the digits, weather below, both sent from the Mac. Centred so
@@ -760,7 +938,8 @@ void app_main(void)
     /* Both IMU pages need a sensor, which the page table cannot know about:
        it describes boards, and this is a question about what is plugged into
        one today. A board compiled without either never offers them at all. */
-    unsigned imu_pages = PAGE_BIT(PAGE_LEVEL) | PAGE_BIT(PAGE_PARTICLES);
+    unsigned imu_pages = PAGE_BIT(PAGE_LEVEL) | PAGE_BIT(PAGE_PARTICLES)
+                       | PAGE_BIT(PAGE_TIMER);
 #if HAVE_IMU
     s_imu = qmi8658_init() == ESP_OK;
     if (!s_imu) available &= ~imu_pages;
@@ -771,7 +950,7 @@ void app_main(void)
     available &= ~PAGE_BIT(PAGE_LEVEL);
 #endif
 #if !HAVE_PARTICLES
-    available &= ~PAGE_BIT(PAGE_PARTICLES);
+    available &= ~(PAGE_BIT(PAGE_PARTICLES) | PAGE_BIT(PAGE_TIMER));
 #endif
     /* Any board may have a DS3231 wired to its I2C bus, so every board asks.
        One without simply does without, the way a board without an IMU does --
@@ -826,6 +1005,8 @@ void app_main(void)
         particles_init(&s_particles, particles_for(c->w, c->h), c->w, c->h, seed);
         ESP_LOGI(TAG, "sand: %d grains on %dx%d, gravity %.0f, seed 0x%08X",
                  s_particles.n, c->w, c->h, (double)s_gravity_px, (unsigned)seed);
+        shaketimer_init(&s_timer, TIMER_DEFAULT_S);
+        shakedet_init(&s_shake);
     }
 #endif
     pages_show(&s_pages, home_page(), esp_timer_get_time());
@@ -1005,6 +1186,9 @@ void app_main(void)
            something left on display, and it needs no protecting from burn-in
            because every grain is moving. */
         if (s_pages.current == PAGE_PARTICLES) s_pages.last_activity_us = now;
+        /* A screensaver that ate a running countdown would leave you with a
+           clock instead of an answer. */
+        if (s_pages.current == PAGE_TIMER) s_pages.last_activity_us = now;
 #endif
         bool saver_now = s_synced && pages_saver_active(&s_pages, now);
         if (saver_now != s_saver) {
@@ -1091,11 +1275,13 @@ void app_main(void)
         }
 
         if (s_pages.current == PAGE_CLOCK) draw_clock(c, now);
+        if (s_pages.current == PAGE_RTC) draw_rtc(c, now);
 #if HAVE_LEVEL
         if (s_pages.current == PAGE_LEVEL && s_imu) draw_level(c);
 #endif
 #if HAVE_PARTICLES
         if (s_pages.current == PAGE_PARTICLES && s_imu) draw_particles(c, now);
+        if (s_pages.current == PAGE_TIMER && s_imu) draw_timer(c, now);
 #endif
         /* Pages with ages on them redraw on their own so the ages keep counting. */
         if (pd->refresh_us > 0 && now - s_page_drawn_us > pd->refresh_us)

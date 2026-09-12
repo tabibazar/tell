@@ -11,10 +11,10 @@
 # CrowPanel.
 if(CONFIG_SCREEN_BOARD_CROWPANEL_7)
     set(BOARD_EXCLUDES "display_st7789.c" "display_i80.c" "buttons.c"
-                       "qmi8658.c" "level.c" "particles.c")
+                       "qmi8658.c" "level.c" "particles.c" "shaketimer.c")
 elseif(CONFIG_SCREEN_BOARD_TDISPLAY_S3)
     set(BOARD_EXCLUDES "display_st7789.c" "display_rgb.c"
-                       "qmi8658.c" "level.c" "particles.c")
+                       "qmi8658.c" "level.c" "particles.c" "shaketimer.c")
 elseif(CONFIG_SCREEN_BOARD_WAVESHARE_147B)
     set(BOARD_EXCLUDES "display_rgb.c" "display_i80.c" "buttons.c" "level.c")
 else()

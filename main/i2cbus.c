@@ -77,6 +77,16 @@ i2c_master_bus_handle_t i2cbus_handle(i2cbus_id_t which)
     return which < I2CBUS_COUNT ? s_bus[which] : NULL;
 }
 
+int i2cbus_sda(i2cbus_id_t which)
+{
+    return which < I2CBUS_COUNT ? s_buses[which].sda : -1;
+}
+
+int i2cbus_scl(i2cbus_id_t which)
+{
+    return which < I2CBUS_COUNT ? s_buses[which].scl : -1;
+}
+
 bool i2cbus_probe(i2cbus_id_t which, uint8_t addr)
 {
     if (which >= I2CBUS_COUNT || s_bus[which] == NULL) return false;

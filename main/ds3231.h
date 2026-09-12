@@ -25,6 +25,7 @@ bool ds3231_unpack(const uint8_t regs[7], uint32_t *secs_since_midnight);
 
 #ifdef ESP_PLATFORM
 #include "esp_err.h"
+#include "i2cbus.h"
 
 /* Attaches to the chip. ESP_ERR_NOT_FOUND when nothing answers at 0x68;
    the caller carries on without a clock. i2cbus_init must have run. */
@@ -38,5 +39,28 @@ bool ds3231_read(uint32_t *secs_since_midnight);
 /* Sets the chip and marks its time as trustworthy again. */
 bool ds3231_write(uint32_t secs_since_midnight);
 #endif
+
+/*
+ * What the chip knows about itself, for the RTC page.
+ *
+ * The temperature is the interesting one: the DS3231 is temperature
+ * compensated, and it measures its own crystal every 64 seconds to do it.
+ * That reading is the reason it holds +-2ppm where a bare crystal drifts with
+ * the room, so it is worth showing rather than hiding.
+ */
+
+/* Which bus the chip was found on, so a page can say where it is. Only
+   meaningful once ds3231_init has succeeded. */
+i2cbus_id_t ds3231_bus(void);
+
+/* Crystal temperature in Celsius, to a quarter of a degree. */
+bool ds3231_temperature(float *celsius);
+
+/* The aging register: a factory-or-user trim, about 0.1 ppm per step. */
+bool ds3231_aging(int8_t *offset);
+
+/* True if the oscillator has stopped since the time was last set, which
+   means the chip's time cannot be trusted -- a flat backup cell, usually. */
+bool ds3231_stopped(bool *stopped);
 
 #endif /* DS3231_H */

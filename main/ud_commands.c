@@ -24,6 +24,8 @@ static void no_payload(usagedata_t *d, ud_host_t *h,
         marker, kind, false, NULL, no_payload, NULL, NULL, NULL }
 
 COMMAND(particles, "!particles", UD_PARTICLES);
+COMMAND(timer,     "!timer",     UD_TIMER);
+COMMAND(page,      "!page",      UD_PAGE);
 COMMAND(level,     "!level",     UD_LEVEL);
 COMMAND(flip,      "!flip",      UD_FLIP);
 COMMAND(zero,      "!zero",      UD_ZERO);

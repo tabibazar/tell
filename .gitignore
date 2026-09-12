@@ -11,8 +11,10 @@ host_tests/test_font_clock
 host_tests/test_logview
 host_tests/test_pages
 host_tests/test_particles
+host_tests/test_shaketimer
 host_tests/test_level
 host_tests/test_particles
+host_tests/test_shaketimer
 host_tests/test_textwrap
 host_tests/test_timecalc
 host_tests/test_usagedata

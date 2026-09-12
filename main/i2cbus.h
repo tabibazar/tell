@@ -31,6 +31,11 @@ esp_err_t i2cbus_init(i2cbus_id_t which);
 /* NULL until the matching i2cbus_init has succeeded. */
 i2c_master_bus_handle_t i2cbus_handle(i2cbus_id_t which);
 
+/* Which pins a bus is on, or -1 if the board has no such bus. For anything
+   that wants to report where it found a chip. */
+int i2cbus_sda(i2cbus_id_t which);
+int i2cbus_scl(i2cbus_id_t which);
+
 /* Probes an address, so a driver can find which one its chip answers on. */
 bool i2cbus_probe(i2cbus_id_t which, uint8_t addr);
 

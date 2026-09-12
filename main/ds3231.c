@@ -55,11 +55,14 @@ bool ds3231_unpack(const uint8_t regs[7], uint32_t *secs)
 #define ADDR        0x68
 #define REG_TIME    0x00
 #define REG_STATUS  0x0F
+#define REG_AGING   0x10
+#define REG_TEMP    0x11       /* integer degrees, then quarters in bits 7:6 */
 #define OSF         0x80       /* oscillator stop flag: time is not trusted */
 
 static const char *TAG = "rtc";
 static i2c_master_dev_handle_t s_dev;
 static bool s_present;
+static i2cbus_id_t s_bus = I2CBUS_MAIN;
 
 esp_err_t ds3231_init(void)
 {
@@ -86,6 +89,7 @@ esp_err_t ds3231_init(void)
             return err;
         }
         s_present = true;
+        s_bus = which;
         ESP_LOGI(TAG, "DS3231 answered at 0x%02X on the %s bus", ADDR,
                  which == I2CBUS_MAIN ? "main" : "aux");
         return ESP_OK;
@@ -98,6 +102,36 @@ esp_err_t ds3231_init(void)
 static bool read_regs(uint8_t first, uint8_t *out, size_t n)
 {
     return i2c_master_transmit_receive(s_dev, &first, 1, out, n, 50) == ESP_OK;
+}
+
+i2cbus_id_t ds3231_bus(void) { return s_bus; }
+
+bool ds3231_temperature(float *celsius)
+{
+    if (!s_present) return false;
+    uint8_t t[2];
+    if (!read_regs(REG_TEMP, t, sizeof t)) return false;
+    /* Signed whole degrees, then two bits of quarter degree. */
+    *celsius = (float)(int8_t)t[0] + (float)(t[1] >> 6) * 0.25f;
+    return true;
+}
+
+bool ds3231_aging(int8_t *offset)
+{
+    if (!s_present) return false;
+    uint8_t v;
+    if (!read_regs(REG_AGING, &v, 1)) return false;
+    *offset = (int8_t)v;
+    return true;
+}
+
+bool ds3231_stopped(bool *stopped)
+{
+    if (!s_present) return false;
+    uint8_t status;
+    if (!read_regs(REG_STATUS, &status, 1)) return false;
+    *stopped = (status & OSF) != 0;
+    return true;
 }
 
 bool ds3231_read(uint32_t *secs)

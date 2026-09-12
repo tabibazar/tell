@@ -21,6 +21,9 @@ test_timecalc: test_timecalc.c ../main/timecalc.c
 test_canvas: test_canvas.c ../main/canvas.c ../main/textwrap.c
 	cc $(CFLAGS) -o $@ $^
 
+test_shaketimer: test_shaketimer.c ../main/shaketimer.c
+	cc $(CFLAGS) -o $@ $^
+
 test_usagedata: test_usagedata.c $(UD_SRCS)
 	cc $(CFLAGS) -o $@ $^
 

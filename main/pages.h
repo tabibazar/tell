@@ -28,6 +28,8 @@ typedef enum {
     PAGE_MESSAGE,
     PAGE_DAILY,      /* tokens per day as bars */
     PAGE_PARTICLES,  /* tilt-poured sand; the Feather and wave, which have IMUs */
+    PAGE_TIMER,      /* a countdown you shake to restart */
+    PAGE_RTC,        /* the clock chip, and how far the board has drifted */
     PAGE_LEVEL,      /* the Feather's spirit level; needs its IMU */
     PAGE_SETTINGS,   /* touch-only; last, so it is out of the way */
     PAGE_COUNT
