@@ -135,3 +135,22 @@ float shaketimer_remaining_s(const shaketimer_t *t)
 }
 
 st_state_t shaketimer_state(const shaketimer_t *t) { return t->state; }
+
+void stopwatch_reset(stopwatch_t *w)
+{
+    w->elapsed_s = 0.0f;
+    w->running = false;
+}
+
+void stopwatch_toggle(stopwatch_t *w)
+{
+    w->running = !w->running;
+}
+
+void stopwatch_tick(stopwatch_t *w, float dt)
+{
+    if (w->running && dt > 0.0f) w->elapsed_s += dt;
+}
+
+float stopwatch_elapsed_s(const stopwatch_t *w) { return w->elapsed_s; }
+bool stopwatch_running(const stopwatch_t *w) { return w->running; }

@@ -104,4 +104,29 @@ float shaketimer_shuttle(float held, float deadzone, float max_rate);
 float shaketimer_remaining_s(const shaketimer_t *t);
 st_state_t shaketimer_state(const shaketimer_t *t);
 
+/* ---- counting the other way ------------------------------------------ */
+
+/*
+ * A stopwatch, which is the same idea with the sign reversed and no end.
+ * It lives here because it shares the detector above: on both pages a shake
+ * is what acts on the clock, and the button is left alone so it can still
+ * turn the page.
+ */
+typedef struct {
+    float elapsed_s;
+    bool  running;
+} stopwatch_t;
+
+/* Back to zero, and stopped. */
+void stopwatch_reset(stopwatch_t *w);
+
+/* Start if stopped, stop if running. Stopping keeps the time on the face:
+   a stopwatch that cleared itself when you stopped it would be useless for
+   the one thing it is for. */
+void stopwatch_toggle(stopwatch_t *w);
+
+void stopwatch_tick(stopwatch_t *w, float dt);
+float stopwatch_elapsed_s(const stopwatch_t *w);
+bool stopwatch_running(const stopwatch_t *w);
+
 #endif /* SHAKETIMER_H */

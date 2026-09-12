@@ -20,6 +20,7 @@ extern const ud_section_t ud_section_story;
 extern const ud_section_t ud_section_particles;
 extern const ud_section_t ud_section_timer;
 extern const ud_section_t ud_section_page;
+extern const ud_section_t ud_section_stopwatch;
 extern const ud_section_t ud_section_level;
 extern const ud_section_t ud_section_flip;
 extern const ud_section_t ud_section_zero;
@@ -53,6 +54,7 @@ const ud_section_t *const ud_sections[] = {
     &ud_section_particles,
     &ud_section_timer,
     &ud_section_page,
+    &ud_section_stopwatch,
     &ud_section_level,
     &ud_section_flip,
     &ud_section_zero,

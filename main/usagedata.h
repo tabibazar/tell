@@ -487,7 +487,7 @@ typedef enum {
        boards' IMU pages can be reached and adjusted from a Mac -- the
        sand or liquid, and the Feather's spirit level. A board without the
        sensor never offers the page; the kinds cost it nothing but a name. */
-    UD_PARTICLES, UD_LEVEL, UD_FLIP, UD_ZERO, UD_NEWGAME, UD_TIMER, UD_PAGE,
+    UD_PARTICLES, UD_LEVEL, UD_FLIP, UD_ZERO, UD_NEWGAME, UD_TIMER, UD_PAGE, UD_STOPWATCH,
     UD_KIND_COUNT
 } ud_kind_t;
 

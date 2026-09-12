@@ -529,8 +529,54 @@ static void draw_particles(canvas_t *c, int64_t now)
 #define DIAL_PAN_DEADZONE        25.0f   /* degrees per second */
 
 static shaketimer_t s_timer;
+static stopwatch_t s_watch;
 static shakedet_t s_shake;
 static int64_t s_timer_last_us;
+
+/*
+ * Counting up. A shake starts and stops it, as on the timer page: the shake
+ * is what acts on the clock, and leaving the button alone means a tap still
+ * turns the page. Holding the button puts it back to zero.
+ */
+static void draw_stopwatch(canvas_t *c, int64_t now)
+{
+    static int64_t last_us;
+    float dt = last_us ? (float)(now - last_us) / 1000000.0f : 0.05f;
+    last_us = now;
+    if (dt > 0.5f) dt = 0.5f;
+
+    qmi8658_sample_t sample;
+    if (qmi8658_read(&sample) == ESP_OK
+        && shakedet_update(&s_shake, sample.ax, sample.ay, sample.az, dt, now)) {
+        stopwatch_toggle(&s_watch);
+        ESP_LOGI(TAG, "stopwatch %s at %.1f s",
+                 stopwatch_running(&s_watch) ? "running" : "stopped",
+                 (double)stopwatch_elapsed_s(&s_watch));
+    }
+    stopwatch_tick(&s_watch, dt);
+
+    /* Tenths, not hundredths. The page redraws at the tick, so a hundredths
+       digit would step in fives and read as noise; a tenth is a digit that
+       means what it says. */
+    float e = stopwatch_elapsed_s(&s_watch);
+    int total = (int)e;
+    int tenths = (int)((e - (float)total) * 10.0f);
+    char buf[16];
+    if (total >= 3600)
+        snprintf(buf, sizeof buf, "%d:%02d:%02d", total / 3600,
+                 (total / 60) % 60, total % 60);
+    else
+        snprintf(buf, sizeof buf, "%d:%02d.%d", total / 60, total % 60, tenths);
+
+    const char *note = stopwatch_running(&s_watch) ? NULL
+                     : (e > 0.0f ? "SHAKE TO GO ON  HOLD TO CLEAR"
+                                 : "SHAKE TO START");
+    canvas_clear(c);
+    canvas_big(c, buf);
+    if (note) canvas_puts(c, (c->cols - (int)strlen(note)) / 2, c->rows - 1,
+                          note, PAL_DIM);
+    display_blit();
+}
 
 static void draw_timer(canvas_t *c, int64_t now)
 {
@@ -752,6 +798,11 @@ static void on_message(const char *text, size_t len)
         return;
     }
 #if HAVE_PARTICLES
+    if (kind == UD_STOPWATCH) {
+        pages_show(&s_pages, PAGE_STOPWATCH, now);
+        s_drawn_page = PAGE_COUNT;
+        return;
+    }
     if (kind == UD_TIMER) {
         long mins = 0;
         for (const char *p = text; *p; p++)
@@ -1029,7 +1080,7 @@ void app_main(void)
        it describes boards, and this is a question about what is plugged into
        one today. A board compiled without either never offers them at all. */
     unsigned imu_pages = PAGE_BIT(PAGE_LEVEL) | PAGE_BIT(PAGE_PARTICLES)
-                       | PAGE_BIT(PAGE_TIMER);
+                       | PAGE_BIT(PAGE_TIMER) | PAGE_BIT(PAGE_STOPWATCH);
 #if HAVE_IMU
     s_imu = qmi8658_init() == ESP_OK;
     if (!s_imu) available &= ~imu_pages;
@@ -1040,7 +1091,8 @@ void app_main(void)
     available &= ~PAGE_BIT(PAGE_LEVEL);
 #endif
 #if !HAVE_PARTICLES
-    available &= ~(PAGE_BIT(PAGE_PARTICLES) | PAGE_BIT(PAGE_TIMER));
+    available &= ~(PAGE_BIT(PAGE_PARTICLES) | PAGE_BIT(PAGE_TIMER)
+                 | PAGE_BIT(PAGE_STOPWATCH));
 #endif
     /* Any board may have a DS3231 wired to its I2C bus, so every board asks.
        One without simply does without, the way a board without an IMU does --
@@ -1105,6 +1157,7 @@ void app_main(void)
         ESP_LOGI(TAG, "sand: %d grains on %dx%d, gravity %.0f, seed 0x%08X",
                  s_particles.n, c->w, c->h, (double)s_gravity_px, (unsigned)seed);
         shaketimer_init(&s_timer, TIMER_DEFAULT_S);
+        stopwatch_reset(&s_watch);
         shakedet_init(&s_shake);
     }
 #endif
@@ -1259,6 +1312,11 @@ void app_main(void)
         /* The timer page borrows the button: holding it dials the duration
            rather than turning the page, and a tap then accepts what has been
            dialled. Everywhere else the button means what it always means. */
+        if (press == BUTTON_PREV && s_pages.current == PAGE_STOPWATCH) {
+            stopwatch_reset(&s_watch);
+            ESP_LOGI(TAG, "stopwatch cleared");
+            press = BUTTON_NONE;
+        }
         if (press != BUTTON_NONE && s_pages.current == PAGE_TIMER) {
             if (shaketimer_setting(&s_timer)) {
                 if (press == BUTTON_NEXT) {
@@ -1328,6 +1386,7 @@ void app_main(void)
         /* A screensaver that ate a running countdown would leave you with a
            clock instead of an answer. */
         if (s_pages.current == PAGE_TIMER) s_pages.last_activity_us = now;
+        if (s_pages.current == PAGE_STOPWATCH) s_pages.last_activity_us = now;
 #endif
         bool saver_now = s_synced && pages_saver_active(&s_pages, now);
         if (saver_now != s_saver) {
@@ -1421,6 +1480,7 @@ void app_main(void)
 #if HAVE_PARTICLES
         if (s_pages.current == PAGE_PARTICLES && s_imu) draw_particles(c, now);
         if (s_pages.current == PAGE_TIMER && s_imu) draw_timer(c, now);
+        if (s_pages.current == PAGE_STOPWATCH && s_imu) draw_stopwatch(c, now);
 #endif
         /* Pages with ages on them redraw on their own so the ages keep counting. */
         if (pd->refresh_us > 0 && now - s_page_drawn_us > pd->refresh_us)

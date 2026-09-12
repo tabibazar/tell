@@ -29,6 +29,7 @@ const page_def_t page_defs[PAGE_COUNT] = {
     [PAGE_DAILY]    = { "Tokens per day", UD_FEED(UD_DAILY),            views_daily,    true,  0,        false, false, true  },
     [PAGE_PARTICLES]= { "Sand",          0,                             NULL,           false, 0,        true,  false, false },
     [PAGE_TIMER]    = { "Timer",         0,                             NULL,           false, 0,        true,  false, false },
+    [PAGE_STOPWATCH]= { "Stopwatch",     0,                             NULL,           false, 0,        true,  false, false },
     [PAGE_RTC]      = { "RTC",           0,                             NULL,           false, SEC(1),   true,  false, false },
     [PAGE_LEVEL]    = { "Level",         0,                             NULL,           false, 0,        true,  false, false },
     [PAGE_SETTINGS] = { "Settings",      0,                             NULL,           false, 0,        false, true,  false },

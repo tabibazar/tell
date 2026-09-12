@@ -112,6 +112,39 @@ int main(void)
     expect("adjust does nothing when not setting",
            shaketimer_remaining_s(&t) < 5880.0f);
 
+    /* ---- the stopwatch ---- */
+    {
+        stopwatch_t w;
+        stopwatch_reset(&w);
+        expect("a stopwatch starts at nothing", stopwatch_elapsed_s(&w) == 0.0f);
+        expect("and stopped", !stopwatch_running(&w));
+
+        for (int i = 0; i < 20; i++) stopwatch_tick(&w, 0.05f);
+        expect("a stopped one does not count", stopwatch_elapsed_s(&w) == 0.0f);
+
+        stopwatch_toggle(&w);
+        expect("it starts", stopwatch_running(&w));
+        for (int i = 0; i < 40; i++) stopwatch_tick(&w, 0.05f);
+        float at_stop = stopwatch_elapsed_s(&w);
+        expect("and counts up", at_stop > 1.9f && at_stop < 2.1f);
+
+        /* Stopping must keep the time on the face: reading it afterwards is
+           the one thing a stopwatch is for. */
+        stopwatch_toggle(&w);
+        expect("stopping holds the time", stopwatch_elapsed_s(&w) == at_stop);
+        for (int i = 0; i < 40; i++) stopwatch_tick(&w, 0.05f);
+        expect("and it stays held", stopwatch_elapsed_s(&w) == at_stop);
+
+        /* Starting again continues rather than restarting. */
+        stopwatch_toggle(&w);
+        for (int i = 0; i < 20; i++) stopwatch_tick(&w, 0.05f);
+        expect("starting again carries on", stopwatch_elapsed_s(&w) > at_stop);
+
+        stopwatch_reset(&w);
+        expect("reset zeroes it", stopwatch_elapsed_s(&w) == 0.0f);
+        expect("and stops it", !stopwatch_running(&w));
+    }
+
     /* ---- the shuttle curve ---- */
     expect("still is still", shaketimer_shuttle(0.0f, 0.25f, 100.0f) == 0.0f);
     expect("inside the dead zone is still",
