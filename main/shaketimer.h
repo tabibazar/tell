@@ -47,13 +47,20 @@ typedef enum {
     ST_IDLE = 0,   /* never shaken; showing the full time */
     ST_RUNNING,
     ST_DONE,
+    ST_SETTING,    /* being dialled to a new duration */
 } st_state_t;
 
 typedef struct {
     int   duration_s;
     float elapsed_s;
+    float set_s;       /* the duration being dialled, kept fractional so a
+                          slow turn accumulates instead of rounding away */
     st_state_t state;
 } shaketimer_t;
+
+/* A minute is a long way to dial and a day is further than anyone wants. */
+#define ST_MIN_S 5
+#define ST_MAX_S (99 * 60)
 
 void shaketimer_init(shaketimer_t *t, int duration_s);
 
@@ -62,6 +69,37 @@ void shaketimer_init(shaketimer_t *t, int duration_s);
 void shaketimer_shake(shaketimer_t *t);
 
 void shaketimer_tick(shaketimer_t *t, float dt);
+
+/*
+ * Setting the duration on the board itself, with no Mac in it.
+ *
+ * Two rates rather than two positions, because a dial you turn is forgiving
+ * and a dial you point is not: let go and it stays where it is, instead of
+ * snapping to whatever angle your hand happens to be at.
+ *
+ * `minutes_rate` and `seconds_rate` are per second of real time, scaled by
+ * dt. The caller decides what gesture produces them.
+ */
+void shaketimer_begin_set(shaketimer_t *t);
+bool shaketimer_setting(const shaketimer_t *t);
+void shaketimer_adjust(shaketimer_t *t, float minutes_rate, float seconds_rate,
+                       float dt);
+void shaketimer_accept(shaketimer_t *t);
+
+/*
+ * A shuttle curve: turns how far something is held from rest into how fast
+ * the value should move, signed, so the same gesture goes both ways.
+ *
+ * Squared rather than proportional. Held a little it crawls, which is what
+ * you want when you are a few seconds out; held hard it runs, which is what
+ * you want when you are twenty minutes out. A straight line cannot do both
+ * -- it is either too slow to cross the range or too fast to land on a
+ * number.
+ *
+ * Below `deadzone` it is exactly zero: a hand holding a board is never quite
+ * still, and a dial that creeps while you read it is useless.
+ */
+float shaketimer_shuttle(float held, float deadzone, float max_rate);
 
 float shaketimer_remaining_s(const shaketimer_t *t);
 st_state_t shaketimer_state(const shaketimer_t *t);

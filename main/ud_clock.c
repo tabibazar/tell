@@ -8,6 +8,7 @@ static void begin_clock(usagedata_t *d, ud_host_t *h, int64_t now_us)
 {
     (void)d; (void)h; (void)now_us;
     d->date[0] = '\0';
+    d->date_year = d->date_month = d->date_day = d->date_wday = 0;
     d->weather[0] = '\0';
     d->have_utc = false;
     d->utc_offset_min = 0;
@@ -23,6 +24,21 @@ static void line_clock(usagedata_t *d, ud_host_t *h, const char *tag, const char
         int v = atoi(num);
         /* Offsets run from -12 to +14 hours; anything else is a bad line. */
         if (v >= -12 * 60 && v <= 14 * 60) { d->utc_offset_min = v; d->have_utc = true; }
+        return;
+    }
+    if (strcmp(tag, "ymd") == 0) {
+        /* "2026 09 11 5": year, month, day, weekday with Monday first. */
+        int v[4] = { 0, 0, 0, 0 };
+        const char *p = q;
+        for (int i = 0; i < 4 && p != NULL; i++) {
+            p = ud_token(p, num, sizeof num - 1);
+            v[i] = atoi(num);
+        }
+        if (v[0] >= 2020 && v[0] <= 2099 && v[1] >= 1 && v[1] <= 12
+            && v[2] >= 1 && v[2] <= 31 && v[3] >= 1 && v[3] <= 7) {
+            d->date_year = v[0]; d->date_month = v[1];
+            d->date_day = v[2];  d->date_wday = v[3];
+        }
         return;
     }
     if (strcmp(tag, "tz") == 0) { ud_token(q, d->tz, (int)sizeof d->tz - 1); return; }

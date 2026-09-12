@@ -8,20 +8,44 @@
  * A DS3231 real-time clock on the shared I2C bus, so the board knows the time
  * from the moment it powers up instead of waiting for a Mac to sync it.
  *
- * The board only ever deals in seconds since local midnight, and so does
- * this: the Mac's sync (which is NTP-disciplined) is written to the chip as
- * local time of day with a fixed dummy date, and read back the same way. The
- * date fields are never used. Local time means the chip is an hour off for a
+ * The board deals in seconds since local midnight, and so does this: the
+ * Mac's sync (which is NTP-disciplined) is written as local time of day and
+ * read back the same way. Local time means the chip is an hour off for a
  * while after a daylight-saving change, until the next sync from a Mac; that
  * normally happens within minutes.
+ *
+ * The calendar is the chip's too. It used to be given a dummy date because
+ * nothing read it back, but a board that has been unplugged knows the time
+ * and would otherwise have no idea what day it is until a Mac spoke. The
+ * chip rolls the date over at midnight on its own battery, which is the
+ * whole reason those registers exist.
  */
 
-/* The chip's seven time registers, 0x00..0x06, from a time of day. Pure. */
-void ds3231_pack(uint32_t secs_since_midnight, uint8_t regs[7]);
+typedef struct {
+    int year;      /* four digits; the chip holds two and a century bit */
+    int month;     /* 1-12 */
+    int day;       /* 1-31 */
+    int wday;      /* 1-7, Monday first, as date +%u gives it */
+} ds3231_date_t;
 
-/* A time of day from the seven registers. Handles both 12- and 24-hour
-   modes. False if the fields are not valid BCD time. Pure. */
-bool ds3231_unpack(const uint8_t regs[7], uint32_t *secs_since_midnight);
+/* True if this is a date the chip can hold and the board should believe. */
+bool ds3231_date_valid(const ds3231_date_t *d);
+
+/* "Fri 12 Sep 2026" into `out`. Writes an empty string for a date that is
+   not valid, so a caller can print the result either way. Pure. */
+void ds3231_format_date(const ds3231_date_t *d, char *out, int n);
+
+/* The chip's seven registers, 0x00..0x06, from a time of day and a date.
+   A NULL or invalid date writes the dummy the chip needs to roll over at
+   midnight without complaint. Pure. */
+void ds3231_pack(uint32_t secs_since_midnight, const ds3231_date_t *date,
+                 uint8_t regs[7]);
+
+/* A time of day, and optionally the date, from the seven registers. Handles
+   both 12- and 24-hour modes. False if the fields are not valid BCD time;
+   `date` may be NULL, and is left invalid if the chip holds no real one. */
+bool ds3231_unpack(const uint8_t regs[7], uint32_t *secs_since_midnight,
+                   ds3231_date_t *date);
 
 #ifdef ESP_PLATFORM
 #include "esp_err.h"
@@ -36,9 +60,12 @@ esp_err_t ds3231_init(void);
    battery), in which case the time is not to be trusted. */
 bool ds3231_read(uint32_t *secs_since_midnight);
 
-/* Sets the chip and marks its time as trustworthy again. */
-bool ds3231_write(uint32_t secs_since_midnight);
-#endif
+/* Sets the chip and marks its time as trustworthy again. A NULL date leaves
+   the chip's own calendar running rather than resetting it. */
+bool ds3231_write(uint32_t secs_since_midnight, const ds3231_date_t *date);
+
+/* The date the chip is keeping. False if there is none worth believing. */
+bool ds3231_read_date(ds3231_date_t *date);
 
 /*
  * What the chip knows about itself, for the RTC page.
@@ -62,5 +89,6 @@ bool ds3231_aging(int8_t *offset);
 /* True if the oscillator has stopped since the time was last set, which
    means the chip's time cannot be trusted -- a flat backup cell, usually. */
 bool ds3231_stopped(bool *stopped);
+#endif
 
 #endif /* DS3231_H */

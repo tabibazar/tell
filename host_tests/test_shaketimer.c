@@ -68,6 +68,78 @@ int main(void)
     run(&t, 1.0f);
     expect("a zero duration is done at once", shaketimer_state(&t) == ST_DONE);
 
+    /* ---- setting it on the board ---- */
+    shaketimer_init(&t, 300);
+    expect("not setting to begin with", !shaketimer_setting(&t));
+
+    shaketimer_begin_set(&t);
+    expect("begins from the current duration", shaketimer_remaining_s(&t) == 300.0f);
+    expect("and says it is setting", shaketimer_setting(&t));
+
+    /* Two seconds of a full turn, at a minute per turn. */
+    shaketimer_adjust(&t, 1.0f, 0.0f, 2.0f);
+    expect("a turn winds the minutes on", shaketimer_remaining_s(&t) == 420.0f);
+    shaketimer_adjust(&t, -1.0f, 0.0f, 1.0f);
+    expect("and back the other way", shaketimer_remaining_s(&t) == 360.0f);
+    shaketimer_adjust(&t, 0.0f, 10.0f, 1.5f);
+    expect("tilt winds the seconds", shaketimer_remaining_s(&t) == 375.0f);
+
+    /* A slow turn must accumulate rather than rounding away to nothing: this
+       is why the dialled value is kept fractional. */
+    for (int i = 0; i < 20; i++) shaketimer_adjust(&t, 0.0f, 0.4f, 0.05f);
+    expect("a slow turn still moves it", shaketimer_remaining_s(&t) > 375.0f);
+
+    shaketimer_adjust(&t, -100.0f, 0.0f, 60.0f);
+    expect("it cannot be wound below the floor",
+           shaketimer_remaining_s(&t) == (float)ST_MIN_S);
+    shaketimer_adjust(&t, 1000.0f, 0.0f, 60.0f);
+    expect("nor above the ceiling", shaketimer_remaining_s(&t) == (float)ST_MAX_S);
+
+    /* A shake while dialling is an unsteady hand, not an instruction. */
+    shaketimer_shake(&t);
+    expect("a shake does not start it while setting", shaketimer_setting(&t));
+
+    shaketimer_adjust(&t, -1.0f, 0.0f, 1.0f);    /* one minute back from the top */
+    shaketimer_accept(&t);
+    expect("accepting leaves it idle, not running", shaketimer_state(&t) == ST_IDLE);
+    expect("with the dialled time", shaketimer_remaining_s(&t) == 5880.0f);
+    shaketimer_shake(&t);
+    run(&t, 1.0f);
+    expect("and a shake then runs the new time", shaketimer_state(&t) == ST_RUNNING);
+
+    /* Winding is only possible while setting. */
+    shaketimer_adjust(&t, 10.0f, 0.0f, 10.0f);
+    expect("adjust does nothing when not setting",
+           shaketimer_remaining_s(&t) < 5880.0f);
+
+    /* ---- the shuttle curve ---- */
+    expect("still is still", shaketimer_shuttle(0.0f, 0.25f, 100.0f) == 0.0f);
+    expect("inside the dead zone is still",
+           shaketimer_shuttle(0.2f, 0.25f, 100.0f) == 0.0f);
+    expect("and so is the other way",
+           shaketimer_shuttle(-0.2f, 0.25f, 100.0f) == 0.0f);
+    expect("it starts from zero at the edge of the dead zone",
+           shaketimer_shuttle(0.2501f, 0.25f, 100.0f) < 0.01f);
+    expect("held hard it reaches full rate",
+           shaketimer_shuttle(1.0f, 0.25f, 100.0f) > 99.9f);
+    expect("past full it does not exceed it",
+           shaketimer_shuttle(4.0f, 0.25f, 100.0f) <= 100.0f);
+    expect("the other way is the same speed backwards",
+           shaketimer_shuttle(-1.0f, 0.25f, 100.0f) == -100.0f);
+    {
+        /* The point of squaring: a little tilt is much slower than half the
+           speed, so small corrections are possible at all. */
+        float half = shaketimer_shuttle(0.625f, 0.25f, 100.0f);  /* halfway up */
+        expect("half held is well under half speed", half < 30.0f && half > 20.0f);
+        float last = -1.0f, ok = 1.0f;
+        for (float h = 0.25f; h <= 1.0f; h += 0.05f) {
+            float r = shaketimer_shuttle(h, 0.25f, 100.0f);
+            if (r < last) ok = 0.0f;
+            last = r;
+        }
+        expect("and it never goes backwards as you lean further", ok != 0.0f);
+    }
+
     /* ---- the detector ---- */
     shakedet_t d;
     shakedet_init(&d);

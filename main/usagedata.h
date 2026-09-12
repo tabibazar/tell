@@ -266,6 +266,9 @@ typedef struct {
     /* Sent from the Mac: the board knows only seconds since midnight, so it
        cannot work out a date, and it has no network to ask about weather. */
     char date[UD_TEXT_MAX + 1];
+    /* The same date as numbers, for the clock chip, which can hold a calendar
+       but not a sentence. Zero year means none was sent. */
+    int date_year, date_month, date_day, date_wday;
     char weather[UD_TEXT_MAX + 1];
     /* Also from the Mac's clock payload: the local offset from UTC in
        minutes and the zone's name, so the title bars can show UTC beside the

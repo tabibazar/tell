@@ -37,6 +37,13 @@ static const char *TAG = "main";
 
 #define TICK_MS 50            /* also the touch and button poll interval */
 
+/*
+ * Thousandths on the clock. They cost a redraw every frame instead of every
+ * second, which is most of what this board does while the clock is showing,
+ * so it is a choice rather than a given.
+ */
+#define CLOCK_MILLISECONDS 1
+
 /* Push buttons, where the board has any: on a board with no touch they are
    the only way to change the page, so they matter more there than a tap does
    on the big one. Which pins, and how many, is a Kconfig question. */
@@ -57,6 +64,7 @@ static bool     s_synced;
 static bool     s_rtc;
 static bool     s_rtc_pending;      /* a sync arrived; copy it to the chip */
 static int64_t  s_rtc_checked_us;
+static uint32_t s_last_day_secs;    /* to notice our own clock crossing midnight */
 #define RTC_RECHECK_US (3600 * 1000000LL)
 
 static usagedata_t s_data;
@@ -502,6 +510,23 @@ static void draw_particles(canvas_t *c, int64_t now)
  */
 #define TIMER_DEFAULT_S (25 * 60)
 
+/*
+ * Dialling the duration by hand.
+ *
+ * Tilt is a shuttle: the steeper it is held the faster the time runs, either
+ * way, squared so that a small lean crawls and a hard one covers the whole
+ * range in seconds. Four minutes a second held right over crosses 99 minutes
+ * in about twenty-five, and a gentle lean moves it a second at a time.
+ *
+ * Panning stays proportional, because the gesture already carries its own
+ * rate: turn the board faster and it winds faster, which is how a knob
+ * behaves.
+ */
+#define DIAL_SECONDS_MAX        240.0f   /* seconds per second, held right over */
+#define DIAL_TILT_DEADZONE        0.20f  /* g */
+#define DIAL_DEGREES_PER_MINUTE 360.0f
+#define DIAL_PAN_DEADZONE        25.0f   /* degrees per second */
+
 static shaketimer_t s_timer;
 static shakedet_t s_shake;
 static int64_t s_timer_last_us;
@@ -514,8 +539,29 @@ static void draw_timer(canvas_t *c, int64_t now)
     if (dt > 0.5f) dt = 0.5f;
 
     qmi8658_sample_t sample;
-    if (qmi8658_read(&sample) == ESP_OK
-        && shakedet_update(&s_shake, sample.ax, sample.ay, sample.az, dt, now)) {
+    bool have = qmi8658_read(&sample) == ESP_OK;
+
+    if (have && shaketimer_setting(&s_timer)) {
+        /*
+         * Dialling. Two gestures, two scales, both as rates rather than
+         * positions so letting go leaves the value where it is.
+         *
+         * Panning -- turning the board flat, like a knob -- is the big,
+         * comfortable motion, so it carries minutes: a full turn is one. It
+         * comes off the gyroscope, which nothing else here uses for anything
+         * that matters. Tilting is the smaller motion and carries seconds.
+         *
+         * Both have a dead zone, because a hand holding a board is never
+         * quite still and a dial that creeps while you read it is useless.
+         */
+        float gx, gy;
+        gravity_from(&sample, &gx, &gy);
+        float pan = sample.gz;                   /* degrees per second */
+        if (pan > -DIAL_PAN_DEADZONE && pan < DIAL_PAN_DEADZONE) pan = 0.0f;
+        float seconds = shaketimer_shuttle(gx, DIAL_TILT_DEADZONE, DIAL_SECONDS_MAX);
+        shaketimer_adjust(&s_timer, pan / DIAL_DEGREES_PER_MINUTE, seconds, dt);
+    } else if (have && shakedet_update(&s_shake, sample.ax, sample.ay, sample.az,
+                                       dt, now)) {
         shaketimer_shake(&s_timer);
         ESP_LOGI(TAG, "shaken: %d s from the top", s_timer.duration_s);
     }
@@ -528,7 +574,8 @@ static void draw_timer(canvas_t *c, int64_t now)
     const char *note;
     uint16_t colour;
     switch (shaketimer_state(&s_timer)) {
-    case ST_RUNNING: note = NULL;          colour = PAL_FG;  break;
+    case ST_RUNNING: note = NULL;             colour = PAL_FG;  break;
+    case ST_SETTING: note = "TILT TO SET, TAP"; colour = PAL_A0;  break;
     /* Done blinks, because the whole point is to be noticed from across a
        room by someone who has stopped looking at it. */
     case ST_DONE:    note = "TIME";           colour = PAL_A5;  break;
@@ -655,6 +702,16 @@ static void on_message(const char *text, size_t len)
         if (s_pages.current == PAGE_CLOCK) s_drawn_second = -1;
         else s_drawn_minute = -1;            /* redraw the title strip quietly */
         if (s_data.have_utc) s_zone_dirty = true;
+        if (s_rtc) {
+            /* A date has to ask for the chip to be written in its own right.
+               The time arrives first, as its own sync, and the write that
+               follows it happens on the next tick -- before this payload has
+               been read. A date that waited for the time's write would miss
+               it by one message, every time. */
+            ds3231_date_t d = { s_data.date_year, s_data.date_month,
+                                s_data.date_day, s_data.date_wday };
+            if (ds3231_date_valid(&d)) s_rtc_pending = true;
+        }
         return;
     }
 #if HAVE_IMU
@@ -759,6 +816,27 @@ static void draw_message(canvas_t *c)
     }
     canvas_text(c, s_message);
     vw_menu_tab(c);
+}
+
+/*
+ * Takes the day from the chip. The board cannot work out the date for itself
+ * -- it counts seconds since midnight and nothing else -- so the calendar is
+ * the chip's to keep and ours to ask for.
+ */
+static void rtc_refresh_date(void)
+{
+    ds3231_date_t d;
+    if (!s_rtc || !ds3231_read_date(&d)) return;
+    char was[sizeof s_data.date];
+    strncpy(was, s_data.date, sizeof was - 1);
+    was[sizeof was - 1] = '\0';
+    ds3231_format_date(&d, s_data.date, (int)sizeof s_data.date);
+    s_data.date_year = d.year; s_data.date_month = d.month;
+    s_data.date_day = d.day;   s_data.date_wday = d.wday;
+    if (strcmp(was, s_data.date) != 0) {
+        ESP_LOGI(TAG, "date from the RTC: %s", s_data.date);
+        if (s_pages.current == PAGE_CLOCK) s_drawn_second = -1;
+    }
 }
 
 /*
@@ -896,9 +974,20 @@ static void draw_clock(canvas_t *c, int64_t now)
         return;
     }
     uint32_t secs = timecalc_advance(s_base_secs, (uint64_t)(now - s_base_us));
-    if ((int)secs == s_drawn_second) return;
-    char buf[9];
+    char buf[16];
     timecalc_format_hms(secs, buf);
+#if CLOCK_MILLISECONDS
+    /*
+     * The thousandths, from the same microsecond counter the seconds come
+     * from. They are drawn every frame rather than every second, so the page
+     * redraws about thirty times a second and the last digit is never
+     * actually still -- which is the point of showing it.
+     */
+    int ms = (int)(((uint64_t)(now - s_base_us) / 1000ULL) % 1000ULL);
+    snprintf(buf + 8, sizeof buf - 8, ".%03d", ms);
+#else
+    if ((int)secs == s_drawn_second) return;
+#endif
     canvas_big(c, buf);
     draw_clock_extras(c);
     vw_menu_tab(c);
@@ -963,6 +1052,11 @@ void app_main(void)
         on_time(rtc_secs);
         s_rtc_pending = false;          /* it came from the chip; no need to write it back */
         ESP_LOGI(TAG, "clock set from the RTC");
+
+        /* The chip has been keeping the calendar too, so the board knows what
+           day it is before any Mac speaks. Its own shorter wording, because
+           this is not the Mac's sentence. */
+        rtc_refresh_date();
     }
     pages_init(&s_pages, available);
     settings_defaults(&s_settings);
@@ -1055,7 +1149,25 @@ void app_main(void)
                takes that time and holds it through the next power cycle. */
             s_rtc_pending = false;
             s_rtc_checked_us = now;
-            if (ds3231_write(now_secs(now))) ESP_LOGI(TAG, "RTC set from the Mac");
+            ds3231_date_t d = { s_data.date_year, s_data.date_month,
+                                s_data.date_day, s_data.date_wday };
+            /* An invalid date leaves the chip's own calendar running rather
+               than resetting it, so a sync from a Mac that sent no date does
+               not lose the day the chip has been keeping. */
+            if (ds3231_write(now_secs(now), ds3231_date_valid(&d) ? &d : NULL))
+                ESP_LOGI(TAG, "RTC set from the Mac%s",
+                         ds3231_date_valid(&d) ? ", with the date" : "");
+        }
+        /*
+         * A board left running crosses midnight without anyone touching it,
+         * and the date it read at boot is then a day stale. Our own clock
+         * wrapping is the cheapest signal that the day has turned: ask the
+         * chip, which has already rolled over on its own battery.
+         */
+        if (s_rtc && s_synced) {
+            uint32_t day_secs = now_secs(now);
+            if (day_secs < s_last_day_secs) rtc_refresh_date();
+            s_last_day_secs = day_secs;
         }
         if (s_rtc && now - s_rtc_checked_us > RTC_RECHECK_US) {
             /* The ESP timer drifts seconds a day; the chip does not. Once an
@@ -1067,6 +1179,10 @@ void app_main(void)
                 s_rtc_pending = false;
                 ESP_LOGI(TAG, "clock re-read from the RTC");
             }
+            /* A wrap can be missed -- a board asleep, a clock corrected
+               backwards over midnight -- so the hourly check carries the
+               date too, and a day can never be stale for longer than that. */
+            rtc_refresh_date();
         }
 
         if (touch && gt911_tapped()) {
@@ -1134,6 +1250,24 @@ void app_main(void)
         }
 #if HAVE_BUTTONS
         button_t press = buttons_pressed();
+#if HAVE_PARTICLES
+        /* The timer page borrows the button: holding it dials the duration
+           rather than turning the page, and a tap then accepts what has been
+           dialled. Everywhere else the button means what it always means. */
+        if (press != BUTTON_NONE && s_pages.current == PAGE_TIMER) {
+            if (shaketimer_setting(&s_timer)) {
+                if (press == BUTTON_NEXT) {
+                    shaketimer_accept(&s_timer);
+                    ESP_LOGI(TAG, "timer set to %d s", s_timer.duration_s);
+                }
+                press = BUTTON_NONE;
+            } else if (press == BUTTON_PREV) {
+                shaketimer_begin_set(&s_timer);
+                ESP_LOGI(TAG, "dialling the timer");
+                press = BUTTON_NONE;
+            }
+        }
+#endif
         if (press != BUTTON_NONE) {
             if (s_saver) {
                 /* As with a tap, the first press only wakes: changing the page

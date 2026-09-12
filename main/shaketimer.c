@@ -56,11 +56,58 @@ void shaketimer_init(shaketimer_t *t, int duration_s)
 {
     t->duration_s = duration_s < 0 ? 0 : duration_s;
     t->elapsed_s = 0.0f;
+    t->set_s = (float)t->duration_s;
+    t->state = ST_IDLE;
+}
+
+void shaketimer_begin_set(shaketimer_t *t)
+{
+    t->set_s = (float)t->duration_s;
+    t->state = ST_SETTING;
+}
+
+bool shaketimer_setting(const shaketimer_t *t)
+{
+    return t->state == ST_SETTING;
+}
+
+void shaketimer_adjust(shaketimer_t *t, float minutes_rate, float seconds_rate,
+                       float dt)
+{
+    if (t->state != ST_SETTING || dt <= 0.0f) return;
+    t->set_s += (minutes_rate * 60.0f + seconds_rate) * dt;
+    if (t->set_s < (float)ST_MIN_S) t->set_s = (float)ST_MIN_S;
+    if (t->set_s > (float)ST_MAX_S) t->set_s = (float)ST_MAX_S;
+}
+
+float shaketimer_shuttle(float held, float deadzone, float max_rate)
+{
+    float sign = held < 0.0f ? -1.0f : 1.0f;
+    float mag = held < 0.0f ? -held : held;
+    if (mag <= deadzone) return 0.0f;
+
+    /* Re-spread what is left of the range over 0..1, so the curve starts at
+       zero where the dead zone ends rather than jumping. */
+    float span = 1.0f - deadzone;
+    float t = span > 0.0f ? (mag - deadzone) / span : 1.0f;
+    if (t > 1.0f) t = 1.0f;
+    return sign * max_rate * t * t;
+}
+
+void shaketimer_accept(shaketimer_t *t)
+{
+    if (t->state != ST_SETTING) return;
+    t->duration_s = (int)(t->set_s + 0.5f);
+    t->elapsed_s = 0.0f;
+    /* Set but not started: a shake is the only thing that starts it, and
+       keeping that true means there is never a second way. */
     t->state = ST_IDLE;
 }
 
 void shaketimer_shake(shaketimer_t *t)
 {
+    /* A shake while dialling is a hand being unsteady, not an instruction. */
+    if (t->state == ST_SETTING) return;
     t->elapsed_s = 0.0f;
     t->state = ST_RUNNING;
     /* A zero duration has nothing to count, and must not sit running for
@@ -80,6 +127,8 @@ void shaketimer_tick(shaketimer_t *t, float dt)
 
 float shaketimer_remaining_s(const shaketimer_t *t)
 {
+    /* While dialling, what is showing is what is being dialled. */
+    if (t->state == ST_SETTING) return t->set_s;
     if (t->state == ST_DONE) return 0.0f;
     float left = (float)t->duration_s - t->elapsed_s;
     return left < 0.0f ? 0.0f : left;
