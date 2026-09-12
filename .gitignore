@@ -1,10 +1,13 @@
 *.dSYM/
 build-crowpanel/
+build-crow/
+build-big/
 build-lilly/
 build-wave/
 build-wave-wifi/
 build/
 dist/
+.cache/
 firmware-backup/
 # A local file. The firmware no longer reads one -- the radio only scans --
 # but this repository is public, so never let one in.
@@ -33,6 +36,8 @@ host_tests/test_ds3231
 mac/tell
 sdkconfig
 sdkconfig.crowpanel
+sdkconfig.crow
+sdkconfig.big
 sdkconfig.crowpanel.old
 sdkconfig.lilly
 sdkconfig.wave
