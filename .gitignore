@@ -46,3 +46,4 @@ sdkconfig.old
 
 # Python bytecode: build output, committed by accident once.
 tools/__pycache__/
+host_tests/test_drift

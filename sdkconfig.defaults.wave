@@ -12,7 +12,8 @@ CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
 # memory; the 8 MB of octal stays off because nothing in this build needs it.
 # The WiFi variant does, and turns it on -- see sdkconfig.defaults.wave-wifi.
 
-# Ten per cent. A desk ornament does not need a lit panel at full, and the
+# Fifteen per cent. A desk ornament does not need a lit panel at full, and the
 # backlight is the largest steady draw on the board -- the die sat at about
-# 60 C with it wide open.
-CONFIG_SCREEN_BRIGHTNESS=10
+# 60 C with it wide open, and near 51 C at ten. Raised from ten on 2026-09-12
+# because ten was legible but dim in daylight.
+CONFIG_SCREEN_BRIGHTNESS=15

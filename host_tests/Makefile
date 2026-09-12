@@ -4,7 +4,7 @@ CFLAGS = -std=c11 -Wall -Wextra -Werror -g -I../main
 VIEW_SRCS = $(wildcard ../main/view_*.c)
 UD_SRCS = ../main/usagedata.c $(wildcard ../main/ud_*.c)
 
-all: test_textwrap test_font test_font_clock test_timecalc test_canvas test_usagedata test_pages test_views test_settings test_ds3231 test_level test_particles
+all: test_textwrap test_font test_font_clock test_timecalc test_canvas test_usagedata test_pages test_views test_drift test_settings test_ds3231 test_level test_particles
 
 test_textwrap: test_textwrap.c ../main/textwrap.c
 	cc $(CFLAGS) -o $@ $^
@@ -24,6 +24,9 @@ test_canvas: test_canvas.c ../main/canvas.c ../main/textwrap.c
 
 test_templog: test_templog.c ../main/templog.c ../main/canvas.c ../main/textwrap.c
 	cc $(CFLAGS) -o $@ $^
+
+test_drift: test_drift.c ../main/drift.c ../main/canvas.c ../main/textwrap.c
+	$(CC) $(CFLAGS) -o $@ $^ -lm
 
 test_bme280: test_bme280.c ../main/bme280.c
 	cc $(CFLAGS) -o $@ $^
@@ -53,6 +56,6 @@ test_particles: test_particles.c ../main/particles.c ../main/canvas.c ../main/te
 	cc $(CFLAGS) -o $@ $^
 
 clean:
-	rm -f test_textwrap test_font test_font_clock test_timecalc test_canvas test_usagedata test_pages test_views test_settings test_ds3231 test_level test_particles
+	rm -f test_drift test_textwrap test_font test_font_clock test_timecalc test_canvas test_usagedata test_pages test_views test_settings test_ds3231 test_level test_particles
 
 .PHONY: all clean

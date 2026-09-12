@@ -1,4 +1,5 @@
 #include "display.h"
+#include "drift.h"
 #include "ble_uart.h"
 #include "bme280.h"
 #include "buttons.h"
@@ -939,19 +940,87 @@ static void rtc_refresh_date(void)
  * a couple of parts per million. Showing both and the gap between them says
  * how much the board would have been wrong by without the chip.
  */
+/*
+ * The clock chip, and how far the board has slipped against it.
+ *
+ * Charting "drift" the obvious way -- the chip against the board, in seconds
+ * -- would draw a flat line at zero for a day: a DS3231 is good to about a
+ * sixth of a second in that time. So the chart runs the comparison the other
+ * way round, which is the way that moves. See drift.h.
+ *
+ * Sampling happens whether or not this page is showing, so turning to it
+ * shows a chart rather than an empty one filling up.
+ */
+#define DRIFT_EVERY_S 15
+#define DRIFT_HUNT_MAX_US (2 * 1000000LL)
+
+static drift_t s_drift;
+static int64_t s_drift_next_us;      /* when to start looking for the next edge */
+static bool    s_drift_hunting;
+static int64_t s_drift_hunt_us;      /* when this hunt began, to give it up */
+static bool    s_drift_have_prev;
+static uint32_t s_drift_prev_chip;
+static int64_t s_drift_prev_us;
+
+/*
+ * Catch the moment the chip's seconds register increments and note where the
+ * board's own clock was. Polling only in the second either side of a sample
+ * keeps the I2C traffic down: one burst every fifteen seconds rather than a
+ * read every frame for ever.
+ *
+ * The edge is known only to lie between two polls, so the midpoint of that
+ * window is recorded. That centres the error instead of biasing every sample
+ * late by the poll interval, which would be invisible in the slope but would
+ * put a constant offset on the phase.
+ */
+static void drift_sample(int64_t now)
+{
+    if (!s_rtc || !s_synced) return;
+
+    if (!s_drift_hunting) {
+        if (s_drift_next_us != 0 && now < s_drift_next_us) return;
+        s_drift_hunting = true;
+        s_drift_hunt_us = now;
+        s_drift_have_prev = false;
+    }
+
+    uint32_t chip;
+    bool ok = ds3231_read(&chip);
+    if (!ok || now - s_drift_hunt_us > DRIFT_HUNT_MAX_US) {
+        /* A chip that will not answer, or one that has not ticked in two
+           seconds, is not something to keep hammering. Try again next time. */
+        s_drift_hunting = false;
+        s_drift_next_us = now + (int64_t)DRIFT_EVERY_S * 1000000LL;
+        return;
+    }
+
+    if (s_drift_have_prev && chip != s_drift_prev_chip) {
+        int64_t edge_us = (s_drift_prev_us + now) / 2;
+        double board_ms = (double)s_base_secs * 1000.0
+                        + (double)(edge_us - s_base_us) / 1000.0;
+        double phase = fmod(board_ms - (double)chip * 1000.0, 86400000.0);
+        if (phase >  43200000.0) phase -= 86400000.0;
+        if (phase < -43200000.0) phase += 86400000.0;
+
+        float xtal = 0.0f;
+        bool have_xtal = ds3231_temperature(&xtal);
+        drift_add(&s_drift, (float)phase, have_xtal, xtal);
+
+        s_drift_hunting = false;
+        s_drift_next_us = now + (int64_t)DRIFT_EVERY_S * 1000000LL;
+        return;
+    }
+
+    s_drift_have_prev = true;
+    s_drift_prev_chip = chip;
+    s_drift_prev_us = now;
+}
+
 static void draw_rtc(canvas_t *c, int64_t now)
 {
     canvas_clear(c);
     canvas_fill_rect(c, 0, 0, c->w, c->cell_h, PAL_TITLE_BG);
-    canvas_puts(c, 1, 0, "RTC", PAL_FG);
-    if (s_rtc) {
-        char where[32];
-        i2cbus_id_t bus = ds3231_bus();
-        snprintf(where, sizeof where, "0x68 %s io%d/%d",
-                 bus == I2CBUS_MAIN ? "main" : "aux",
-                 i2cbus_sda(bus), i2cbus_scl(bus));
-        canvas_puts(c, 6, 0, where, PAL_FG);
-    }
+    canvas_puts(c, 0, 0, "RTC", PAL_FG);
 
     if (!s_rtc) {
         canvas_puts(c, 1, 2, "no DS3231 on any bus", PAL_DIM);
@@ -960,56 +1029,60 @@ static void draw_rtc(canvas_t *c, int64_t now)
         return;
     }
 
-    char buf[40];
-    int row = 2;
+    char buf[48];
+    i2cbus_id_t bus = ds3231_bus();
+    snprintf(buf, sizeof buf, "%s io%d/%d", bus == I2CBUS_MAIN ? "main" : "aux",
+             i2cbus_sda(bus), i2cbus_scl(bus));
+    canvas_puts(c, 4, 0, buf, PAL_DIM);
 
-    uint32_t chip = 0;
-    bool have_chip = ds3231_read(&chip);
-    if (have_chip) {
-        snprintf(buf, sizeof buf, "chip  %02u:%02u:%02u",
-                 (unsigned)(chip / 3600u), (unsigned)((chip / 60u) % 60u),
-                 (unsigned)(chip % 60u));
-        canvas_puts(c, 1, row++, buf, PAL_FG);
+    /* How much of the record is on screen, in the corner, as the temperature
+       chart does it. */
+    int span = drift_span_s(&s_drift);
+    if (span >= 3600) snprintf(buf, sizeof buf, "%dh%02dm", span / 3600, (span % 3600) / 60);
+    else              snprintf(buf, sizeof buf, "%dm", span / 60);
+    canvas_puts(c, c->cols - (int)strlen(buf), 0, buf, PAL_FG);
+
+    /*
+     * Row one is the board against the chip; row two is the chip itself. The
+     * first word of each is in its trace's colour, which is the only legend
+     * a panel this size can afford.
+     */
+    int n = drift_count(&s_drift);
+    canvas_puts(c, 0, 1, "slip", PAL_A0);
+    if (n > 0) {
+        float ppm;
+        int slip = (int)drift_slip_ms(&s_drift);
+        if (drift_ppm(&s_drift, &ppm))
+            snprintf(buf, sizeof buf, "%+dms %+.1fppm", slip, (double)ppm);
+        else
+            snprintf(buf, sizeof buf, "%+dms  settling", slip);
+        vw_right_text(c, 1, c->cols - 1, buf, PAL_FG);
     } else {
-        canvas_puts(c, 1, row++, "chip  unreadable", PAL_A5);
+        vw_right_text(c, 1, c->cols - 1, s_synced ? "waiting for a tick"
+                                                  : "no clock yet", PAL_DIM);
     }
 
-    if (s_synced) {
-        uint32_t board = now_secs(now);
-        snprintf(buf, sizeof buf, "board %02u:%02u:%02u",
-                 (unsigned)(board / 3600u), (unsigned)((board / 60u) % 60u),
-                 (unsigned)(board % 60u));
-        canvas_puts(c, 1, row++, buf, PAL_DIM);
-
-        if (have_chip) {
-            /* Signed difference across midnight: half a day either way. */
-            long d = (long)board - (long)chip;
-            if (d >  43200) d -= 86400;
-            if (d < -43200) d += 86400;
-            float since = (float)(now - s_base_us) / 1000000.0f;
-            if (since < 1.0f) since = 1.0f;
-            float ppm = (float)d / since * 1000000.0f;
-            snprintf(buf, sizeof buf, "drift %+ld s  %+.1f ppm", d, (double)ppm);
-            canvas_puts(c, 1, row++, buf, d == 0 ? PAL_A2 : PAL_A1);
-        }
-    } else {
-        canvas_puts(c, 1, row++, "board unset; no Mac yet", PAL_DIM);
-    }
-
-    float xtal = 0.0f, die = 0.0f;
+    canvas_puts(c, 0, 2, "xtal", PAL_A1);
+    float xtal = 0.0f;
     int8_t aging = 0;
     bool stopped = false;
     bool have_xtal = ds3231_temperature(&xtal);
-    bool have_die = tempsense_read(&die);
-    if (have_xtal || have_die) {
-        snprintf(buf, sizeof buf, "xtal %.2fC  die %.0fC",
-                 have_xtal ? (double)xtal : 0.0, have_die ? (double)die : 0.0);
-        canvas_puts(c, 1, row++, buf, PAL_A0);
+    bool have_aging = ds3231_aging(&aging) && ds3231_stopped(&stopped);
+    if (have_xtal && have_aging)
+        snprintf(buf, sizeof buf, "%.2fC age%+d %s", (double)xtal, aging,
+                 stopped ? "OSF" : "ok");
+    else if (have_xtal)
+        snprintf(buf, sizeof buf, "%.2fC", (double)xtal);
+    else
+        snprintf(buf, sizeof buf, "unreadable");
+    vw_right_text(c, 2, c->cols - 1, buf, stopped ? PAL_A5 : PAL_FG);
+
+    if (n < 2) {
+        canvas_puts(c, 0, 4, "  charting the slip...", PAL_DIM);
+        display_blit();
+        return;
     }
-    if (ds3231_aging(&aging) && ds3231_stopped(&stopped)) {
-        snprintf(buf, sizeof buf, "aging %+d  osf %s", aging, stopped ? "SET" : "clear");
-        canvas_puts(c, 1, row++, buf, stopped ? PAL_A5 : PAL_DIM);
-    }
+    drift_draw(&s_drift, c, 3);
     display_blit();
 }
 
@@ -1215,6 +1288,7 @@ void app_main(void)
         s_data.have_utc = true;
     tempsense_init();
     templog_init(&s_templog, TEMPLOG_EVERY_S);
+    drift_init(&s_drift, DRIFT_EVERY_S);
     /* Not finding one is ordinary: the board does without, as it does
        without a clock. It says so in the log either way, so a module that
        is plugged in but silent is distinguishable from one that is absent. */
@@ -1297,6 +1371,19 @@ void app_main(void)
             /* An invalid date leaves the chip's own calendar running rather
                than resetting it, so a sync from a Mac that sent no date does
                not lose the day the chip has been keeping. */
+            /*
+             * Both clocks move under the measurement here: the chip is being
+             * set, and the board's own base was just reset by the sync that
+             * asked for it. Every sample already taken was against a
+             * different pair of clocks, so the record is started again rather
+             * than carried across the discontinuity -- a step of hundreds of
+             * milliseconds in the middle of a fit would read as an enormous
+             * and entirely fictional ppm.
+             */
+            drift_init(&s_drift, DRIFT_EVERY_S);
+            s_drift_hunting = false;
+            s_drift_next_us = now + (int64_t)DRIFT_EVERY_S * 1000000LL;
+
             if (ds3231_write(now_secs(now), ds3231_date_valid(&d) ? &d : NULL))
                 ESP_LOGI(TAG, "RTC set from the Mac%s",
                          ds3231_date_valid(&d) ? ", with the date" : "");
@@ -1434,6 +1521,7 @@ void app_main(void)
 #endif
 
         templog_sample(now);
+        drift_sample(now);
 
         if (now - s_busy_check_us > BUSY_CHECK_US) {
             s_busy_check_us = now;
@@ -1598,6 +1686,20 @@ void app_main(void)
             ESP_LOGI(TAG, "alive, page %d, clock %s, rtc %s, die %.1f C",
                      (int)s_pages.current, s_synced ? "synced" : "unset",
                      s_rtc ? "present" : "absent", have_die ? (double)die : -1.0);
+            /* What the RTC page is charting, for a board being watched over
+               the wire rather than looked at. The ppm needs a few minutes of
+               samples before it means anything and says so until then. */
+            if (s_rtc && drift_count(&s_drift) > 0) {
+                float ppm;
+                int n = drift_count(&s_drift);
+                if (drift_ppm(&s_drift, &ppm))
+                    ESP_LOGI(TAG, "board vs chip: %+d ms over %d min, %+.1f ppm",
+                             (int)drift_slip_ms(&s_drift),
+                             drift_span_s(&s_drift) / 60, (double)ppm);
+                else
+                    ESP_LOGI(TAG, "board vs chip: %+d ms, %d samples, still settling",
+                             (int)drift_slip_ms(&s_drift), n);
+            }
             if (have_air)
                 ESP_LOGI(TAG, "room %.1f C, %.0f%% RH, %.1f hPa",
                          (double)air, (double)rh, (double)hpa);
