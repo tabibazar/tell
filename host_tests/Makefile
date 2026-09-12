@@ -21,6 +21,9 @@ test_timecalc: test_timecalc.c ../main/timecalc.c
 test_canvas: test_canvas.c ../main/canvas.c ../main/textwrap.c
 	cc $(CFLAGS) -o $@ $^
 
+test_bme280: test_bme280.c ../main/bme280.c
+	cc $(CFLAGS) -o $@ $^
+
 test_shaketimer: test_shaketimer.c ../main/shaketimer.c
 	cc $(CFLAGS) -o $@ $^
 

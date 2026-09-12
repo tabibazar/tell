@@ -1,5 +1,6 @@
 #include "display.h"
 #include "ble_uart.h"
+#include "bme280.h"
 #include "buttons.h"
 #include "gt911.h"
 #include "level.h"
@@ -1077,6 +1078,10 @@ void app_main(void)
     if (settings_load_zone(&s_data.utc_offset_min, s_data.tz, (int)sizeof s_data.tz))
         s_data.have_utc = true;
     tempsense_init();
+    /* Not finding one is ordinary: the board does without, as it does
+       without a clock. It says so in the log either way, so a module that
+       is plugged in but silent is distinguishable from one that is absent. */
+    bme280_init();
 #if HAVE_IMU
     if (s_imu) axis_load();      /* the sensor's, so both pages want it */
 #endif
@@ -1427,9 +1432,14 @@ void app_main(void)
             last_beat = now;
             float die = 0.0f;
             bool have_die = tempsense_read(&die);
+            float air = 0.0f, hpa = 0.0f, rh = 0.0f;
+            bool have_air = bme280_read(&air, &hpa, &rh);
             ESP_LOGI(TAG, "alive, page %d, clock %s, rtc %s, die %.1f C",
                      (int)s_pages.current, s_synced ? "synced" : "unset",
                      s_rtc ? "present" : "absent", have_die ? (double)die : -1.0);
+            if (have_air)
+                ESP_LOGI(TAG, "room %.1f C, %.0f%% RH, %.1f hPa",
+                         (double)air, (double)rh, (double)hpa);
         }
     }
 }
