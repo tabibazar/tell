@@ -14,6 +14,7 @@
 #include "ds3231.h"
 #include "settings.h"
 #include "shaketimer.h"
+#include "templog.h"
 #include "tempsense.h"
 #include "timecalc.h"
 #include "usagedata.h"
@@ -875,6 +876,25 @@ static void draw_message(canvas_t *c)
  * -- it counts seconds since midnight and nothing else -- so the calendar is
  * the chip's to keep and ours to ask for.
  */
+/*
+ * The two temperatures, sampled on a timer whether or not anyone is looking.
+ * A chart that only filled while its page was open would be empty every time
+ * you went to it, which is the opposite of what a chart is for.
+ */
+#define TEMPLOG_EVERY_US (2 * 1000000LL)
+static templog_t s_templog;
+static int64_t s_templog_us;
+
+static void templog_sample(int64_t now)
+{
+    if (s_templog_us != 0 && now - s_templog_us < TEMPLOG_EVERY_US) return;
+    s_templog_us = now;
+    float die = 0.0f, xtal = 0.0f;
+    if (!tempsense_read(&die)) return;
+    templog_add(&s_templog, die, ds3231_temperature(&xtal), xtal);
+    if (s_pages.current == PAGE_TEMPS) s_drawn_page = PAGE_COUNT;
+}
+
 static void rtc_refresh_date(void)
 {
     ds3231_date_t d;
@@ -1130,6 +1150,7 @@ void app_main(void)
     if (settings_load_zone(&s_data.utc_offset_min, s_data.tz, (int)sizeof s_data.tz))
         s_data.have_utc = true;
     tempsense_init();
+    templog_init(&s_templog);
     /* Not finding one is ordinary: the board does without, as it does
        without a clock. It says so in the log either way, so a module that
        is plugged in but silent is distinguishable from one that is absent. */
@@ -1348,6 +1369,8 @@ void app_main(void)
         }
 #endif
 
+        templog_sample(now);
+
         if (now - s_busy_check_us > BUSY_CHECK_US) {
             s_busy_check_us = now;
             usagedata_merge(&s_data, &v);
@@ -1474,6 +1497,10 @@ void app_main(void)
 
         if (s_pages.current == PAGE_CLOCK) draw_clock(c, now);
         if (s_pages.current == PAGE_RTC) draw_rtc(c, now);
+        if (s_pages.current == PAGE_TEMPS) {
+            templog_draw(&s_templog, c);
+            display_blit();
+        }
 #if HAVE_LEVEL
         if (s_pages.current == PAGE_LEVEL && s_imu) draw_level(c);
 #endif

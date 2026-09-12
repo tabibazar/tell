@@ -13,10 +13,12 @@ host_tests/test_pages
 host_tests/test_particles
 host_tests/test_shaketimer
 host_tests/test_bme280
+host_tests/test_templog
 host_tests/test_level
 host_tests/test_particles
 host_tests/test_shaketimer
 host_tests/test_bme280
+host_tests/test_templog
 host_tests/test_textwrap
 host_tests/test_timecalc
 host_tests/test_usagedata

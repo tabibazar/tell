@@ -87,4 +87,13 @@ static inline unsigned short pal_lighten(unsigned short c)
     return (unsigned short)((r << 11) | (g << 5) | b);
 }
 
+/* The counterpart, for something that must sit behind a line of its own
+   colour: the same hue, too dark to compete with it, so the pair reads as
+   one series drawn twice rather than as two. */
+static inline unsigned short pal_darken(unsigned short c)
+{
+    unsigned r = ((c >> 11) & 0x1F) / 3, g = ((c >> 5) & 0x3F) / 3, b = (c & 0x1F) / 3;
+    return (unsigned short)((r << 11) | (g << 5) | b);
+}
+
 #endif /* PALETTE_H */
