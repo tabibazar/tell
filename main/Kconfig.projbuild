@@ -49,6 +49,14 @@ config SCREEN_I2C_SCL
     default 47 if SCREEN_BOARD_WAVESHARE_147B
     default 41
 
+config SCREEN_BRIGHTNESS
+    int "Panel brightness, 0 to 100"
+    range 0 100
+    default 100
+    help
+        A lit panel is the largest steady draw on these boards and most of
+        what makes them warm. Full brightness is rarely needed on a desk.
+
 config SCREEN_BUTTON_A
     int "First button pin, or -1 for none"
     default 0 if SCREEN_BOARD_TDISPLAY_S3

@@ -10,3 +10,8 @@ CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
 
 # No PSRAM. The framebuffer is 320*172*2 = 107 KB and fits internal DMA
 # memory; the board's 8 MB of octal stays off until something needs it.
+
+# Ten per cent. A desk ornament does not need a lit panel at full, and the
+# backlight is the largest steady draw on the board -- the die sat at about
+# 60 C with it wide open.
+CONFIG_SCREEN_BRIGHTNESS=10

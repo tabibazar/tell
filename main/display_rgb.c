@@ -107,6 +107,11 @@ esp_err_t display_init(void)
 
 canvas_t *display_canvas(void) { return &s_canvas; }
 
+/* The CrowPanel's backlight is not driven from here, and it is at work
+   rather than on this desk, so this is left alone rather than changed
+   blind. */
+void display_set_brightness(int percent) { (void)percent; }
+
 void display_blit(void)
 {
     esp_lcd_panel_draw_bitmap(s_panel, 0, 0, LCD_W, LCD_H, s_fb);

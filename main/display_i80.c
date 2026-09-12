@@ -4,6 +4,7 @@
 #include "canvas.h"
 
 #include "driver/gpio.h"
+#include "driver/ledc.h"
 #include "esp_heap_caps.h"
 #include "esp_lcd_panel_io.h"
 #include "esp_lcd_panel_ops.h"
@@ -44,6 +45,8 @@ static esp_lcd_panel_handle_t s_panel;
 static uint16_t *s_fb;
 static canvas_t s_canvas;
 
+static void backlight_init(void);
+
 esp_err_t display_init(void)
 {
     /* GPIO15 gates the peripheral rail. Without it the panel never lights and
@@ -57,7 +60,6 @@ esp_err_t display_init(void)
     gpio_set_level(PIN_POWER_ON, 1);
     /* RD is unused but must idle high, or the panel sees a read strobe. */
     gpio_set_level(PIN_LCD_RD, 1);
-    gpio_set_level(PIN_LCD_BL, 1);
     vTaskDelay(pdMS_TO_TICKS(20));
 
     esp_lcd_i80_bus_handle_t bus = NULL;
@@ -129,10 +131,49 @@ esp_err_t display_init(void)
     }
     canvas_init(&s_canvas, s_fb, LCD_W, LCD_H, 1);
 
+    backlight_init();
+    display_set_brightness(CONFIG_SCREEN_BRIGHTNESS);
+
     display_show_text(NULL);
     ESP_LOGI(TAG, "i80 ST7789 up: %dx%d, %d cols x %d rows",
              LCD_W, LCD_H, s_canvas.cols, s_canvas.rows);
     return ESP_OK;
+}
+
+/*
+ * The backlight on a timer rather than a pin held high. 1 kHz at ten bits is
+ * what the board's own demo uses; well above anything the eye can see as
+ * flicker, and coarse enough to cost nothing.
+ */
+static void backlight_init(void)
+{
+    ledc_timer_config_t timer = {
+        .speed_mode = LEDC_LOW_SPEED_MODE,
+        .duty_resolution = LEDC_TIMER_10_BIT,
+        .timer_num = LEDC_TIMER_0,
+        .freq_hz = 1000,
+        .clk_cfg = LEDC_AUTO_CLK,
+    };
+    if (ledc_timer_config(&timer) != ESP_OK) return;
+    ledc_channel_config_t ch = {
+        .gpio_num = PIN_LCD_BL,
+        .speed_mode = LEDC_LOW_SPEED_MODE,
+        .channel = LEDC_CHANNEL_0,
+        .timer_sel = LEDC_TIMER_0,
+        .duty = (1 << 10) - 1,
+        .hpoint = 0,
+    };
+    ledc_channel_config(&ch);
+}
+
+void display_set_brightness(int percent)
+{
+    if (percent < 0) percent = 0;
+    if (percent > 100) percent = 100;
+    uint32_t duty = ((1u << 10) - 1u) * (uint32_t)percent / 100u;
+    if (ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0, duty) != ESP_OK) return;
+    ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0);
+    ESP_LOGI(TAG, "backlight %d%%", percent);
 }
 
 canvas_t *display_canvas(void) { return &s_canvas; }
