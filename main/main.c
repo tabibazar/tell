@@ -121,11 +121,22 @@ static bool claude_busy(const ud_view_t *v, int64_t now)
    because it describes the sensor rather than either page -- which is exactly
    why the sand has to negate one component of it: a bubble floats against
    gravity and grains fall with it. */
-#if HAVE_IMU && defined(CONFIG_SCREEN_BOARD_FEATHER_S3_TFT)
-#define HAVE_LEVEL 1
-#else
-#define HAVE_LEVEL 0
-#endif
+/* Both sensor boards read the level; it is the same instrument either way. */
+#define HAVE_LEVEL HAVE_IMU
+
+/*
+ * One convention, everywhere: gravity_from gives the direction things fall.
+ *
+ * The sand takes it as it comes. The level turns it over, because a bubble
+ * floats away from gravity while grains fall towards it -- a fixed, physical
+ * disagreement, and the only sensible place for it is in the page that
+ * disagrees rather than in the mapping both of them share.
+ *
+ * This used to be muddled: the sand negated and the level did not, which
+ * meant the stored mapping meant different things on different boards
+ * depending on which page it had been calibrated against. With one
+ * convention a board is calibrated once, with "!flip", and both pages agree.
+ */
 /* The grains pour on either board that has the sensor. */
 #define HAVE_PARTICLES HAVE_IMU
 
@@ -341,6 +352,9 @@ static void draw_level(canvas_t *c)
 
     float gx, gy;
     gravity_from(&sample, &gx, &gy);
+    /* The bubble floats to the high side, so it moves against gravity. */
+    gx = -gx;
+    gy = -gy;
     float gz = -sample.az;              /* out of the screen, toward you */
 
     int64_t now = esp_timer_get_time();
@@ -463,12 +477,7 @@ static void draw_particles(canvas_t *c, int64_t now)
     if (qmi8658_read(&sample) == ESP_OK) {
         float gx, gy;
         gravity_from(&sample, &gx, &gy);
-        /* The level and the sand read the same mapping and disagree about
-           this one axis: with the bubble floating to the high side as it
-           should, the sand poured uphill. Flipping the shared mapping would
-           trade one wrong page for the other, so the sand takes it
-           negated here and the level is left alone. */
-        gy = -gy;
+        /* Falls the way gravity points, which is what the mapping means. */
 
         /* The filter's own error, before it is applied: how far the board is
            from where the slow view of gravity thinks it is. */
@@ -669,13 +678,14 @@ static page_t home_page(void)
     /* On a board whose only reason to have a screen is the level, the level
        is home. The big board keeps the clock: it is a display of Claude's
        usage that happens to know the time, and this one is an instrument. */
-    if (s_pages.available & PAGE_BIT(PAGE_LEVEL)) return PAGE_LEVEL;
+
     /* And a board whose sensor exists to pour sand rests on the sand. The
        level is checked first, so the Feather, which has both, still comes
        home to the instrument rather than to the toy. This matters most on a
        board with no RTC: the clock it would otherwise show after every power
        cycle reads --:--:-- until a Mac speaks to it. */
     if (s_pages.available & PAGE_BIT(PAGE_PARTICLES)) return PAGE_PARTICLES;
+    if (s_pages.available & PAGE_BIT(PAGE_LEVEL)) return PAGE_LEVEL;
     if (s_settings.home_now && (s_pages.available & PAGE_BIT(PAGE_NOW))) return PAGE_NOW;
     return PAGE_CLOCK;
 }
