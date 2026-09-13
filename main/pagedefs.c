@@ -37,5 +37,10 @@ const page_def_t page_defs[PAGE_COUNT] = {
        big panel has a page each for models, cost and the year. */
     [PAGE_USAGE]    = { "Usage",         UD_FEED(UD_STATS) | UD_FEED(UD_COST)
                                          | UD_FEED(UD_YEAR),            views_usage,    false, 0,        PG_SMALL, false, true  },
+    /* The room, from the BME280 and the log in flash. main draws them: the
+       data is a ring in flash rather than anything in the merged view. */
+    [PAGE_ROOM_TEMP]= { "Temperature",   0,                             NULL,           false, SEC(10),  PG_SMALL, false, true  },
+    [PAGE_ROOM_RH]  = { "Humidity",      0,                             NULL,           false, SEC(10),  PG_SMALL, false, true  },
+    [PAGE_ROOM_HPA] = { "Pressure",      0,                             NULL,           false, SEC(10),  PG_SMALL, false, true  },
     [PAGE_SETTINGS] = { "Settings",      0,                             NULL,           false, 0,        PG_BIG,  true,  false },
 };

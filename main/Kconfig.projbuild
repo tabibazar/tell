@@ -79,9 +79,27 @@ config SCREEN_BUTTON_B
         The Waveshare 1.47B has two buttons on it but only one that software
         can see: its other key pulls EN to ground and is a hardware reset.
 
+config SCREEN_ENV_ONLY
+    bool "Show only the clock and the room readings"
+    default y if SCREEN_BOARD_WAVESHARE_147B
+    default n
+    help
+        Makes the board an environment logger and nothing else: the clock,
+        and a page each for temperature, humidity and pressure, charted from
+        the log in flash.
+
+        Everything else is dropped from the build -- the sand, the spirit
+        level, the shake timer, the stopwatch, the clock chip's own page and
+        the die-against-crystal chart -- along with the IMU driver they
+        needed. A board doing one job well is easier to read at a glance than
+        one offering nine things, and the freed RAM goes to the charts.
+
+        Needs a BME280 for the readings and an envlog partition to keep them.
+
 config SCREEN_ROTATE_SECS
     int "Seconds on each page before moving to the next, or 0 to stay put"
     default 20 if SCREEN_BOARD_TDISPLAY_S3
+    default 20 if SCREEN_ENV_ONLY
     default 0
     help
         A board with no touch panel and two buttons is better at showing you

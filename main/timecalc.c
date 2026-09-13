@@ -66,3 +66,18 @@ const char *timecalc_month_abbr(int m)
     if (m < 1 || m > 12) return "???";
     return names[m - 1];
 }
+
+/*
+ * Days since 1970-01-01, by Howard Hinnant's civil-from-days run backwards:
+ * shift the year so March is the first month, which makes the leap day the
+ * last day of the year and removes every special case for February.
+ */
+int32_t timecalc_days(int y, int m, int d)
+{
+    y -= m <= 2;
+    int32_t era = (y >= 0 ? y : y - 399) / 400;
+    unsigned yoe = (unsigned)(y - era * 400);                     /* 0..399 */
+    unsigned doy = (unsigned)((153 * (m + (m > 2 ? -3 : 9)) + 2) / 5 + d - 1);
+    unsigned doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;         /* 0..146096 */
+    return era * 146097 + (int32_t)doe - 719468;
+}

@@ -14,6 +14,11 @@
 #include "pages.h"
 #include "view_common.h"
 #include "ds3231.h"
+#if CONFIG_SCREEN_ENV_ONLY
+#include "envflash.h"
+#include "envpage.h"
+#include "envstore.h"
+#endif
 #include "settings.h"
 #include "shaketimer.h"
 #include "templog.h"
@@ -111,9 +116,15 @@ static bool claude_busy(const ud_view_t *v, int64_t now)
  * QMI8658 hangs off the STEMMA QT port, and wave, where the same chip is
  * soldered to the board at GPIO48/47. lilly and the CrowPanel have no sensor
  * and are compiled with none of this.
+ *
+ * An environment logger has a sensor and no use for it: the sand, the level
+ * and the shake timer are not what that board is for, and the driver they
+ * need goes with them. CMakeLists drops the same files, so a reference left
+ * behind here shows up as a link error rather than as dead code.
  */
-#if defined(CONFIG_SCREEN_BOARD_FEATHER_S3_TFT) \
-  || defined(CONFIG_SCREEN_BOARD_WAVESHARE_147B)
+#if (defined(CONFIG_SCREEN_BOARD_FEATHER_S3_TFT) \
+  || defined(CONFIG_SCREEN_BOARD_WAVESHARE_147B)) \
+  && !defined(CONFIG_SCREEN_ENV_ONLY)
 #define HAVE_IMU 1
 #else
 #define HAVE_IMU 0
@@ -1091,6 +1102,156 @@ static void draw_rtc(canvas_t *c, int64_t now)
     display_blit();
 }
 
+
+#if CONFIG_SCREEN_ENV_ONLY
+/*
+ * The room, once a minute, kept for thirty days.
+ *
+ * Sampling runs whatever page is showing, so turning to a chart shows a month
+ * rather than an empty page filling up. It only starts once the date is
+ * known, which on this board is at boot from the DS3231: a reading stamped
+ * with time-since-power-on cannot be placed in a log that outlives the power.
+ */
+#define ENV_EVERY_MIN   1
+#define ENV_DAY_MIN     (24 * 60)
+#define ENV_MONTH_MIN   (30 * 24 * 60)
+
+static envstore_t s_env;
+static bool       s_env_ready;
+static uint32_t   s_env_last_min;         /* the minute last recorded */
+static bool       s_env_dirty = true;     /* the charts need rebuilding */
+
+/* One sector at a time, so the walk allocates nothing and the stack stays
+   out of it. */
+static uint8_t s_env_buf[4096];
+
+static envchart_t s_env_day[3];           /* temperature, humidity, pressure */
+static envchart_t s_env_month[3];
+
+/* Minutes since 1970, from the date the Mac or the clock chip supplied and
+   the board's own seconds. */
+static bool env_now_minute(int64_t now, uint32_t *out)
+{
+    if (!s_synced || s_data.date_year < 2000) return false;
+    int32_t days = timecalc_days(s_data.date_year, s_data.date_month,
+                                 s_data.date_day);
+    if (days < 0) return false;
+    *out = (uint32_t)days * 1440u + now_secs(now) / 60u;
+    return true;
+}
+
+static void env_sample(int64_t now)
+{
+    if (!s_env_ready) return;
+    uint32_t minute;
+    if (!env_now_minute(now, &minute)) return;
+    if (s_env_last_min != 0 && minute - s_env_last_min < ENV_EVERY_MIN) return;
+
+    float t, hpa, rh;
+    if (!bme280_read(&t, &hpa, &rh)) return;
+
+    env_sample_t rec;
+    rec.minute = minute;
+    rec.temp_c100 = (int16_t)(t * 100.0f);
+    rec.rh_c100 = (uint16_t)(rh * 100.0f);
+    rec.hpa_x10 = (uint16_t)(hpa * 10.0f);
+    if (envstore_add(&s_env, &rec)) {
+        s_env_last_min = minute;
+        s_env_dirty = true;
+    }
+}
+
+/* Folding the log into the charts. One walk fills all six: reading the
+   partition six times to draw three pages would be six times the flash
+   traffic for the same answer. */
+typedef struct { uint32_t newest; } env_fold_t;
+
+static bool env_fold(const env_sample_t *r, void *ctx)
+{
+    const env_fold_t *f = ctx;
+    uint32_t age = f->newest >= r->minute ? f->newest - r->minute : 0;
+
+    int16_t v[3] = { r->temp_c100, (int16_t)r->rh_c100, (int16_t)r->hpa_x10 };
+    if (age < ENV_DAY_MIN) {
+        /* Newest at the right-hand edge, so the chart grows leftwards into
+           the past the way every other chart here does. */
+        int col = ENVCHART_COLS - 1 - (int)((age * ENVCHART_COLS) / ENV_DAY_MIN);
+        for (int i = 0; i < 3; i++) envchart_add(&s_env_day[i], col, v[i]);
+    }
+    if (age < ENV_MONTH_MIN) {
+        int col = ENVCHART_COLS - 1 - (int)((age * ENVCHART_COLS) / ENV_MONTH_MIN);
+        for (int i = 0; i < 3; i++) envchart_add(&s_env_month[i], col, v[i]);
+    }
+    return true;
+}
+
+static void env_rebuild(void)
+{
+    if (!s_env_dirty || !s_env_ready) return;
+    s_env_dirty = false;
+
+    for (int i = 0; i < 3; i++) {
+        envchart_reset(&s_env_day[i]);
+        envchart_reset(&s_env_month[i]);
+    }
+    env_sample_t newest;
+    if (!envstore_latest(&s_env, &newest)) return;
+    env_fold_t f = { newest.minute };
+    envstore_walk(&s_env, s_env_buf, env_fold, &f);
+}
+
+/* What each page is called, what colour it draws in, and how to write its
+   numbers. Pressure moves by tenths and wants no decimals at all on a panel
+   this wide; temperature earns one. */
+static void env_format(int which, int16_t raw, char *out, int size)
+{
+    switch (which) {
+    case 0:  snprintf(out, size, "%.1fC", (double)raw / 100.0); break;
+    case 1:  snprintf(out, size, "%.0f%%", (double)raw / 100.0); break;
+    default: snprintf(out, size, "%.0f", (double)raw / 10.0); break;
+    }
+}
+
+static void draw_room(canvas_t *c, int which)
+{
+    static const char *titles[3] = { "TEMPERATURE", "HUMIDITY", "PRESSURE" };
+    static const uint16_t colours[3] = { PAL_A1, PAL_A0, PAL_A2 };
+
+    env_rebuild();
+
+    char value[16] = "--";
+    env_sample_t latest;
+    if (s_env_ready && envstore_latest(&s_env, &latest)) {
+        int16_t raw[3] = { latest.temp_c100, (int16_t)latest.rh_c100,
+                           (int16_t)latest.hpa_x10 };
+        env_format(which, raw[which], value, sizeof value);
+    }
+
+    /* Both ranges on one line, each labelled with its window, because every
+       chart here is scaled to itself and height alone says nothing. */
+    char footer[64] = "";
+    int16_t dlo, dhi, mlo, mhi;
+    char a[12], b[12], cc[12], dd[12];
+    bool has_day = envchart_range(&s_env_day[which], &dlo, &dhi);
+    bool has_month = envchart_range(&s_env_month[which], &mlo, &mhi);
+    if (has_day && has_month) {
+        env_format(which, dlo, a, sizeof a); env_format(which, dhi, b, sizeof b);
+        env_format(which, mlo, cc, sizeof cc); env_format(which, mhi, dd, sizeof dd);
+        snprintf(footer, sizeof footer, "24h %s-%s 30d %s-%s", a, b, cc, dd);
+    } else if (has_day) {
+        env_format(which, dlo, a, sizeof a); env_format(which, dhi, b, sizeof b);
+        snprintf(footer, sizeof footer, "24h %s-%s", a, b);
+    } else {
+        snprintf(footer, sizeof footer, "%s",
+                 s_env_ready ? "logging; nothing charted yet" : "no log partition");
+    }
+
+    envpage_draw(c, titles[which], value, footer, colours[which],
+                 &s_env_day[which], &s_env_month[which]);
+    display_blit();
+}
+#endif /* CONFIG_SCREEN_ENV_ONLY */
+
 /* One line of text, centred on the page. */
 static void centred(canvas_t *c, int row, const char *s, uint16_t colour)
 {
@@ -1241,6 +1402,15 @@ void app_main(void)
         if (pd->needs_touch && !touch) continue;
         available |= PAGE_BIT(i);
     }
+#if CONFIG_SCREEN_ENV_ONLY
+    /* An environment logger, and nothing else: the clock and the three
+       readings. Everything else is either compiled out or struck off here. */
+    available &= PAGE_BIT(PAGE_CLOCK) | PAGE_BIT(PAGE_ROOM_TEMP)
+               | PAGE_BIT(PAGE_ROOM_RH) | PAGE_BIT(PAGE_ROOM_HPA);
+#else
+    available &= ~(PAGE_BIT(PAGE_ROOM_TEMP) | PAGE_BIT(PAGE_ROOM_RH)
+                 | PAGE_BIT(PAGE_ROOM_HPA));
+#endif
     /* Both IMU pages need a sensor, which the page table cannot know about:
        it describes boards, and this is a question about what is plugged into
        one today. A board compiled without either never offers them at all. */
@@ -1315,6 +1485,18 @@ void app_main(void)
        without a clock. It says so in the log either way, so a module that
        is plugged in but silent is distinguishable from one that is absent. */
     bme280_init();
+#if CONFIG_SCREEN_ENV_ONLY
+    {
+        static envflash_t flash;
+        s_env_ready = envflash_open(&flash) && envstore_open(&s_env, &flash);
+        if (s_env_ready)
+            ESP_LOGI(TAG, "room log: %d of %d readings kept (%d days at one a minute)",
+                     envstore_count(&s_env), envstore_capacity(&s_env),
+                     envstore_capacity(&s_env) / (24 * 60));
+        else
+            ESP_LOGW(TAG, "room log unavailable; the charts will stay empty");
+    }
+#endif
 #if HAVE_IMU
     if (s_imu) axis_load();      /* the sensor's, so both pages want it */
 #endif
@@ -1544,6 +1726,9 @@ void app_main(void)
 
         templog_sample(now);
         drift_sample(now);
+#if CONFIG_SCREEN_ENV_ONLY
+        env_sample(now);
+#endif
 
         if (now - s_busy_check_us > BUSY_CHECK_US) {
             s_busy_check_us = now;
@@ -1679,6 +1864,11 @@ void app_main(void)
             display_blit();
         }
 
+#if CONFIG_SCREEN_ENV_ONLY
+        if (s_pages.current == PAGE_ROOM_TEMP) draw_room(c, 0);
+        if (s_pages.current == PAGE_ROOM_RH)   draw_room(c, 1);
+        if (s_pages.current == PAGE_ROOM_HPA)  draw_room(c, 2);
+#endif
         if (s_pages.current == PAGE_CLOCK) draw_clock(c, now);
         if (s_pages.current == PAGE_RTC) draw_rtc(c, now);
         if (s_pages.current == PAGE_TEMPS) {

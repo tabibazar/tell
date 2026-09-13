@@ -5,6 +5,13 @@
 
 static int failures;
 
+static void expect(const char *what, int cond)
+{
+    if (cond) { printf("ok   %s\n", what); return; }
+    printf("FAIL %s\n", what);
+    failures++;
+}
+
 static void expect_fmt(const char *what, uint32_t secs, const char *want)
 {
     char got[6];
@@ -85,6 +92,33 @@ int main(void)
         printf("FAIL month abbreviations\n");
         failures++;
     } else printf("ok   month abbreviations\n");
+
+    /*
+     * Date to days, and back. The round trip is the assertion worth making:
+     * calendar arithmetic is where off-by-one errors hide for years, and a
+     * log stamped with the wrong day is wrong for ever after. Every day from
+     * 1970 to 2050 goes out and comes back.
+     */
+    {
+        int bad = 0, checked = 0;
+        for (int32_t days = 0; days < 29220; days++) {       /* 1970..2050 */
+            int y, m, d;
+            timecalc_civil(days, &y, &m, &d);
+            if (timecalc_days(y, m, d) != days) bad++;
+            checked++;
+        }
+        expect("every day from 1970 to 2050 round-trips", bad == 0 && checked == 29220);
+
+        /* And the anchors, spelled out, so a round trip that is consistently
+           wrong by a day would still be caught. */
+        expect("the epoch is day zero", timecalc_days(1970, 1, 1) == 0);
+        expect("a leap day lands right", timecalc_days(2024, 2, 29) == 19782);
+        expect("the day after a leap day too", timecalc_days(2024, 3, 1) == 19783);
+        expect("a century non-leap year is handled",
+               timecalc_days(1900, 3, 1) - timecalc_days(1900, 2, 28) == 1);
+        expect("and a four-hundred-year leap year is",
+               timecalc_days(2000, 3, 1) - timecalc_days(2000, 2, 28) == 2);
+    }
 
     if (failures == 0) { printf("all tests passed\n"); return 0; }
     printf("%d test(s) failed\n", failures);

@@ -34,6 +34,9 @@ typedef enum {
     PAGE_RTC,        /* the clock chip, and how far the board has drifted */
     PAGE_LEVEL,      /* the Feather's spirit level; needs its IMU */
     PAGE_USAGE,      /* all-time totals, drawn for a small panel */
+    PAGE_ROOM_TEMP,  /* the three room readings, charted from the flash log */
+    PAGE_ROOM_RH,
+    PAGE_ROOM_HPA,
     PAGE_SETTINGS,   /* touch-only; last, so it is out of the way */
     PAGE_COUNT
 } page_t;

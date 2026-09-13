@@ -23,6 +23,10 @@ void timecalc_format_hms(uint32_t secs, char out[9]);
    calendar for month labels and day names. */
 void timecalc_civil(int32_t days, int *y, int *m, int *d);
 
+/* The inverse: a civil date to days since 1970-01-01. Needed to stamp a log
+   entry with a real date rather than with time since power-on. */
+int32_t timecalc_days(int y, int m, int d);
+
 /* Weekday of a day count: 0 Sunday .. 6 Saturday. */
 int timecalc_weekday(int32_t days);
 

@@ -21,6 +21,14 @@ else()
     set(BOARD_EXCLUDES "display_rgb.c" "display_i80.c")
 endif()
 
+# An environment logger has no use for the sensor toys, and dropping them
+# takes the IMU driver with them. See SCREEN_ENV_ONLY in Kconfig.projbuild.
+if(CONFIG_SCREEN_ENV_ONLY)
+    list(APPEND BOARD_EXCLUDES "qmi8658.c" "level.c" "particles.c" "shaketimer.c")
+else()
+    list(APPEND BOARD_EXCLUDES "envstore.c" "envpage.c" "envflash.c")
+endif()
+
 idf_component_register(
     SRC_DIRS "."
     EXCLUDE_SRCS ${BOARD_EXCLUDES}
