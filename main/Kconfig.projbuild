@@ -99,7 +99,6 @@ config SCREEN_ENV_ONLY
 config SCREEN_ROTATE_SECS
     int "Seconds on each page before moving to the next, or 0 to stay put"
     default 20 if SCREEN_BOARD_TDISPLAY_S3
-    default 20 if SCREEN_ENV_ONLY
     default 0
     help
         A board with no touch panel and two buttons is better at showing you

@@ -1125,6 +1125,12 @@ static bool       s_env_dirty = true;     /* the charts need rebuilding */
    out of it. */
 static uint8_t s_env_buf[4096];
 
+/* The newest reading, kept here so the clock page can show it without an I2C
+   transaction or a flash read on every frame -- and it redraws thirty times a
+   second for the milliseconds. The room moves once a minute at most. */
+static env_sample_t s_env_now;
+static bool         s_env_now_ok;
+
 static envchart_t s_env_day[3];           /* temperature, humidity, pressure */
 static envchart_t s_env_month[3];
 static envweek_t s_env_week[3];
@@ -1170,6 +1176,8 @@ static void env_sample(int64_t now)
     if (envstore_add(&s_env, &rec)) {
         s_env_last_min = minute;
         s_env_dirty = true;
+        s_env_now = rec;
+        s_env_now_ok = true;
     }
 }
 
@@ -1391,13 +1399,55 @@ static int clock_face(canvas_t *c, const char *buf)
  * off the right-hand edge with no sign that it had, which is how the day's
  * low went missing twice without the page looking wrong.
  */
+/*
+ * The room, in one line, from the newest logged reading. Empty on a board
+ * with no sensor, which is every board but wave.
+ */
+static bool clock_room_line(char *out, int size)
+{
+#if CONFIG_SCREEN_ENV_ONLY
+    if (!s_env_now_ok) return false;
+    snprintf(out, size, "%.1fC  %.0f%%  %.1fhPa",
+             (double)s_env_now.temp_c100 / 100.0,
+             (double)s_env_now.rh_c100 / 100.0,
+             (double)s_env_now.hpa_x10 / 10.0);
+    return true;
+#else
+    (void)out; (void)size;
+    return false;
+#endif
+}
+
 static void draw_clock_extras(canvas_t *c, int first_row)
 {
     if (s_data.date[0]) centred(c, 1, s_data.date, PAL_FG);
-    if (!s_data.weather[0]) return;
 
     int top = first_row > 0 ? first_row : c->rows - 2;
-    int avail = c->rows - top;
+    int last = c->rows - 1;
+    if (top > last) return;
+
+    char room[40];
+    bool have_room = clock_room_line(room, sizeof room);
+    bool have_wx = s_data.weather[0] != '\0';
+
+    /*
+     * With both, the forecast goes under the digits and the room sits on the
+     * bottom row: the weather is several lines and wants the room, the
+     * readings are one line and want to be where the eye lands last. With
+     * only the readings they go directly under the digits rather than leaving
+     * a gap and sitting alone at the foot of the panel.
+     */
+    if (have_room && !have_wx) {
+        centred(c, top, room, PAL_A2);
+        return;
+    }
+    if (have_room) {
+        centred(c, last, room, PAL_A2);
+        last--;
+    }
+    if (!have_wx) return;
+
+    int avail = last - top + 1;
     if (avail < 1) return;
     if (avail > TW_MAX_LINES) avail = TW_MAX_LINES;
 
@@ -1568,6 +1618,16 @@ void app_main(void)
     }
     /* After BLE, which is where NVS gets initialised. */
     settings_load(&s_settings);
+#if CONFIG_SCREEN_ENV_ONLY
+    /*
+     * Nothing on this board moves on its own. The pages do not rotate, and
+     * the screensaver drifts the clock about rather than running a slideshow
+     * of its own -- a cycling saver after ten minutes idle would be exactly
+     * the carousel the rotation was turned off to stop. A button is the only
+     * thing that changes the page.
+     */
+    s_settings.saver_cycle = false;
+#endif
     apply_settings();
     /* The zone the Mac last reported, so UTC shows from the RTC's time before
        any Mac has spoken this boot. */
@@ -1584,6 +1644,9 @@ void app_main(void)
     {
         static envflash_t flash;
         s_env_ready = envflash_open(&flash) && envstore_open(&s_env, &flash);
+        /* Whatever the last run recorded, so the clock page has numbers
+           before this run's first sample a minute from now. */
+        if (s_env_ready) s_env_now_ok = envstore_latest(&s_env, &s_env_now);
         if (s_env_ready)
             ESP_LOGI(TAG, "room log: %d of %d readings kept (%d days at one a minute)",
                      envstore_count(&s_env), envstore_capacity(&s_env),
