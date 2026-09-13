@@ -96,6 +96,20 @@ config SCREEN_ENV_ONLY
 
         Needs a BME280 for the readings and an envlog partition to keep them.
 
+config SCREEN_CLOCK_MS
+    bool "Show thousandths on the clock"
+    default n if SCREEN_ENV_ONLY
+    default y
+    help
+        Thousandths cost a redraw every frame instead of every second, which
+        is most of what a board does while the clock is showing. On a display
+        of Claude's usage that is a fair price for a clock that visibly runs.
+
+        An environment logger is a quiet instrument that sits still, and a
+        digit flickering thirty times a second is at odds with that -- as well
+        as being the largest thing it does with its processor for no reading
+        anyone takes.
+
 config SCREEN_ROTATE_SECS
     int "Seconds on each page before moving to the next, or 0 to stay put"
     default 20 if SCREEN_BOARD_TDISPLAY_S3

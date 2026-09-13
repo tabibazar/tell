@@ -50,9 +50,14 @@ static const char *TAG = "main";
 /*
  * Thousandths on the clock. They cost a redraw every frame instead of every
  * second, which is most of what this board does while the clock is showing,
- * so it is a choice rather than a given.
+ * so it is a choice rather than a given -- and a per-board one, since the
+ * boards are not doing the same job. See SCREEN_CLOCK_MS in Kconfig.
  */
+#ifdef CONFIG_SCREEN_CLOCK_MS
 #define CLOCK_MILLISECONDS 1
+#else
+#define CLOCK_MILLISECONDS 0
+#endif
 
 /* Push buttons, where the board has any: on a board with no touch they are
    the only way to change the page, so they matter more there than a tap does
