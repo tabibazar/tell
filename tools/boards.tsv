@@ -1,0 +1,12 @@
+# The boards this repository knows, and the MAC that identifies each. Read by
+# tools/board-guard.sh so that one board's firmware cannot be written to
+# another: lilly and wave are both ESP32-S3 with native USB and both appear as
+# /dev/cu.usbmodem*, so the port alone says nothing about which is which.
+#
+# Add a board by running any flash script against it once; it prints the MAC it
+# saw and how to record it.
+#
+# name	MAC	what it is
+lilly	a0:f2:62:e2:1d:28	LilyGO T-Display-S3, 320x170 i80
+wave	44:1b:f6:86:54:1c	Waveshare ESP32-S3-LCD-1.47B, 320x172 SPI
+small	68:ee:8f:da:62:28	Adafruit Feather ESP32-S3 TFT (given away 2026-09-11)

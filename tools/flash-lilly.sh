@@ -19,9 +19,14 @@ set -e
 cd "$(dirname "$0")/.."
 
 FULL=
-case "$1" in
-    --full) FULL=1; shift ;;
-esac
+ANY=
+while : ; do
+    case "$1" in
+        --full) FULL=1; shift ;;
+        --any)  ANY=--any; shift ;;      # skip the board check; see board-guard.sh
+        *) break ;;
+    esac
+done
 
 BIN=build-lilly/screen.bin
 [ -f "$BIN" ] || { echo "no $BIN; build first"; exit 1; }
@@ -34,6 +39,12 @@ done
 
 PORT="${1:-$(ls /dev/cu.usbmodem* 2>/dev/null | head -1)}"
 [ -n "$PORT" ] || { echo "no serial port: is the board on USB?"; exit 1; }
+
+# Which board is actually on that port. lilly and wave both appear as
+# /dev/cu.usbmodem*, so the port is no evidence, and these firmwares are not
+# interchangeable.
+. tools/board-guard.sh
+board_guard lilly "$PORT" "$ANY"
 
 if [ -n "$FULL" ]; then
     ARGS="0x0 build-lilly/bootloader/bootloader.bin

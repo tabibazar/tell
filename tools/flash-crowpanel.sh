@@ -34,6 +34,12 @@ done
 PORT="${1:-$(ls /dev/cu.wchusbserial* /dev/cu.usbserial* 2>/dev/null | head -1)}"
 [ -n "$PORT" ] || { echo "no serial port: is the board on USB?"; exit 1; }
 
+# Which board is actually on that port. lilly and wave both appear as
+# /dev/cu.usbmodem*, so the port is no evidence, and these firmwares are not
+# interchangeable.
+. tools/board-guard.sh
+board_guard crowpanel "$PORT" "$ANY"
+
 if launchctl print "$AGENT" >/dev/null 2>&1; then
     launchctl bootout "$AGENT" && PAUSED=1 && echo "stats agent paused"
     sleep 1
