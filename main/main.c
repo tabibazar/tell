@@ -18,6 +18,7 @@
 #include "shaketimer.h"
 #include "templog.h"
 #include "tempsense.h"
+#include "textwrap.h"
 #include "timecalc.h"
 #include "usagedata.h"
 
@@ -1098,41 +1099,60 @@ static void centred(canvas_t *c, int row, const char *s, uint16_t colour)
 }
 
 /*
- * Date above the digits, weather below, both sent from the Mac. Centred so
- * they read as part of the clock rather than as a caption.
- *
- * The weather is one sentence of about forty characters -- conditions,
- * temperature, humidity, wind, and the day's high and low -- which is a third
- * of the big panel's width and half again more than a small one has. On a
- * narrow panel it is broken over the last two rows at a space rather than
- * being clipped: canvas_puts stops at the edge, so the untruncated version of
- * this simply lost the wind and the forecast without saying so.
+ * A panel too narrow to hold the weather on one line. Twenty-six columns is
+ * one; the CrowPanel's sixty-four is not, and it keeps the layout it has.
  */
-static void draw_clock_extras(canvas_t *c)
+static bool clock_narrow(const canvas_t *c) { return c->cols < 40; }
+
+/*
+ * Where the digits go, and how many rows they take.
+ *
+ * Centred, they sit in the middle of the panel and leave two rows underneath.
+ * The weather is a sentence of about fifty-five characters -- conditions,
+ * temperature, apparent temperature, humidity, wind, and the day's high and
+ * low -- which is three lines at twenty-six columns, so two rows silently ate
+ * the end of it, and the end of it is the day's low.
+ *
+ * So on a narrow panel the digits are pinned directly under the date instead,
+ * and everything below them belongs to the weather. Nothing is centred away
+ * from the text it has to share the panel with.
+ */
+static int clock_face(canvas_t *c, const char *buf)
+{
+    int w, h;
+    canvas_big_size(c, buf, &w, &h);
+    if (!clock_narrow(c)) { canvas_big(c, buf); return 0; }
+
+    canvas_big_at(c, buf, (c->w - w) / 2, 2 * c->cell_h);
+    int rows = (h + c->cell_h - 1) / c->cell_h;
+    return 2 + rows;                 /* the first row the digits do not use */
+}
+
+/*
+ * Date above the digits, weather below, both sent from the Mac.
+ *
+ * `first_row` is where the weather may start; 0 means "the usual place", two
+ * rows up from the bottom, which is what a panel wide enough for one line
+ * wants. Wrapped with textwrap rather than by hand, because textwrap marks a
+ * truncation with an ellipsis: the previous version of this dropped the tail
+ * off the right-hand edge with no sign that it had, which is how the day's
+ * low went missing twice without the page looking wrong.
+ */
+static void draw_clock_extras(canvas_t *c, int first_row)
 {
     if (s_data.date[0]) centred(c, 1, s_data.date, PAL_FG);
     if (!s_data.weather[0]) return;
 
-    int len = (int)strlen(s_data.weather);
-    if (len <= c->cols) { centred(c, c->rows - 2, s_data.weather, PAL_A0); return; }
+    int top = first_row > 0 ? first_row : c->rows - 2;
+    int avail = c->rows - top;
+    if (avail < 1) return;
+    if (avail > TW_MAX_LINES) avail = TW_MAX_LINES;
 
-    /* The last space that leaves a first line fitting the panel. Falling back
-       to a hard break keeps a single very long word from vanishing. */
-    int cut = 0;
-    for (int i = 0; i < len && i <= c->cols; i++)
-        if (s_data.weather[i] == ' ') cut = i;
-    if (cut == 0) cut = c->cols < len ? c->cols : len;
-
-    char first[40];
-    int n = cut < (int)sizeof first - 1 ? cut : (int)sizeof first - 1;
-    memcpy(first, s_data.weather, (size_t)n);
-    while (n > 0 && first[n - 1] == ' ') n--;      /* the break sits on a space */
-    first[n] = '\0';
-    centred(c, c->rows - 2, first, PAL_A0);
-
-    const char *rest = s_data.weather + cut;
-    while (*rest == ' ') rest++;
-    if (*rest) centred(c, c->rows - 1, rest, PAL_A0);
+    int cols = c->cols < TW_MAX_COLS ? c->cols : TW_MAX_COLS;
+    static char lines[TW_MAX_LINES][TW_MAX_COLS + 1];
+    size_t n = textwrap_fields(s_data.weather, (size_t)cols, (size_t)avail, lines);
+    for (size_t i = 0; i < n; i++)
+        centred(c, top + (int)i, lines[i], PAL_A0);
 }
 
 /* Draws the clock somewhere new each minute. Deliberately not random per
@@ -1165,8 +1185,7 @@ static void draw_clock(canvas_t *c, int64_t now)
     if (!s_synced) {
         if (s_drawn_second != -2) {
             s_drawn_second = -2;
-            canvas_big(c, "--:--:--");
-            draw_clock_extras(c);
+            draw_clock_extras(c, clock_face(c, "--:--:--"));
             vw_menu_tab(c);
             display_blit();
         }
@@ -1187,8 +1206,7 @@ static void draw_clock(canvas_t *c, int64_t now)
 #else
     if ((int)secs == s_drawn_second) return;
 #endif
-    canvas_big(c, buf);
-    draw_clock_extras(c);
+    draw_clock_extras(c, clock_face(c, buf));
     vw_menu_tab(c);
     display_blit();
     s_drawn_second = (int)secs;
