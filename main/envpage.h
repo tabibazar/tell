@@ -58,6 +58,20 @@ void envpage_draw(canvas_t *c, const char *title, const char *value,
                   const envchart_t *recent, const envchart_t *longer);
 
 /*
+ * Two readings over the same window, on one chart.
+ *
+ * Each is scaled to its own range, because a temperature in hundredths of a
+ * degree and a humidity in hundredths of a per cent share no scale worth
+ * having. Height therefore means "where in its own range", and the footer
+ * carries both ranges -- which is the price of putting them together, and
+ * worth paying: what the page is for is the shape of one against the other,
+ * and that survives the separate scaling intact.
+ */
+void envpair_draw(canvas_t *c, const char *title, const char *value,
+                  const char *footer, const envchart_t *a, uint16_t colour_a,
+                  const envchart_t *b, uint16_t colour_b);
+
+/*
  * The week: each day's low and high as a bar, seven of them side by side.
  *
  * A different question from the charts above, and it wants a different shape.

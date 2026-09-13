@@ -125,6 +125,30 @@ void envpage_draw(canvas_t *c, const char *title, const char *value,
 }
 
 
+void envpair_draw(canvas_t *c, const char *title, const char *value,
+                  const char *footer, const envchart_t *a, uint16_t colour_a,
+                  const envchart_t *b, uint16_t colour_b)
+{
+    canvas_clear(c);
+    canvas_fill_rect(c, 0, 0, c->w, c->cell_h, PAL_TITLE_BG);
+    if (title) canvas_puts(c, 0, 0, title, PAL_FG);
+    if (value) {
+        int len = (int)strlen(value);
+        canvas_puts(c, c->cols - len, 0, value, PAL_FG);
+    }
+    if (c->rows < 3) return;
+
+    /* Everything between the title and the footer belongs to both traces. */
+    const int top = c->cell_h + 1;
+    const int bottom = (c->rows - 1) * c->cell_h - 2;
+    if (bottom - top < 6) return;
+
+    band(c, a, top, bottom, colour_a);
+    band(c, b, top, bottom, colour_b);
+
+    if (footer) canvas_puts(c, 0, c->rows - 1, footer, PAL_DIM);
+}
+
 void envweek_reset(envweek_t *w)
 {
     memset(w, 0, sizeof *w);

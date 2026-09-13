@@ -37,9 +37,8 @@ typedef enum {
     PAGE_ROOM_TEMP,  /* the three room readings, charted from the flash log */
     PAGE_ROOM_RH,
     PAGE_ROOM_HPA,
-    PAGE_WEEK_TEMP,  /* each day's low and high, seven days side by side */
-    PAGE_WEEK_RH,
-    PAGE_WEEK_HPA,
+    PAGE_TREND,      /* temperature and humidity together, across the day */
+    PAGE_WEEK,       /* each day's low and high; cycles the three readings */
     PAGE_SETTINGS,   /* touch-only; last, so it is out of the way */
     PAGE_COUNT
 } page_t;

@@ -1242,10 +1242,18 @@ static void env_format(int which, int16_t raw, char *out, int size)
     }
 }
 
-static void draw_week(canvas_t *c, int which)
+/* How long each reading holds the week page before the next takes over.
+   Short enough that a glance catches more than one, long enough to read. */
+#define WEEK_DWELL_US (6 * 1000000LL)
+
+static void draw_week(canvas_t *c, int64_t now)
 {
     static const char *titles[3] = { "TEMP WEEK", "HUMIDITY WEEK", "PRESSURE WEEK" };
     static const uint16_t colours[3] = { PAL_A1, PAL_A0, PAL_A2 };
+
+    /* One page for all three, turning over by itself: three pages of this in
+       the rotation made a loop nobody waits out. */
+    int which = (int)((now / WEEK_DWELL_US) % 3);
 
     env_rebuild();
 
@@ -1260,6 +1268,39 @@ static void draw_week(canvas_t *c, int which)
         snprintf(value, sizeof value, "%s-%s", a, b);
     }
     envweek_draw(c, titles[which], value, colours[which], &s_env_week[which]);
+    display_blit();
+}
+
+/*
+ * Temperature and humidity together, across the day. They move against each
+ * other -- warm air holds more water, so a room warming usually shows the two
+ * traces diverging -- and that relationship is invisible when each has its
+ * own page.
+ */
+static void draw_trend(canvas_t *c)
+{
+    env_rebuild();
+
+    char value[24] = "--";
+    env_sample_t latest;
+    if (s_env_ready && envstore_latest(&s_env, &latest))
+        snprintf(value, sizeof value, "%.1fC %.0f%%",
+                 (double)latest.temp_c100 / 100.0, (double)latest.rh_c100 / 100.0);
+
+    char footer[64];
+    int16_t tlo, thi, hlo, hhi;
+    bool ht = envchart_range(&s_env_day[0], &tlo, &thi);
+    bool hh = envchart_range(&s_env_day[1], &hlo, &hhi);
+    if (ht && hh)
+        snprintf(footer, sizeof footer, "%.1f-%.1fC  %.0f-%.0f%%",
+                 (double)tlo / 100.0, (double)thi / 100.0,
+                 (double)hlo / 100.0, (double)hhi / 100.0);
+    else
+        snprintf(footer, sizeof footer, "%s",
+                 s_env_ready ? "logging; nothing charted yet" : "no log partition");
+
+    envpair_draw(c, "TEMP + RH", value, footer,
+                 &s_env_day[0], PAL_A1, &s_env_day[1], PAL_A0);
     display_blit();
 }
 
@@ -1459,12 +1500,11 @@ void app_main(void)
     available &= PAGE_BIT(PAGE_CLOCK)
                | PAGE_BIT(PAGE_ROOM_TEMP) | PAGE_BIT(PAGE_ROOM_RH)
                | PAGE_BIT(PAGE_ROOM_HPA)
-               | PAGE_BIT(PAGE_WEEK_TEMP) | PAGE_BIT(PAGE_WEEK_RH)
-               | PAGE_BIT(PAGE_WEEK_HPA);
+               | PAGE_BIT(PAGE_TREND) | PAGE_BIT(PAGE_WEEK);
 #else
     available &= ~(PAGE_BIT(PAGE_ROOM_TEMP) | PAGE_BIT(PAGE_ROOM_RH)
-                 | PAGE_BIT(PAGE_ROOM_HPA) | PAGE_BIT(PAGE_WEEK_TEMP)
-                 | PAGE_BIT(PAGE_WEEK_RH) | PAGE_BIT(PAGE_WEEK_HPA));
+                 | PAGE_BIT(PAGE_ROOM_HPA) | PAGE_BIT(PAGE_TREND)
+                 | PAGE_BIT(PAGE_WEEK));
 #endif
     /* Both IMU pages need a sensor, which the page table cannot know about:
        it describes boards, and this is a question about what is plugged into
@@ -1923,9 +1963,8 @@ void app_main(void)
         if (s_pages.current == PAGE_ROOM_TEMP) draw_room(c, 0);
         if (s_pages.current == PAGE_ROOM_RH)   draw_room(c, 1);
         if (s_pages.current == PAGE_ROOM_HPA)  draw_room(c, 2);
-        if (s_pages.current == PAGE_WEEK_TEMP) draw_week(c, 0);
-        if (s_pages.current == PAGE_WEEK_RH)   draw_week(c, 1);
-        if (s_pages.current == PAGE_WEEK_HPA)  draw_week(c, 2);
+        if (s_pages.current == PAGE_TREND)     draw_trend(c);
+        if (s_pages.current == PAGE_WEEK)      draw_week(c, now);
 #endif
         if (s_pages.current == PAGE_CLOCK) draw_clock(c, now);
         if (s_pages.current == PAGE_RTC) draw_rtc(c, now);

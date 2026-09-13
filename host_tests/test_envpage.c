@@ -272,6 +272,85 @@ int main(void)
         }
     }
 
+    /*
+     * Two readings on one chart. Each is scaled to itself -- hundredths of a
+     * degree and hundredths of a per cent share no meaningful scale -- so the
+     * assertion is that both traces use the full height and neither is
+     * squashed into a corner by the other's range.
+     */
+    {
+        static uint16_t guarded[8 + W * H + 8];
+        canvas_t c;
+        envchart_t t, h;
+
+        memset(guarded, 0, sizeof guarded);
+        canvas_init(&c, guarded + 8, W, H, 1);
+        envchart_reset(&t); envchart_reset(&h);
+        for (int i = 0; i < ENVCHART_COLS; i++) {
+            envchart_add(&t, i, (int16_t)(2300 + i));          /* ~23-24.6 C */
+            envchart_add(&h, i, (int16_t)(5200 - i * 5));      /* ~52-44 % */
+        }
+        envpair_draw(&c, "TEMP + RH", "24.2C 45%", "23.0-24.6C 44-52%",
+                     &t, PAL_A1, &h, PAL_A0);
+
+        int t_top = H, t_bot = 0, h_top = H, h_bot = 0, tn = 0, hn = 0;
+        for (int y = 0; y < H; y++)
+            for (int x = 0; x < W; x++) {
+                uint16_t v = c.fb[y * W + x];
+                if (v == PAL_A1) { tn++; if (y < t_top) t_top = y; if (y > t_bot) t_bot = y; }
+                if (v == PAL_A0) { hn++; if (y < h_top) h_top = y; if (y > h_bot) h_bot = y; }
+            }
+        expect("both traces are drawn", tn > 200 && hn > 200);
+        expect("the temperature uses the height it has", t_bot - t_top > H / 3);
+        expect("and so does the humidity, on its own scale", h_bot - h_top > H / 3);
+
+        /* Opposite slopes must actually come out opposite: this is the whole
+           point of the page, and a shared or mistaken scale would show them
+           running parallel. */
+        int t_left = H, t_right = H, h_left = H, h_right = H;
+        for (int y = 0; y < H; y++) {
+            if (c.fb[y * W + 4] == PAL_A1 && y < t_left) t_left = y;
+            if (c.fb[y * W + W - 6] == PAL_A1 && y < t_right) t_right = y;
+            if (c.fb[y * W + 4] == PAL_A0 && y < h_left) h_left = y;
+            if (c.fb[y * W + W - 6] == PAL_A0 && y < h_right) h_right = y;
+        }
+        expect("a rising reading ends higher than it started", t_right < t_left);
+        expect("a falling one ends lower", h_right > h_left);
+
+        /* Nothing in the title bar, and nothing past the footer row. */
+        int in_title = 0;
+        for (int x = 0; x < W; x++)
+            if (c.fb[x] == PAL_A1 || c.fb[x] == PAL_A0) in_title++;
+        expect("no trace is drawn into the title bar", in_title == 0);
+
+        /* And the framebuffer survives anything. */
+        int intact = 1;
+        int16_t cases[4] = { 32767, -32768, 0, 2500 };
+        for (int k = 0; k < 4; k++) {
+            memset(guarded, 0xAB, sizeof guarded);
+            canvas_init(&c, guarded + 8, W, H, 1);
+            envchart_reset(&t); envchart_reset(&h);
+            for (int i = 0; i < ENVCHART_COLS; i++) {
+                envchart_add(&t, i, cases[k]);
+                envchart_add(&h, i, (int16_t)(cases[k] / 2));
+            }
+            envpair_draw(&c, "T", "v", "f", &t, PAL_A1, &h, PAL_A0);
+            for (int i = 0; i < 8; i++)
+                if (guarded[i] != 0xABAB || guarded[8 + W * H + i] != 0xABAB) intact = 0;
+        }
+        expect("the pair never draws outside the framebuffer", intact);
+
+        /* An empty pair is safe. */
+        memset(guarded, 0xAB, sizeof guarded);
+        canvas_init(&c, guarded + 8, W, H, 1);
+        envchart_reset(&t); envchart_reset(&h);
+        envpair_draw(&c, "T", "--", "waiting", &t, PAL_A1, &h, PAL_A0);
+        intact = 1;
+        for (int i = 0; i < 8; i++)
+            if (guarded[i] != 0xABAB || guarded[8 + W * H + i] != 0xABAB) intact = 0;
+        expect("an empty pair is safe too", intact);
+    }
+
     printf("%s\n", failures ? "FAILURES" : "all tests passed");
     return failures ? 1 : 0;
 }

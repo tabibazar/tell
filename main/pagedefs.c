@@ -42,8 +42,10 @@ const page_def_t page_defs[PAGE_COUNT] = {
     [PAGE_ROOM_TEMP]= { "Temperature",   0,                             NULL,           false, SEC(10),  PG_SMALL, false, true  },
     [PAGE_ROOM_RH]  = { "Humidity",      0,                             NULL,           false, SEC(10),  PG_SMALL, false, true  },
     [PAGE_ROOM_HPA] = { "Pressure",      0,                             NULL,           false, SEC(10),  PG_SMALL, false, true  },
-    [PAGE_WEEK_TEMP]= { "Temp this week", 0,                            NULL,           false, SEC(30),  PG_SMALL, false, true  },
-    [PAGE_WEEK_RH]  = { "Humidity week",  0,                             NULL,           false, SEC(30),  PG_SMALL, false, true  },
-    [PAGE_WEEK_HPA] = { "Pressure week",  0,                             NULL,           false, SEC(30),  PG_SMALL, false, true  },
+    [PAGE_TREND]    = { "Today's trend", 0,                             NULL,           false, SEC(10),  PG_SMALL, false, true  },
+    /* One page for all three weeks, turning over on its own. Three separate
+       ones made the rotation seven pages, and a loop you have to wait two
+       minutes for is one nobody watches. */
+    [PAGE_WEEK]     = { "This week",     0,                             NULL,           false, SEC(1),   PG_SMALL, false, true  },
     [PAGE_SETTINGS] = { "Settings",      0,                             NULL,           false, 0,        PG_BIG,  true,  false },
 };
