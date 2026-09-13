@@ -715,7 +715,7 @@ static page_t home_page(void)
  * asked for. The tile lights up under the finger as soon as it is touched, so
  * the wait is visible rather than felt as lag.
  */
-static uint32_t s_cycle_off;
+static page_mask_t s_cycle_off;
 #define MENU_DOUBLE_US 400000
 static page_t s_menu_held = PAGE_COUNT;   /* the tile waiting to see a second tap */
 static int64_t s_menu_held_us;
@@ -724,9 +724,9 @@ static int64_t s_menu_held_us;
    should not land on a control panel, the message page when nothing has been
    sent, because "nothing sent yet" is not worth twenty seconds, and whatever
    has been struck off on the menu. */
-static unsigned cycle_skip(void)
+static page_mask_t cycle_skip(void)
 {
-    unsigned skip = s_cycle_off;
+    page_mask_t skip = s_cycle_off;
     for (int i = 0; i < PAGE_COUNT; i++)
         if (!page_defs[i].in_saver) skip |= PAGE_BIT(i);
     if (s_message[0] == '\0') skip |= PAGE_BIT(PAGE_MESSAGE);
@@ -1127,6 +1127,18 @@ static uint8_t s_env_buf[4096];
 
 static envchart_t s_env_day[3];           /* temperature, humidity, pressure */
 static envchart_t s_env_month[3];
+static envweek_t s_env_week[3];
+
+/* Which of the seven days a reading belongs to. Day six is today; day zero is
+   six days before it. Older than that and it is not in this week. */
+static int env_week_day(uint32_t minute, uint32_t newest)
+{
+    int32_t day = (int32_t)(minute / 1440u);
+    int32_t today = (int32_t)(newest / 1440u);
+    int32_t back = today - day;
+    if (back < 0 || back > ENVWEEK_DAYS - 1) return -1;
+    return ENVWEEK_DAYS - 1 - (int)back;
+}
 
 /* Minutes since 1970, from the date the Mac or the clock chip supplied and
    the board's own seconds. */
@@ -1172,6 +1184,11 @@ static bool env_fold(const env_sample_t *r, void *ctx)
     uint32_t age = f->newest >= r->minute ? f->newest - r->minute : 0;
 
     int16_t v[3] = { r->temp_c100, (int16_t)r->rh_c100, (int16_t)r->hpa_x10 };
+
+    int wd = env_week_day(r->minute, f->newest);
+    if (wd >= 0)
+        for (int i = 0; i < 3; i++) envweek_add(&s_env_week[i], wd, v[i]);
+
     if (age < ENV_DAY_MIN) {
         /* Newest at the right-hand edge, so the chart grows leftwards into
            the past the way every other chart here does. */
@@ -1193,9 +1210,22 @@ static void env_rebuild(void)
     for (int i = 0; i < 3; i++) {
         envchart_reset(&s_env_day[i]);
         envchart_reset(&s_env_month[i]);
+        envweek_reset(&s_env_week[i]);
     }
     env_sample_t newest;
     if (!envstore_latest(&s_env, &newest)) return;
+
+    /* The day initials, worked out from the newest reading's date rather
+       than from the board's idea of today: the log is what is being labelled,
+       and after a week unplugged those are not the same thing. */
+    {
+        int32_t today = (int32_t)(newest.minute / 1440u);
+        for (int d = 0; d < ENVWEEK_DAYS; d++) {
+            int32_t days = today - (ENVWEEK_DAYS - 1 - d);
+            char initial = "SMTWTFS"[timecalc_weekday(days)];
+            for (int i = 0; i < 3; i++) envweek_label(&s_env_week[i], d, initial);
+        }
+    }
     env_fold_t f = { newest.minute };
     envstore_walk(&s_env, s_env_buf, env_fold, &f);
 }
@@ -1210,6 +1240,27 @@ static void env_format(int which, int16_t raw, char *out, int size)
     case 1:  snprintf(out, size, "%.0f%%", (double)raw / 100.0); break;
     default: snprintf(out, size, "%.0f", (double)raw / 10.0); break;
     }
+}
+
+static void draw_week(canvas_t *c, int which)
+{
+    static const char *titles[3] = { "TEMP WEEK", "HUMIDITY WEEK", "PRESSURE WEEK" };
+    static const uint16_t colours[3] = { PAL_A1, PAL_A0, PAL_A2 };
+
+    env_rebuild();
+
+    /* The week's own extremes in the title, since the bars share one scale
+       and the numbers on it are not otherwise written anywhere. */
+    char value[24] = "--";
+    int16_t lo, hi;
+    if (envweek_range(&s_env_week[which], &lo, &hi)) {
+        char a[12], b[12];
+        env_format(which, lo, a, sizeof a);
+        env_format(which, hi, b, sizeof b);
+        snprintf(value, sizeof value, "%s-%s", a, b);
+    }
+    envweek_draw(c, titles[which], value, colours[which], &s_env_week[which]);
+    display_blit();
 }
 
 static void draw_room(canvas_t *c, int which)
@@ -1395,7 +1446,7 @@ void app_main(void)
     vw_set_touch(touch);
     /* Which pages this board offers: the data pages need the big panel, and
        the menu and settings need a finger. */
-    unsigned available = 0;
+    page_mask_t available = 0;
     for (int i = 0; i < PAGE_COUNT; i++) {
         const page_def_t *pd = &page_defs[i];
         if (!(pd->where & (big ? PG_BIG : PG_SMALL))) continue;
@@ -1405,16 +1456,20 @@ void app_main(void)
 #if CONFIG_SCREEN_ENV_ONLY
     /* An environment logger, and nothing else: the clock and the three
        readings. Everything else is either compiled out or struck off here. */
-    available &= PAGE_BIT(PAGE_CLOCK) | PAGE_BIT(PAGE_ROOM_TEMP)
-               | PAGE_BIT(PAGE_ROOM_RH) | PAGE_BIT(PAGE_ROOM_HPA);
+    available &= PAGE_BIT(PAGE_CLOCK)
+               | PAGE_BIT(PAGE_ROOM_TEMP) | PAGE_BIT(PAGE_ROOM_RH)
+               | PAGE_BIT(PAGE_ROOM_HPA)
+               | PAGE_BIT(PAGE_WEEK_TEMP) | PAGE_BIT(PAGE_WEEK_RH)
+               | PAGE_BIT(PAGE_WEEK_HPA);
 #else
     available &= ~(PAGE_BIT(PAGE_ROOM_TEMP) | PAGE_BIT(PAGE_ROOM_RH)
-                 | PAGE_BIT(PAGE_ROOM_HPA));
+                 | PAGE_BIT(PAGE_ROOM_HPA) | PAGE_BIT(PAGE_WEEK_TEMP)
+                 | PAGE_BIT(PAGE_WEEK_RH) | PAGE_BIT(PAGE_WEEK_HPA));
 #endif
     /* Both IMU pages need a sensor, which the page table cannot know about:
        it describes boards, and this is a question about what is plugged into
        one today. A board compiled without either never offers them at all. */
-    unsigned imu_pages = PAGE_BIT(PAGE_LEVEL) | PAGE_BIT(PAGE_PARTICLES)
+    page_mask_t imu_pages = PAGE_BIT(PAGE_LEVEL) | PAGE_BIT(PAGE_PARTICLES)
                        | PAGE_BIT(PAGE_TIMER) | PAGE_BIT(PAGE_STOPWATCH);
 #if HAVE_IMU
     s_imu = qmi8658_init() == ESP_OK;
@@ -1868,6 +1923,9 @@ void app_main(void)
         if (s_pages.current == PAGE_ROOM_TEMP) draw_room(c, 0);
         if (s_pages.current == PAGE_ROOM_RH)   draw_room(c, 1);
         if (s_pages.current == PAGE_ROOM_HPA)  draw_room(c, 2);
+        if (s_pages.current == PAGE_WEEK_TEMP) draw_week(c, 0);
+        if (s_pages.current == PAGE_WEEK_RH)   draw_week(c, 1);
+        if (s_pages.current == PAGE_WEEK_HPA)  draw_week(c, 2);
 #endif
         if (s_pages.current == PAGE_CLOCK) draw_clock(c, now);
         if (s_pages.current == PAGE_RTC) draw_rtc(c, now);

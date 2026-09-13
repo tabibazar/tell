@@ -148,26 +148,27 @@ bool settings_save_zone(int utc_offset_min, const char *tz)
  * missing from the saver's round looks like nothing at all. The key carries
  * the enum's generation for that reason: bump it whenever a page is removed
  * or inserted anywhere but the end, and old masks are ignored rather than
- * misread. (Generation 2: the WiFi survey page was removed.)
+ * misread. (Generation 3: the mask widened to 64 bits when the thirty-third
+ * page was added, and the room and week pages shifted the settings page.)
  */
-#define CYCLE_OFF_KEY "cyc_off2"
+#define CYCLE_OFF_KEY "cyc_off3"
 
-bool settings_load_cycle_off(uint32_t *mask)
+bool settings_load_cycle_off(uint64_t *mask)
 {
     nvs_handle_t h;
     if (nvs_open(NAMESPACE, NVS_READONLY, &h) != ESP_OK) return false;
-    uint32_t v = 0;
-    bool ok = nvs_get_u32(h, CYCLE_OFF_KEY, &v) == ESP_OK;
+    uint64_t v = 0;
+    bool ok = nvs_get_u64(h, CYCLE_OFF_KEY, &v) == ESP_OK;
     nvs_close(h);
     if (ok) *mask = v;
     return ok;
 }
 
-bool settings_save_cycle_off(uint32_t mask)
+bool settings_save_cycle_off(uint64_t mask)
 {
     nvs_handle_t h;
     if (nvs_open(NAMESPACE, NVS_READWRITE, &h) != ESP_OK) return false;
-    bool ok = nvs_set_u32(h, CYCLE_OFF_KEY, mask) == ESP_OK
+    bool ok = nvs_set_u64(h, CYCLE_OFF_KEY, mask) == ESP_OK
            && nvs_commit(h) == ESP_OK;
     nvs_close(h);
     if (!ok) ESP_LOGE(TAG, "nvs write failed; the skipped pages are not kept");
@@ -186,6 +187,6 @@ bool settings_save_zone(int utc_offset_min, const char *tz)
     (void)utc_offset_min; (void)tz;
     return true;
 }
-bool settings_load_cycle_off(uint32_t *mask) { (void)mask; return false; }
-bool settings_save_cycle_off(uint32_t mask) { (void)mask; return true; }
+bool settings_load_cycle_off(uint64_t *mask) { (void)mask; return false; }
+bool settings_save_cycle_off(uint64_t mask) { (void)mask; return true; }
 #endif

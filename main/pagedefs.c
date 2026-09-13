@@ -42,5 +42,8 @@ const page_def_t page_defs[PAGE_COUNT] = {
     [PAGE_ROOM_TEMP]= { "Temperature",   0,                             NULL,           false, SEC(10),  PG_SMALL, false, true  },
     [PAGE_ROOM_RH]  = { "Humidity",      0,                             NULL,           false, SEC(10),  PG_SMALL, false, true  },
     [PAGE_ROOM_HPA] = { "Pressure",      0,                             NULL,           false, SEC(10),  PG_SMALL, false, true  },
+    [PAGE_WEEK_TEMP]= { "Temp this week", 0,                            NULL,           false, SEC(30),  PG_SMALL, false, true  },
+    [PAGE_WEEK_RH]  = { "Humidity week",  0,                             NULL,           false, SEC(30),  PG_SMALL, false, true  },
+    [PAGE_WEEK_HPA] = { "Pressure week",  0,                             NULL,           false, SEC(30),  PG_SMALL, false, true  },
     [PAGE_SETTINGS] = { "Settings",      0,                             NULL,           false, 0,        PG_BIG,  true,  false },
 };

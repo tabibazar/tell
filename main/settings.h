@@ -51,7 +51,7 @@ bool settings_save_zone(int utc_offset_min, const char *tz);
    page. Chosen by double-tapping a tile on the menu rather than from the
    settings page: there are twenty pages and the menu already shows them all,
    where a settings row per page would be a screen of its own. */
-bool settings_load_cycle_off(uint32_t *mask);
-bool settings_save_cycle_off(uint32_t mask);
+bool settings_load_cycle_off(uint64_t *mask);
+bool settings_save_cycle_off(uint64_t mask);
 
 #endif /* SETTINGS_H */

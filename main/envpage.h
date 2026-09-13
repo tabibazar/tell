@@ -57,4 +57,35 @@ void envpage_draw(canvas_t *c, const char *title, const char *value,
                   const char *footer, uint16_t colour,
                   const envchart_t *recent, const envchart_t *longer);
 
+/*
+ * The week: each day's low and high as a bar, seven of them side by side.
+ *
+ * A different question from the charts above, and it wants a different shape.
+ * The charts answer "what is it doing"; this answers "was yesterday colder
+ * than today", which is a comparison between seven things and so wants seven
+ * things you can put a ruler against. The bars share one scale for that
+ * reason -- unlike every other chart here, where each trace is scaled to
+ * itself, a week whose days were each scaled separately would make every day
+ * look identical.
+ */
+#define ENVWEEK_DAYS 7
+
+typedef struct {
+    int16_t lo[ENVWEEK_DAYS];
+    int16_t hi[ENVWEEK_DAYS];
+    uint8_t used;                    /* one bit per day */
+    char    label[ENVWEEK_DAYS];     /* the day's initial, or ' ' */
+} envweek_t;
+
+void envweek_reset(envweek_t *w);
+
+/* Day 0 is the oldest of the seven, day 6 is today. */
+void envweek_add(envweek_t *w, int day, int16_t value);
+void envweek_label(envweek_t *w, int day, char initial);
+bool envweek_used(const envweek_t *w, int day);
+bool envweek_range(const envweek_t *w, int16_t *lo, int16_t *hi);
+
+void envweek_draw(canvas_t *c, const char *title, const char *value,
+                  uint16_t colour, const envweek_t *w);
+
 #endif /* ENVPAGE_H */

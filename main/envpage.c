@@ -123,3 +123,102 @@ void envpage_draw(canvas_t *c, const char *title, const char *value,
 
     if (footer && c->rows >= 7) canvas_puts(c, 0, 6, footer, PAL_DIM);
 }
+
+
+void envweek_reset(envweek_t *w)
+{
+    memset(w, 0, sizeof *w);
+    for (int i = 0; i < ENVWEEK_DAYS; i++) w->label[i] = ' ';
+}
+
+bool envweek_used(const envweek_t *w, int day)
+{
+    if (day < 0 || day >= ENVWEEK_DAYS) return false;
+    return (w->used & (1u << day)) != 0;
+}
+
+void envweek_add(envweek_t *w, int day, int16_t value)
+{
+    if (day < 0 || day >= ENVWEEK_DAYS) return;
+    if (!envweek_used(w, day)) {
+        w->used |= (uint8_t)(1u << day);
+        w->lo[day] = w->hi[day] = value;
+        return;
+    }
+    if (value < w->lo[day]) w->lo[day] = value;
+    if (value > w->hi[day]) w->hi[day] = value;
+}
+
+void envweek_label(envweek_t *w, int day, char initial)
+{
+    if (day < 0 || day >= ENVWEEK_DAYS) return;
+    w->label[day] = initial;
+}
+
+bool envweek_range(const envweek_t *w, int16_t *lo, int16_t *hi)
+{
+    bool any = false;
+    int16_t a = 0, b = 0;
+    for (int i = 0; i < ENVWEEK_DAYS; i++) {
+        if (!envweek_used(w, i)) continue;
+        if (!any) { a = w->lo[i]; b = w->hi[i]; any = true; continue; }
+        if (w->lo[i] < a) a = w->lo[i];
+        if (w->hi[i] > b) b = w->hi[i];
+    }
+    if (!any) return false;
+    *lo = a; *hi = b;
+    return true;
+}
+
+void envweek_draw(canvas_t *c, const char *title, const char *value,
+                  uint16_t colour, const envweek_t *w)
+{
+    canvas_clear(c);
+    canvas_fill_rect(c, 0, 0, c->w, c->cell_h, PAL_TITLE_BG);
+    if (title) canvas_puts(c, 0, 0, title, PAL_FG);
+    if (value) {
+        int len = (int)strlen(value);
+        canvas_puts(c, c->cols - len, 0, value, PAL_FG);
+    }
+    if (c->rows < 3) return;
+
+    int16_t lo, hi;
+    if (!envweek_range(w, &lo, &hi)) {
+        canvas_puts(c, 1, 2, "no days logged yet", PAL_DIM);
+        return;
+    }
+
+    /* The bars live between the title and the row of day initials. */
+    const int top = c->cell_h + 2;
+    const int bottom = (c->rows - 1) * c->cell_h - 3;
+    if (bottom - top < 6) return;
+
+    /* A day whose low and high are the same -- a board switched on an hour
+       ago -- would otherwise be an invisible zero-height bar. */
+    if (hi == lo) { lo = (int16_t)(lo - 1); hi = (int16_t)(hi + 1); }
+
+    const int slot = c->w / ENVWEEK_DAYS;
+    const int bar = slot * 2 / 3;
+    const int pad = (slot - bar) / 2;
+
+    for (int i = 0; i < ENVWEEK_DAYS; i++) {
+        int x = i * slot + pad;
+        if (envweek_used(w, i)) {
+            int y0 = plot_y(w->hi[i], lo, hi, top, bottom);
+            int y1 = plot_y(w->lo[i], lo, hi, top, bottom);
+            canvas_fill_rect(c, x, y0, bar, y1 - y0 + 1, colour);
+        } else {
+            /* A day with no readings is a gap, drawn as a dotted floor so it
+               reads as "nothing recorded" rather than as "zero". */
+            for (int k = 0; k < bar; k += 4)
+                canvas_fill_rect(c, x + k, bottom, 2, 1, PAL_DIM);
+        }
+        /* The initial, centred under its bar, on its own row: no text over
+           data and no data over text. */
+        if (w->label[i] != ' ') {
+            char s[2] = { w->label[i], '\0' };
+            int col = (x + bar / 2) / c->cell_w;
+            canvas_puts(c, col, c->rows - 1, s, PAL_DIM);
+        }
+    }
+}

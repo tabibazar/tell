@@ -1,6 +1,6 @@
 #include "pages.h"
 
-void pages_init(pages_t *p, unsigned available)
+void pages_init(pages_t *p, uint64_t available)
 {
     /* The clock is the fallback, so it must always exist. */
     p->available = available | PAGE_BIT(PAGE_CLOCK);
@@ -21,7 +21,7 @@ void pages_set_rotate(pages_t *p, int64_t us)
     p->rotate_us = us < 0 ? 0 : us;
 }
 
-page_t pages_step(pages_t *p, unsigned skip)
+page_t pages_step(pages_t *p, uint64_t skip)
 {
     for (int i = 1; i <= PAGE_COUNT; i++) {
         page_t candidate = (page_t)(((int)p->current + i) % PAGE_COUNT);
@@ -85,7 +85,7 @@ bool pages_saver_active(const pages_t *p, int64_t now_us)
     return now_us - p->last_activity_us > p->saver_us;
 }
 
-bool pages_tick(pages_t *p, int64_t now_us, unsigned skip)
+bool pages_tick(pages_t *p, int64_t now_us, uint64_t skip)
 {
     if (p->rotate_us <= 0) return false;       /* rotation disabled */
 

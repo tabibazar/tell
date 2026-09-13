@@ -63,7 +63,7 @@ void views_turns(canvas_t *c, const ud_view_t *d, float t, int64_t now_us);
 /* The menu: a tile per available page. Tap one to go there. */
 /* `cycle_off` is a bit per page the screensaver skips, drawn struck
    through; `held` is the tile under a finger, or PAGE_COUNT for none. */
-void views_menu(canvas_t *c, const pages_t *p, unsigned cycle_off, page_t held);
+void views_menu(canvas_t *c, const pages_t *p, uint64_t cycle_off, page_t held);
 
 /* True when a tap at display pixel (x, y) landed on a menu tile, with the
    page it stands for. */

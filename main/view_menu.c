@@ -44,7 +44,7 @@ static void menu_tile_rect(canvas_t *c, int n, int *x, int *y, int *w, int *h)
     *h = MENU_TILE_H;
 }
 
-void views_menu(canvas_t *c, const pages_t *p, unsigned cycle_off, page_t held)
+void views_menu(canvas_t *c, const pages_t *p, uint64_t cycle_off, page_t held)
 {
     canvas_clear(c);
     canvas_fill_rect(c, 0, 0, c->w, c->cell_h, PAL_TITLE_BG);

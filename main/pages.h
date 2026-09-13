@@ -37,11 +37,33 @@ typedef enum {
     PAGE_ROOM_TEMP,  /* the three room readings, charted from the flash log */
     PAGE_ROOM_RH,
     PAGE_ROOM_HPA,
+    PAGE_WEEK_TEMP,  /* each day's low and high, seven days side by side */
+    PAGE_WEEK_RH,
+    PAGE_WEEK_HPA,
     PAGE_SETTINGS,   /* touch-only; last, so it is out of the way */
     PAGE_COUNT
 } page_t;
 
-#define PAGE_BIT(p) (1u << (p))
+/*
+ * A bit per page. Sixty-four of them, and the assertion below is not
+ * decoration: with a 32-bit mask, PAGE_BIT of page 32 is undefined behaviour
+ * that in practice shifts round to bit 0 and silently aliases the clock. A
+ * board would then offer a page it does not have, and hide one it does, with
+ * nothing in the build to say so. Adding the thirty-third page is exactly the
+ * kind of ordinary change that should not be able to do that.
+ */
+#define PAGE_BIT(p) (1ULL << (p))
+
+_Static_assert(PAGE_COUNT <= 64, "the page mask is 64 bits wide");
+
+/*
+ * The type to hold one. Spelled out because a mask kept in a plain `unsigned`
+ * is a bug that hides: PAGE_BIT is 64 bits, so `mask &= ~narrow` promotes the
+ * complement by zero-extending it and silently clears every page above the
+ * thirty-second. That cost an afternoon once -- the pressure page simply
+ * stopped appearing in the rotation, with no warning from the compiler.
+ */
+typedef uint64_t page_mask_t;
 
 /* How long a page stays pinned after a touch or a new message. */
 #define PAGES_IDLE_US (5 * 60 * 1000000LL)
@@ -66,7 +88,7 @@ typedef enum {
 #define PAGES_SAVER_US (10 * 60 * 1000000LL)
 
 typedef struct {
-    unsigned available;      /* bitmask of PAGE_BIT(...) */
+    uint64_t available;      /* bitmask of PAGE_BIT(...) */
     page_t current;
     int64_t last_activity_us;
     int64_t last_rotate_us;
@@ -74,7 +96,7 @@ typedef struct {
     int64_t rotate_us;       /* time on each page once idle; 0 disables it */
 } pages_t;
 
-void pages_init(pages_t *p, unsigned available);
+void pages_init(pages_t *p, uint64_t available);
 
 /* Changes the idle time before the screensaver. Zero means never. */
 void pages_set_saver(pages_t *p, int64_t us);
@@ -88,7 +110,7 @@ void pages_set_rotate(pages_t *p, int64_t us);
 /* Moves to the next available page not in `skip`, without counting as
    activity, so a slideshow can step through the pages while the saver stays
    active. Returns the page it landed on, unchanged if there is nowhere to go. */
-page_t pages_step(pages_t *p, unsigned skip);
+page_t pages_step(pages_t *p, uint64_t skip);
 
 /* Moves to the next available page and returns it. */
 page_t pages_advance(pages_t *p, int64_t now_us);
@@ -110,6 +132,6 @@ bool pages_saver_active(const pages_t *p, int64_t now_us);
    advances to the next page every rotate_us, leaving out `skip` -- the same
    mask the screensaver uses, so a page struck off the round stays off it
    here too. Returns true if the page changed. */
-bool pages_tick(pages_t *p, int64_t now_us, unsigned skip);
+bool pages_tick(pages_t *p, int64_t now_us, uint64_t skip);
 
 #endif /* PAGES_H */

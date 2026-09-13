@@ -520,7 +520,7 @@ int main(int argc, char **argv)
     /* The menu, and whether every tile can be hit. */
     {
         pages_t pg;
-        unsigned all = 0;
+        uint64_t all = 0;
         for (int i = 0; i < PAGE_COUNT; i++) all |= PAGE_BIT(i);
         pages_init(&pg, all);
         pages_show(&pg, PAGE_MENU, 1000);
