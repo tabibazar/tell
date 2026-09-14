@@ -766,7 +766,9 @@ static void on_time(uint32_t secs)
 /* The board's idea of the time right now. */
 static uint32_t now_secs(int64_t now)
 {
-    return timecalc_advance(s_base_secs, (uint64_t)(now - s_base_us));
+    /* Clamped, because on_time() re-bases the clock part-way through a loop
+       iteration whose `now` was captured at the top. See timecalc_since. */
+    return timecalc_since(s_base_secs, s_base_us, now);
 }
 
 static void on_message(const char *text, size_t len)
@@ -1168,7 +1170,20 @@ static void env_sample(int64_t now)
     if (!s_env_ready) return;
     uint32_t minute;
     if (!env_now_minute(now, &minute)) return;
-    if (s_env_last_min != 0 && minute - s_env_last_min < ENV_EVERY_MIN) return;
+    /*
+     * Signed, deliberately. Unsigned, a clock that moved backwards makes this
+     * difference enormous rather than negative, the guard waves it through,
+     * and the bad reading then becomes the baseline -- so the next good one
+     * looks like a jump too and gets written as well. One corrupt timestamp
+     * turned into a duplicate pair in the log that way.
+     */
+    if (s_env_last_min != 0) {
+        int32_t since = (int32_t)(minute - s_env_last_min);
+        if (since >= 0 && since < ENV_EVERY_MIN) return;
+        if (since < 0)
+            ESP_LOGW(TAG, "the clock moved back %d minutes; logging from here",
+                     -since);
+    }
 
     float t, hpa, rh;
     if (!bme280_read(&t, &hpa, &rh)) return;

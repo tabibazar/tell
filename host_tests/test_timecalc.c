@@ -120,6 +120,51 @@ int main(void)
                timecalc_days(2000, 3, 1) - timecalc_days(2000, 2, 28) == 2);
     }
 
+    /*
+     * The clamp that stops a re-based clock reading as an arbitrary time.
+     *
+     * This is a regression test with a body count: without it, one reading an
+     * hour went into wave's environment log carrying a timestamp sixteen
+     * hours out, because the hourly RTC re-sync moves the base forward while
+     * the caller is still holding a `now` captured at the top of the loop.
+     */
+    {
+        const uint32_t base = 12 * 3600;               /* midday */
+        const int64_t  base_us = 5000000;
+
+        expect("an hour on reads an hour on",
+               timecalc_since(base, base_us, base_us + 3600 * 1000000LL)
+               == base + 3600);
+        expect("the same instant reads as the base",
+               timecalc_since(base, base_us, base_us) == base);
+
+        /*
+         * The case that bit: `now` is a few milliseconds OLDER than the base.
+         * Unsigned subtraction makes that about 1.8e19 microseconds, which is
+         * six hundred thousand years, and taken modulo a day it lands
+         * somewhere entirely plausible and entirely wrong.
+         */
+        expect("a reading older than the base does not wrap round",
+               timecalc_since(base, base_us, base_us - 3000) == base);
+        expect("nor does one a whole second older",
+               timecalc_since(base, base_us, base_us - 1000000) == base);
+        expect("nor an absurdly old one",
+               timecalc_since(base, base_us, 0) == base);
+
+        /* And prove the failure it prevents is the one that happened: fed the
+           same backwards gap, the unguarded arithmetic gives neither the base
+           nor anything near it. */
+        {
+            uint32_t unguarded = timecalc_advance(base, (uint64_t)(-3000));
+            expect("the unguarded form really does produce a wrong time of day",
+                   unguarded != base);
+        }
+
+        /* Midnight still wraps normally through the clamp. */
+        expect("a day later is the same time",
+               timecalc_since(base, base_us, base_us + 86400 * 1000000LL) == base);
+    }
+
     if (failures == 0) { printf("all tests passed\n"); return 0; }
     printf("%d test(s) failed\n", failures);
     return 1;

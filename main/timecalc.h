@@ -23,6 +23,22 @@ void timecalc_format_hms(uint32_t secs, char out[9]);
    calendar for month labels and day names. */
 void timecalc_civil(int32_t days, int *y, int *m, int *d);
 
+/*
+ * The time now, from a base reading and two microsecond timestamps.
+ *
+ * The clamp is the whole point. The board re-bases its clock from the RTC
+ * once an hour, in the middle of a loop iteration that captured `now` at the
+ * top -- so `now` can be *older* than the base by a few milliseconds. Done as
+ * unsigned subtraction that becomes eighteen quintillion microseconds, and
+ * advancing a clock by six hundred thousand years lands it at an arbitrary
+ * time of day.
+ *
+ * That is not hypothetical: it put one corrupt reading an hour into wave's
+ * environment log, every hour, with a plausible temperature attached to a
+ * timestamp sixteen hours out.
+ */
+uint32_t timecalc_since(uint32_t base_secs, int64_t base_us, int64_t now_us);
+
 /* The inverse: a civil date to days since 1970-01-01. Needed to stamp a log
    entry with a real date rather than with time since power-on. */
 int32_t timecalc_days(int y, int m, int d);

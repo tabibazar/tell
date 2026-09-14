@@ -81,3 +81,11 @@ int32_t timecalc_days(int y, int m, int d)
     unsigned doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;         /* 0..146096 */
     return era * 146097 + (int32_t)doe - 719468;
 }
+
+uint32_t timecalc_since(uint32_t base_secs, int64_t base_us, int64_t now_us)
+{
+    /* Time cannot have run backwards; a base newer than the reading means the
+       base was just moved, so the answer is simply the base. */
+    if (now_us <= base_us) return base_secs % SECS_PER_DAY;
+    return timecalc_advance(base_secs, (uint64_t)(now_us - base_us));
+}
