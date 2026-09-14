@@ -45,17 +45,52 @@ bool envchart_used(const envchart_t *c, int col);
 bool envchart_range(const envchart_t *c, int16_t *lo, int16_t *hi);
 
 /*
- * Draws the page: a title bar carrying the name and the current value, a
- * large chart of the recent window, a strip below it for the long one, and a
- * footer for the two ranges.
- *
- * Every string is the caller's: it knows the units and how many decimals each
- * reading deserves, and this knows where things go. Nothing is drawn over
- * text and no text is drawn over data.
+ * Writes one axis label for a raw value. The caller owns it because the
+ * caller knows the units and how many decimals each reading deserves; a
+ * pressure wants none where a temperature wants one, and an axis of "984.7,
+ * 985.2, 985.7" on a panel this narrow is unreadable where "985, 990" is not.
  */
-void envpage_draw(canvas_t *c, const char *title, const char *value,
-                  const char *footer, uint16_t colour,
-                  const envchart_t *recent, const envchart_t *longer);
+typedef void (*envfmt_fn)(int16_t raw, char *out, int size);
+
+/* Columns reserved down the left for the value axis. Four is enough for
+   "24.5" or "1013" and costs an eighth of the width. */
+#define ENVPAGE_GUTTER 4
+
+/*
+ * Draws the page: a title bar with the name and the current value, a charted
+ * window with both axes, the hours beneath it, and the long window as a strip
+ * along the bottom.
+ *
+ * The axes are the point of this rather than decoration. Without them a trace
+ * says only "it went up a bit", because every chart here is scaled to its own
+ * range and a given height means nothing absolute. The value axis is drawn in
+ * its own gutter so no label sits over the data, and the gridlines go down
+ * before the trace so the trace wins wherever they meet.
+ *
+ * `end_minute` is the minute of the day at the right-hand edge, so the hour
+ * marks can be real clock times rather than "twelve hours ago"; pass -1 when
+ * the time is unknown and the hours are left off.
+ */
+typedef struct {
+    const char *title;
+    const char *value;
+    uint16_t    colour;
+    envfmt_fn   fmt;
+    const envchart_t *recent;     /* the big chart */
+    const envchart_t *longer;     /* the strip along the bottom */
+    int span_minutes;             /* what `recent` covers, for the hour marks */
+    int end_minute;               /* minute of the day at the right edge, or -1 */
+} envpage_t;
+
+void envpage_draw(canvas_t *c, const envpage_t *p);
+
+/*
+ * A round step for an axis: 1, 2 or 5 times a power of ten, the largest that
+ * still puts at least two lines inside the range. Round numbers are the whole
+ * reason an axis is readable -- gridlines at 23.7 and 24.4 are arithmetic
+ * nobody does at a glance.
+ */
+int envchart_nice_step(int16_t lo, int16_t hi, int max_lines);
 
 /*
  * Two readings over the same window, on one chart.

@@ -6,6 +6,11 @@
 
 static int failures;
 
+static void fmt_c(int16_t raw, char *out, int size)
+{
+    snprintf(out, size, "%.0f", (double)raw / 100.0);
+}
+
 static void expect(const char *what, int cond)
 {
     if (cond) { printf("ok   %s\n", what); return; }
@@ -78,8 +83,11 @@ int main(void)
                 envchart_add(&day, i, (int16_t)(cases[k] - i));
                 envchart_add(&month, i, (int16_t)(cases[k] + i));
             }
-            envpage_draw(&c, "TEMPERATURE", "26.1C", "24h 23.8-27.1 30d 18-29",
-                         PAL_A1, &day, &month);
+            envpage_t pg = { .title = "TEMPERATURE", .value = "26.1C",
+                             .colour = PAL_A1, .fmt = fmt_c,
+                             .recent = &day, .longer = &month,
+                             .span_minutes = 24 * 60, .end_minute = 600 };
+            envpage_draw(&c, &pg);
             for (int i = 0; i < 8; i++)
                 if (guarded[i] != 0xABAB || guarded[8 + W * H + i] != 0xABAB) intact = 0;
         }
@@ -89,7 +97,10 @@ int main(void)
         memset(guarded, 0xAB, sizeof guarded);
         canvas_init(&c, guarded + 8, W, H, 1);
         envchart_reset(&day); envchart_reset(&month);
-        envpage_draw(&c, "PRESSURE", "--", "waiting", PAL_A2, &day, &month);
+        envpage_t empty = { .title = "PRESSURE", .value = "--", .colour = PAL_A2,
+                            .fmt = fmt_c, .recent = &day, .longer = &month,
+                            .span_minutes = 24 * 60, .end_minute = 600 };
+        envpage_draw(&c, &empty);
         intact = 1;
         for (int i = 0; i < 8; i++)
             if (guarded[i] != 0xABAB || guarded[8 + W * H + i] != 0xABAB) intact = 0;
@@ -103,16 +114,30 @@ int main(void)
             envchart_add(&day, i, (int16_t)(2400 + (i % 40) * 10));
             envchart_add(&month, i, (int16_t)(2000 + (i % 90) * 10));
         }
-        envpage_draw(&c, "TEMPERATURE", "26.1C", "24h 23.8-27.1 30d 18-29",
-                     PAL_A1, &day, &month);
+        envpage_t pg2 = { .title = "TEMPERATURE", .value = "26.1C",
+                          .colour = PAL_A1, .fmt = fmt_c,
+                          .recent = &day, .longer = &month,
+                          .span_minutes = 24 * 60, .end_minute = 600 };
+        envpage_draw(&c, &pg2);
 
-        int recent = 0, longer = 0;
-        for (int i = 0; i < W * H; i++) {
-            if (c.fb[i] == PAL_A1) recent++;
-            if (c.fb[i] == pal_darken(PAL_A1)) longer++;
-        }
-        expect("the recent chart is drawn", recent > 300);
+        /*
+         * Count where the traces are, not merely how many pixels they cover:
+         * a chart that drew into the left half and left the right third blank
+         * would pass a pixel count and be badly wrong -- the time axis beneath
+         * it would then be pointing at nothing.
+         */
+        int recent = 0, longer = 0, r_lo = W, r_hi = -1;
+        for (int y = 0; y < H; y++)
+            for (int x = 0; x < W; x++) {
+                uint16_t v = c.fb[y * W + x];
+                if (v == PAL_A1) { recent++; if (x < r_lo) r_lo = x; if (x > r_hi) r_hi = x; }
+                if (v == pal_darken(PAL_A1)) longer++;
+            }
+        expect("the recent chart is drawn", recent > 200);
         expect("and the long one below it", longer > 100);
+        expect("the chart starts where the gutter ends",
+               r_lo == ENVPAGE_GUTTER * 12);
+        expect("and runs to the right-hand edge", r_hi >= W - 2);
 
         /* The month strip must stay in its own rows: if it bled into the day
            chart the two would be unreadable, and the day chart is the one
@@ -139,7 +164,10 @@ int main(void)
         canvas_init(&c, small + 8, 64, 30, 1);
         envchart_reset(&day); envchart_reset(&month);
         for (int i = 0; i < 20; i++) envchart_add(&day, i, (int16_t)i);
-        envpage_draw(&c, "T", "1", "f", PAL_A1, &day, &month);
+        envpage_t tiny = { .title = "T", .value = "1", .colour = PAL_A1,
+                           .fmt = fmt_c, .recent = &day, .longer = &month,
+                           .span_minutes = 24 * 60, .end_minute = 600 };
+        envpage_draw(&c, &tiny);
         int intact = 1;
         for (int i = 0; i < 8; i++)
             if (small[i] != 0xABAB || small[8 + 64 * 30 + i] != 0xABAB) intact = 0;
@@ -349,6 +377,104 @@ int main(void)
         for (int i = 0; i < 8; i++)
             if (guarded[i] != 0xABAB || guarded[8 + W * H + i] != 0xABAB) intact = 0;
         expect("an empty pair is safe too", intact);
+    }
+
+    /*
+     * The axis. Round steps are the whole reason an axis is readable:
+     * gridlines at 23.7 and 24.4 are arithmetic nobody does at a glance.
+     */
+    {
+        /* 23.00 to 29.30 C in hundredths: 2 C steps give four lines. */
+        expect("a six-degree span steps by two", envchart_nice_step(2300, 2930, 3) == 200);
+        /* A tight span steps finer rather than giving up. */
+        expect("a half-degree span steps by a fifth",
+               envchart_nice_step(2400, 2450, 3) == 20);
+        /* Pressure over a week, in tenths: 8.5 hPa wants 5-hPa steps. */
+        expect("eight hectopascals steps by five",
+               envchart_nice_step(9845, 9930, 3) == 50);
+        /* Every step is 1, 2 or 5 times a power of ten -- never 3 or 7. */
+        int odd = 0;
+        for (int span = 1; span < 20000; span += 7) {
+            int st = envchart_nice_step(0, (int16_t)(span > 32000 ? 32000 : span), 3);
+            int m = st;
+            while (m % 10 == 0 && m > 1) m /= 10;
+            if (m != 1 && m != 2 && m != 5) odd++;
+        }
+        expect("every step is a 1, a 2 or a 5", odd == 0);
+        expect("a flat range asks for no step", envchart_nice_step(100, 100, 3) == 0);
+
+        /*
+         * The gutter must actually hold the data back. A trace drawn under
+         * its own labels is the thing this layout exists to prevent.
+         */
+        static uint16_t guarded[8 + W * H + 8];
+        canvas_t c;
+        envchart_t day, month;
+        memset(guarded, 0, sizeof guarded);
+        canvas_init(&c, guarded + 8, W, H, 1);
+        envchart_reset(&day); envchart_reset(&month);
+        for (int i = 0; i < ENVCHART_COLS; i++) {
+            envchart_add(&day, i, (int16_t)(2300 + i * 4));
+            envchart_add(&month, i, (int16_t)(2300 + i * 4));
+        }
+        envpage_t page = {
+            .title = "TEMP", .value = "23.8C", .colour = PAL_A1, .fmt = fmt_c,
+            .recent = &day, .longer = &month,
+            .span_minutes = 24 * 60, .end_minute = 10 * 60 + 26,
+        };
+        envpage_draw(&c, &page);
+
+        int in_gutter = 0;
+        for (int y = 24; y < H; y++)
+            for (int x = 0; x < ENVPAGE_GUTTER * 12; x++)
+                if (c.fb[y * W + x] == PAL_A1
+                    || c.fb[y * W + x] == pal_darken(PAL_A1)) in_gutter++;
+        expect("no trace is drawn in the label gutter", in_gutter == 0);
+
+        int lit = 0;
+        for (int i = 0; i < W * H; i++) if (c.fb[i] == PAL_A1) lit++;
+        expect("but the trace is still drawn", lit > 200);
+
+        int grid = 0;
+        for (int i = 0; i < W * H; i++) if (c.fb[i] == pal_darken(PAL_DIM)) grid++;
+        expect("and the gridlines are there", grid > 50);
+
+        int labels = 0;
+        for (int i = 0; i < W * H; i++) if (c.fb[i] == PAL_DIM) labels++;
+        expect("with labels beside them", labels > 50);
+
+        /* Whatever the data, nothing leaves the framebuffer. */
+        int intact = 1;
+        int16_t cases[4] = { 32767, -32768, 0, 2500 };
+        for (int k = 0; k < 4; k++) {
+            memset(guarded, 0xAB, sizeof guarded);
+            canvas_init(&c, guarded + 8, W, H, 1);
+            envchart_reset(&day); envchart_reset(&month);
+            for (int i = 0; i < ENVCHART_COLS; i++) {
+                envchart_add(&day, i, cases[k]);
+                envchart_add(&month, i, (int16_t)(cases[k] / 2));
+            }
+            page.end_minute = k * 300;
+            envpage_draw(&c, &page);
+            for (int i = 0; i < 8; i++)
+                if (guarded[i] != 0xABAB || guarded[8 + W * H + i] != 0xABAB) intact = 0;
+        }
+        expect("the axes never draw outside the framebuffer", intact);
+
+        /* An unknown clock leaves the hours off rather than inventing them. */
+        memset(guarded, 0, sizeof guarded);
+        canvas_init(&c, guarded + 8, W, H, 1);
+        envchart_reset(&day); envchart_reset(&month);
+        for (int i = 0; i < ENVCHART_COLS; i++) envchart_add(&day, i, (int16_t)(2400 + i));
+        page.end_minute = -1;
+        envpage_draw(&c, &page);
+        /* Stop short of the rule that separates the strip, which is drawn in
+           the same colour on the last pixel row of this band. */
+        int hour_row = 0;
+        for (int y = (H / 24 - 2) * 24; y < (H / 24 - 1) * 24 - 2; y++)
+            for (int x = 0; x < W; x++)
+                if (c.fb[y * W + x] == PAL_DIM) hour_row++;
+        expect("no clock means no hour marks", hour_row == 0);
     }
 
     printf("%s\n", failures ? "FAILURES" : "all tests passed");

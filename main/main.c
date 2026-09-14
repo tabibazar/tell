@@ -1261,6 +1261,13 @@ static void env_rebuild(void)
 /* What each page is called, what colour it draws in, and how to write its
    numbers. Pressure moves by tenths and wants no decimals at all on a panel
    this wide; temperature earns one. */
+static void env_fmt_temp(int16_t raw, char *out, int size)
+{ snprintf(out, size, "%.0f", (double)raw / 100.0); }
+static void env_fmt_rh(int16_t raw, char *out, int size)
+{ snprintf(out, size, "%.0f", (double)raw / 100.0); }
+static void env_fmt_hpa(int16_t raw, char *out, int size)
+{ snprintf(out, size, "%.0f", (double)raw / 10.0); }
+
 static void env_format(int which, int16_t raw, char *out, int size)
 {
     switch (which) {
@@ -1334,40 +1341,52 @@ static void draw_trend(canvas_t *c)
 
 static void draw_room(canvas_t *c, int which)
 {
-    static const char *titles[3] = { "TEMPERATURE", "HUMIDITY", "PRESSURE" };
+    static const char *titles[3] = { "TEMP", "HUMIDITY", "PRESSURE" };
     static const uint16_t colours[3] = { PAL_A1, PAL_A0, PAL_A2 };
+    static const envfmt_fn fmts[3] = { env_fmt_temp, env_fmt_rh, env_fmt_hpa };
 
     env_rebuild();
 
-    char value[16] = "--";
+    /*
+     * The title carries the reading now and the month's range, because the
+     * axis belongs to the day chart and the strip along the bottom has none.
+     */
+    char value[48] = "--";
     env_sample_t latest;
+    int16_t mlo, mhi;
+    bool have_month = envchart_range(&s_env_month[which], &mlo, &mhi);
+
     if (s_env_ready && envstore_latest(&s_env, &latest)) {
         int16_t raw[3] = { latest.temp_c100, (int16_t)latest.rh_c100,
                            (int16_t)latest.hpa_x10 };
-        env_format(which, raw[which], value, sizeof value);
+        char now_s[12];
+        env_format(which, raw[which], now_s, sizeof now_s);
+        if (have_month) {
+            char a[12], b[12];
+            env_format(which, mlo, a, sizeof a);
+            env_format(which, mhi, b, sizeof b);
+            snprintf(value, sizeof value, "%s  30d %s-%s", now_s, a, b);
+        } else {
+            snprintf(value, sizeof value, "%s", now_s);
+        }
     }
 
-    /* Both ranges on one line, each labelled with its window, because every
-       chart here is scaled to itself and height alone says nothing. */
-    char footer[64] = "";
-    int16_t dlo, dhi, mlo, mhi;
-    char a[12], b[12], cc[12], dd[12];
-    bool has_day = envchart_range(&s_env_day[which], &dlo, &dhi);
-    bool has_month = envchart_range(&s_env_month[which], &mlo, &mhi);
-    if (has_day && has_month) {
-        env_format(which, dlo, a, sizeof a); env_format(which, dhi, b, sizeof b);
-        env_format(which, mlo, cc, sizeof cc); env_format(which, mhi, dd, sizeof dd);
-        snprintf(footer, sizeof footer, "24h %s-%s 30d %s-%s", a, b, cc, dd);
-    } else if (has_day) {
-        env_format(which, dlo, a, sizeof a); env_format(which, dhi, b, sizeof b);
-        snprintf(footer, sizeof footer, "24h %s-%s", a, b);
-    } else {
-        snprintf(footer, sizeof footer, "%s",
-                 s_env_ready ? "logging; nothing charted yet" : "no log partition");
-    }
+    /* Where the right-hand edge of the day chart sits on the clock, so the
+       hour marks are real times rather than "so many hours ago". */
+    int end_minute = -1;
+    if (s_env_now_ok) end_minute = (int)(s_env_now.minute % 1440u);
 
-    envpage_draw(c, titles[which], value, footer, colours[which],
-                 &s_env_day[which], &s_env_month[which]);
+    envpage_t page = {
+        .title = titles[which],
+        .value = value,
+        .colour = colours[which],
+        .fmt = fmts[which],
+        .recent = &s_env_day[which],
+        .longer = &s_env_month[which],
+        .span_minutes = ENV_DAY_MIN,
+        .end_minute = end_minute,
+    };
+    envpage_draw(c, &page);
     display_blit();
 }
 #endif /* CONFIG_SCREEN_ENV_ONLY */
