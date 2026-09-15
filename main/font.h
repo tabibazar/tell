@@ -22,8 +22,17 @@
 
 #include "font_12x24.h"
 
+/*
+ * The clock is the exception, and it needs one table per panel size: the
+ * glyphs are rendered at their final size rather than magnified, so a table
+ * built for one panel is simply the wrong size on another. Both define the
+ * same CLOCK_* names, and only one is ever included.
+ */
 #if defined(CONFIG_SCREEN_BOARD_CROWPANEL_7)
-#include "font_clock.h"
+#include "font_clock.h"          /* 96x160, for 800x480 */
+#define HAVE_CLOCK_FONT 1
+#elif defined(CONFIG_SCREEN_BOARD_NICEMCU_28)
+#include "font_clock_40x72.h"    /* 40x72: eight digits across 320 */
 #define HAVE_CLOCK_FONT 1
 #endif
 

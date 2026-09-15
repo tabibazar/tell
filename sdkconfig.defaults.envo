@@ -19,3 +19,8 @@ CONFIG_ESP_CONSOLE_UART_DEFAULT=y
 # No PSRAM. Asked on 2026-09-15 and the chip answered: "PSRAM ID read error,
 # PSRAM chip not found". So the framebuffer comes from internal DMA memory,
 # and that is what sets the usable height of the panel -- see display_st7789.c.
+
+# Thirty-five per cent. A lit panel is the largest steady draw on these boards
+# and most of what makes them warm; wave sat at fifteen and this one is a
+# bigger panel in a brighter spot.
+CONFIG_SCREEN_BRIGHTNESS=35
