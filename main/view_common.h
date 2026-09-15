@@ -56,12 +56,18 @@ const char *vw_clock_short(void);
    draw it themselves. The hit area is bigger than the tab (fingertips). */
 #define VW_TAB_COLS 6
 
-/* Whether this board has a touch panel. The MENU tab is drawn only when it
-   does: without a finger it is an affordance nothing can press, and on the
-   message page it is painted over text that is already there, so the first
-   VW_TAB_COLS columns of the first line disappear under it. Boards default
-   to having touch; main says otherwise once it knows. */
-void vw_set_touch(bool has_touch);
+/*
+ * Whether this board shows the MENU tab, and treats a tap on it as opening
+ * the menu.
+ *
+ * Not the same question as "has a touch panel", though it was until envo:
+ * she has a finger and no menu, navigating by tapping the left and right
+ * halves instead. A board without touch hides it because it is an affordance
+ * nothing can press; a board with touch may hide it because it has something
+ * better. Either way the heading then starts at the edge rather than behind
+ * it, which is worth six columns on a 26-column panel.
+ */
+void vw_set_menu_tab(bool show);
 void vw_menu_tab(canvas_t *c);
 bool vw_menu_tab_hit(canvas_t *c, int x, int y);
 

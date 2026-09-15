@@ -74,9 +74,16 @@
  * 50 ms, which is fine for a page that changes once a second.
  */
 #define LCD_PCLK_HZ (24 * 1000 * 1000)
-/* Centred in the 240 the controller drives: (240 - 168) / 2 = 36. */
+/*
+ * Where the 72 rows we cannot afford go.
+ *
+ * Centred, at 36, they split above and below -- which reads well as a
+ * letterbox but puts the MENU tab and the title bars a finger's width below
+ * the physical top corner, where the eye expects them. Pushed to 0 the
+ * content starts at the top of the glass and the whole margin sits under it.
+ */
 #define LCD_GAP_X 0
-#define LCD_GAP_Y 36
+#define LCD_GAP_Y 0
 /* The controller drives more rows than we use, and they must be blanked or
    the factory firmware's screen shows through the margins. */
 #define LCD_PANEL_FULL_H 240

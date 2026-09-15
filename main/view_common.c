@@ -58,13 +58,13 @@ const char *vw_clock_short(void)
     return out;
 }
 
-static bool s_has_touch = true;
+static bool s_menu_tab = true;
 
-void vw_set_touch(bool has_touch) { s_has_touch = has_touch; }
+void vw_set_menu_tab(bool show) { s_menu_tab = show; }
 
 void vw_menu_tab(canvas_t *c)
 {
-    if (!s_has_touch) return;
+    if (!s_menu_tab) return;
     int w = VW_TAB_COLS * c->cell_w;
     canvas_fill_rect(c, 0, 0, w, c->cell_h, PAL_A1);
     canvas_fill_rect(c, 0, 0, w, 2, pal_lighten(PAL_A1));
@@ -73,7 +73,7 @@ void vw_menu_tab(canvas_t *c)
 
 bool vw_menu_tab_hit(canvas_t *c, int x, int y)
 {
-    return s_has_touch
+    return s_menu_tab
         && x < (VW_TAB_COLS + 2) * c->cell_w && y < 3 * c->cell_h;
 }
 
@@ -83,7 +83,7 @@ void vw_title(canvas_t *c, const char *left, const char *right)
     vw_menu_tab(c);
     /* With no tab the heading starts at the edge instead of behind it, which
        is worth six columns on a 26-column panel. */
-    int head_col = s_has_touch ? VW_TAB_COLS + 1 : 1;
+    int head_col = s_menu_tab ? VW_TAB_COLS + 1 : 1;
     canvas_puts(c, head_col, 0, left, PAL_FG);
 
     /* The clock strip takes the right edge when it is known; the page's own

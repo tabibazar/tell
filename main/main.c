@@ -130,6 +130,13 @@ static bool claude_busy(const ud_view_t *v, int64_t now)
 #define HAVE_TOUCH 0
 #endif
 
+/* Touch that pages by halves rather than through a menu. */
+#if defined(CONFIG_SCREEN_BOARD_NICEMCU_28)
+#define TOUCH_BY_HALVES 1
+#else
+#define TOUCH_BY_HALVES 0
+#endif
+
 
 /*
  * Anything that needs the IMU. Two boards have one: the Feather, where a
@@ -1589,9 +1596,18 @@ void app_main(void)
 #if HAVE_TOUCH
     touch = touch_init() == ESP_OK;
 #endif
+#if TOUCH_BY_HALVES
+    /*
+     * A tap on the left half goes back and the right half forward, so there
+     * is no menu to open and no tab to open it with. pages_back was written
+     * for exactly this and had never been wired to a board.
+     */
+    vw_set_menu_tab(false);
+#else
     /* No finger, no MENU tab: it cannot be pressed, and draw_message paints
        it over the text's first six columns. */
-    vw_set_touch(touch);
+    vw_set_menu_tab(touch);
+#endif
     /* Which pages this board offers: the data pages need the big panel, and
        the menu and settings need a finger. */
     page_mask_t available = 0;
@@ -1601,14 +1617,25 @@ void app_main(void)
         if (pd->needs_touch && !touch) continue;
         available |= PAGE_BIT(i);
     }
+#if TOUCH_BY_HALVES
+    /* Nothing to navigate to a menu with, and a settings page that could only
+       be reached by paging past it. */
+    available &= ~(PAGE_BIT(PAGE_MENU) | PAGE_BIT(PAGE_SETTINGS));
+#endif
 #ifdef CONFIG_SCREEN_BOARD_NICEMCU_28
     /*
-     * Not a usage display. Every 26x7 panel is offered the small-panel pages,
-     * and those were written for lilly -- Claude's limits and all-time totals,
-     * pushed from the Mac. On a board bought to watch the air they are simply
-     * someone else's pages, which is exactly what they looked like.
+     * Not a usage display, and not a message board either. Every 26x7 panel
+     * is offered the small-panel pages, and those were written for lilly --
+     * Claude's limits and all-time totals, pushed from the Mac, and a page
+     * for whatever the Mac last said. On a board bought to watch the air they
+     * are someone else's pages, which is exactly what they looked like.
+     *
+     * Which leaves the clock alone until the sensor is wired. That is
+     * honest: a board showing one page it means is better than five it does
+     * not.
      */
-    available &= ~(PAGE_BIT(PAGE_LIMITS) | PAGE_BIT(PAGE_USAGE));
+    available &= ~(PAGE_BIT(PAGE_LIMITS) | PAGE_BIT(PAGE_USAGE)
+                 | PAGE_BIT(PAGE_MESSAGE));
 #endif
 #if CONFIG_SCREEN_ENV_ONLY
     /* An environment logger, and nothing else: the clock and the three

@@ -15,8 +15,17 @@
 #           push-today  the almanac every 30 min
 #           push-story  Claude's recap of the day every 30 min
 #
-#   other   push-clock  date and weather every 5 min
+#   lilly   push-clock  date and weather every 5 min
 #           push-lilly  limits, models, cost and the year every 60s
+#
+#   other   push-clock  date and weather every 5 min
+#
+# A board gets the usage agents only if it has pages to draw them on. envo
+# does not: she shows the clock and, once her sensor is wired, the room.
+# Sending her the limits and the year would be a minute of parsing every
+# minute, thrown away at the end of it -- and a board with no clock chip
+# still needs push-clock, because that is the only thing that tells her what
+# time it is.
 #
 # Labels carry the device name, so two boards can be fed from one Mac without
 # one board's agents evicting the other's. Paths are written at install time,
@@ -69,16 +78,22 @@ install_one() {         # name, script, interval
     fi
 }
 
-if [ "$DEVICE" = "big" ]; then
+case "$DEVICE" in
+big)
     install_one tell-stats  push-stats.sh  300
     install_one push-now    push-now.sh     60
     install_one push-clock  push-clock.sh  300
     install_one push-today  push-today.sh 1800
     install_one push-story  push-story.sh 1800
-else
+    ;;
+lilly)
     install_one push-clock  push-clock.sh  300
     install_one push-lilly  push-lilly.sh   60
-fi
+    ;;
+*)
+    install_one push-clock  push-clock.sh  300
+    ;;
+esac
 
 echo
 echo "logs:   /tmp/<name>.$DEVICE.log and .err"
