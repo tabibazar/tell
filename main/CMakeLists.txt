@@ -21,6 +21,15 @@ else()
     set(BOARD_EXCLUDES "display_rgb.c" "display_i80.c")
 endif()
 
+# One touch driver per board: a GT911 on the CrowPanel, a CST816D on envo,
+# and neither on a board with no touch at all -- but the files still have to
+# be kept apart, because both define the same touch_* interface.
+if(CONFIG_SCREEN_BOARD_NICEMCU_28)
+    list(APPEND BOARD_EXCLUDES "gt911.c")
+else()
+    list(APPEND BOARD_EXCLUDES "cst816.c")
+endif()
+
 # An environment logger has no use for the sensor toys, and dropping them
 # takes the IMU driver with them. See SCREEN_ENV_ONLY in Kconfig.projbuild.
 if(CONFIG_SCREEN_ENV_ONLY)

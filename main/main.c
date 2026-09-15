@@ -3,7 +3,7 @@
 #include "ble_uart.h"
 #include "bme280.h"
 #include "buttons.h"
-#include "gt911.h"
+#include "touch.h"
 #include "level.h"
 #include "particles.h"
 #include "qmi8658.h"
@@ -115,6 +115,20 @@ static bool claude_busy(const ud_view_t *v, int64_t now)
     int64_t since = v->now.last_secs + (now - v->now.last_sent_us) / 1000000;
     return since < UD_BUSY_SECS;
 }
+
+/*
+ * Boards with a finger. Two so far and nothing in common but the job: a GT911
+ * on the CrowPanel and a CST816D on envo. Having touch is not the same as
+ * having the big panel, which is why this is its own test -- the two were the
+ * same board until envo arrived, and the code said "CrowPanel" where it meant
+ * "has touch".
+ */
+#if defined(CONFIG_SCREEN_BOARD_CROWPANEL_7) \
+ || defined(CONFIG_SCREEN_BOARD_NICEMCU_28)
+#define HAVE_TOUCH 1
+#else
+#define HAVE_TOUCH 0
+#endif
 
 /*
  * Anything that needs the IMU. Two boards have one: the Feather, where a
@@ -1568,8 +1582,10 @@ void app_main(void)
     if (buttons_init() != ESP_OK) ESP_LOGW(TAG, "buttons unavailable");
 #endif
 #ifdef CONFIG_SCREEN_BOARD_CROWPANEL_7
-    big = true;
-    touch = gt911_init() == ESP_OK;
+    big = true;              /* the 800x480 layout, which is a separate thing */
+#endif
+#if HAVE_TOUCH
+    touch = touch_init() == ESP_OK;
 #endif
     /* No finger, no MENU tab: it cannot be pressed, and draw_message paints
        it over the text's first six columns. */
@@ -1816,10 +1832,10 @@ void app_main(void)
             rtc_refresh_date();
         }
 
-        if (touch && gt911_tapped()) {
+        if (touch && touch_tapped()) {
             int tx, ty, row, choice;
             page_t target;
-            gt911_point(&tx, &ty);
+            touch_point(&tx, &ty);
             if (s_saver) {
                 /* The first tap dismisses the saver rather than also changing
                    the page, which would be a surprise. */

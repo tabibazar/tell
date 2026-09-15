@@ -140,3 +140,15 @@ const char *gt911_debug(void)
     }
     return s_dbg;
 }
+
+/*
+ * The generic interface, for a board that has this controller. Thin wrappers
+ * rather than renamed functions: the CrowPanel lives at work and cannot be
+ * tested from here, so its driver is left exactly as it was.
+ */
+#include "touch.h"
+
+esp_err_t touch_init(void) { return gt911_init(); }
+bool touch_tapped(void) { return gt911_tapped(); }
+void touch_point(int *x, int *y) { gt911_point(x, y); }
+const char *touch_debug(void) { return gt911_debug(); }
