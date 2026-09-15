@@ -9,12 +9,15 @@
 #include "qmi8658.h"
 #include "esp_heap_caps.h"
 #include "esp_random.h"
+#include <math.h>
 #include "particles.h"
 #include "pagedefs.h"
 #include "pages.h"
 #include "view_common.h"
 #include "ds3231.h"
 #if CONFIG_SCREEN_ENV_ONLY
+#include "aht21.h"
+#include "ens160.h"
 #include "envflash.h"
 #include "envpage.h"
 #include "envstore.h"
@@ -33,6 +36,7 @@
 #include "esp_log.h"
 #include "nvs.h"
 #include "esp_random.h"
+#include <math.h>
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -1160,9 +1164,25 @@ static uint8_t s_env_buf[4096];
 static env_sample_t s_env_now;
 static bool         s_env_now_ok;
 
-static envchart_t s_env_day[3];           /* temperature, humidity, pressure */
-static envchart_t s_env_month[3];
-static envweek_t s_env_week[3];
+/*
+ * The series a board may hold. Every board has an entry for each; a board
+ * without the sensor simply never fills its own, and the page is not offered.
+ * Fixed rather than per-board because the log is read back by tools and by
+ * later firmware, and an index that means different things on different
+ * boards is a trap set for one of them.
+ */
+#define ENV_TEMP 0
+#define ENV_RH   1
+#define ENV_HPA  2
+#define ENV_VOC  3
+#define ENV_CO2  4
+#define ENV_SERIES 5
+
+static envchart_t s_env_day[ENV_SERIES];
+static envchart_t s_env_month[ENV_SERIES];
+static envweek_t s_env_week[ENV_SERIES];
+
+static bool s_env_gas;        /* a gas sensor answered at boot */
 
 /* Which of the seven days a reading belongs to. Day six is today; day zero is
    six days before it. Older than that and it is not in this week. */
@@ -1187,11 +1207,97 @@ static bool env_now_minute(int64_t now, uint32_t *out)
     return true;
 }
 
+
+#if CONFIG_SCREEN_ENV_DEMO
+/*
+ * A few days of invented indoor weather, so the charts can be looked at
+ * before the sensors exist.
+ *
+ * Shaped rather than random, because random noise makes a chart that proves
+ * nothing: a room warms through the afternoon and cools overnight, humidity
+ * moves against the temperature because warm air holds more water, and VOCs
+ * sit at a low baseline with spikes around cooking and cleaning. A chart of
+ * that tells you whether the axes, the binning and the min-max bands are
+ * right. A chart of white noise tells you only that something drew.
+ *
+ * Written backwards from now, one a minute, and every record marked
+ * ENV_SYNTHETIC so no one -- including a later me -- mistakes it for a
+ * measurement.
+ */
+#define ENV_DEMO_DAYS 3
+
+static int32_t demo_noise(uint32_t seed)
+{
+    /* A cheap reproducible LCG: the same fill twice gives the same chart,
+       which matters when comparing a change to the drawing code. */
+    seed = seed * 1103515245u + 12345u;
+    /* A tenth of a degree, not half of one. The first attempt used +/-50
+       hundredths, which on a chart whose whole range is five degrees drew a
+       band a fifth of the panel high in every column -- a fuzzy caterpillar
+       rather than a room. Real rooms are smooth; the noise has to be small
+       enough that the shape is what you see. */
+    return (int32_t)((seed >> 16) % 21) - 10;       /* -10..+10 */
+}
+
+static void env_demo_fill(uint32_t now_minute)
+{
+    if (!s_env_ready) return;
+    if (envstore_count(&s_env) > 0) return;        /* never over real data */
+    if (aht21_present() || bme280_present() || ens160_present()) return;
+
+    const int total = ENV_DEMO_DAYS * 24 * 60;
+    ESP_LOGW(TAG, "no sensors: filling the log with %d INVENTED readings", total);
+
+    for (int i = total; i > 0; i--) {
+        uint32_t minute = now_minute - (uint32_t)i;
+        int mins_of_day = (int)(minute % 1440u);
+        /* Peak in the late afternoon, trough before dawn. */
+        float phase = (float)(mins_of_day - 300) / 1440.0f * 6.2831853f;
+        float warm = sinf(phase);
+
+        env_sample_t r;
+        memset(&r, 0, sizeof r);
+        r.minute = minute;
+        r.temp_c100 = (int16_t)(2150.0f + 250.0f * warm + demo_noise((uint32_t)i));
+        r.rh_c100 = (uint16_t)(4800.0f - 600.0f * warm + demo_noise((uint32_t)i * 7u));
+        r.flags = ENV_HAVE_TEMP | ENV_HAVE_RH | ENV_HAVE_GAS | ENV_SYNTHETIC;
+
+        /* A baseline with spikes at breakfast and at dinner, because that is
+           what a kitchen does to a VOC sensor. */
+        int tvoc = 90 + (int)(20.0f * warm) + demo_noise((uint32_t)i * 13u) / 4;
+        int hour = mins_of_day / 60;
+        if (hour == 8 || hour == 18) tvoc += 250 + demo_noise((uint32_t)i * 3u) * 2;
+        if (tvoc < 0) tvoc = 0;
+        r.tvoc_ppb = (uint16_t)tvoc;
+        r.eco2_ppm = (uint16_t)(420 + tvoc / 2);
+        r.aqi = (uint8_t)(tvoc < 150 ? 1 : tvoc < 300 ? 2 : tvoc < 500 ? 3 : 4);
+
+        if (!envstore_add(&s_env, &r)) {
+            ESP_LOGW(TAG, "demo fill stopped after %d readings", total - i);
+            break;
+        }
+    }
+    s_env_dirty = true;
+    s_env_now_ok = envstore_latest(&s_env, &s_env_now);
+    s_env_last_min = now_minute;
+    ESP_LOGW(TAG, "log now holds %d readings, all invented",
+             envstore_count(&s_env));
+}
+#endif
+
 static void env_sample(int64_t now)
 {
     if (!s_env_ready) return;
     uint32_t minute;
     if (!env_now_minute(now, &minute)) return;
+#if CONFIG_SCREEN_ENV_DEMO
+    /* Here rather than at boot: the fill needs real timestamps, and on a
+       board with no clock chip the time does not exist until a Mac says so. */
+    {
+        static bool filled;
+        if (!filled) { filled = true; env_demo_fill(minute); }
+    }
+#endif
     /*
      * Signed, deliberately. Unsigned, a clock that moved backwards makes this
      * difference enormous rather than negative, the guard waves it through,
@@ -1207,14 +1313,53 @@ static void env_sample(int64_t now)
                      -since);
     }
 
-    float t, hpa, rh;
-    if (!bme280_read(&t, &hpa, &rh)) return;
-
+    /*
+     * Whatever this board has. The AHT21 is preferred for temperature and
+     * humidity where both it and a BME280 are present: it sits millimetres
+     * from the gas sensor, which is the microclimate the compensation cares
+     * about, while a BME280 across the board measures a different one.
+     */
     env_sample_t rec;
+    memset(&rec, 0, sizeof rec);
     rec.minute = minute;
+
+    float t = 0, rh = 0;
+    bool have_th = aht21_present() && aht21_read(&t, &rh);
+
+    float bt = 0, brh = 0, hpa = 0;
+    if (bme280_read(&bt, &hpa, &brh)) {
+        rec.hpa_x10 = (uint16_t)(hpa * 10.0f);
+        rec.flags |= ENV_HAVE_HPA;
+        if (!have_th) { t = bt; rh = brh; have_th = true; }
+    }
+
+    /* Nothing measured the room, so there is nothing to record. A row of
+       zeros would chart as a real reading of zero. */
+    if (!have_th) return;
     rec.temp_c100 = (int16_t)(t * 100.0f);
     rec.rh_c100 = (uint16_t)(rh * 100.0f);
-    rec.hpa_x10 = (uint16_t)(hpa * 10.0f);
+    rec.flags |= ENV_HAVE_TEMP | ENV_HAVE_RH;
+
+    if (ens160_present()) {
+        /*
+         * Tell it the air it is sitting in before asking what is in the air:
+         * without compensation a MOX sensor's readings wander with the
+         * weather. Then take the reading and keep the chip's own opinion of
+         * how much it is worth.
+         */
+        ens160_compensate(t, rh);
+
+        uint16_t eco2, tvoc;
+        uint8_t aqi;
+        ens160_validity_t validity;
+        if (ens160_read(&eco2, &tvoc, &aqi, &validity)) {
+            rec.tvoc_ppb = tvoc;
+            rec.eco2_ppm = eco2;
+            rec.aqi = aqi;
+            rec.flags |= ENV_HAVE_GAS | ENV_GAS_FLAGS(validity);
+        }
+    }
+
     if (envstore_add(&s_env, &rec)) {
         s_env_last_min = minute;
         s_env_dirty = true;
@@ -1233,21 +1378,24 @@ static bool env_fold(const env_sample_t *r, void *ctx)
     const env_fold_t *f = ctx;
     uint32_t age = f->newest >= r->minute ? f->newest - r->minute : 0;
 
-    int16_t v[3] = { r->temp_c100, (int16_t)r->rh_c100, (int16_t)r->hpa_x10 };
+    int16_t v[ENV_SERIES] = {
+        r->temp_c100, (int16_t)r->rh_c100, (int16_t)r->hpa_x10,
+        (int16_t)r->tvoc_ppb, (int16_t)r->eco2_ppm,
+    };
 
     int wd = env_week_day(r->minute, f->newest);
     if (wd >= 0)
-        for (int i = 0; i < 3; i++) envweek_add(&s_env_week[i], wd, v[i]);
+        for (int i = 0; i < ENV_SERIES; i++) envweek_add(&s_env_week[i], wd, v[i]);
 
     if (age < ENV_DAY_MIN) {
         /* Newest at the right-hand edge, so the chart grows leftwards into
            the past the way every other chart here does. */
         int col = ENVCHART_COLS - 1 - (int)((age * ENVCHART_COLS) / ENV_DAY_MIN);
-        for (int i = 0; i < 3; i++) envchart_add(&s_env_day[i], col, v[i]);
+        for (int i = 0; i < ENV_SERIES; i++) envchart_add(&s_env_day[i], col, v[i]);
     }
     if (age < ENV_MONTH_MIN) {
         int col = ENVCHART_COLS - 1 - (int)((age * ENVCHART_COLS) / ENV_MONTH_MIN);
-        for (int i = 0; i < 3; i++) envchart_add(&s_env_month[i], col, v[i]);
+        for (int i = 0; i < ENV_SERIES; i++) envchart_add(&s_env_month[i], col, v[i]);
     }
     return true;
 }
@@ -1257,7 +1405,7 @@ static void env_rebuild(void)
     if (!s_env_dirty || !s_env_ready) return;
     s_env_dirty = false;
 
-    for (int i = 0; i < 3; i++) {
+    for (int i = 0; i < ENV_SERIES; i++) {
         envchart_reset(&s_env_day[i]);
         envchart_reset(&s_env_month[i]);
         envweek_reset(&s_env_week[i]);
@@ -1273,7 +1421,7 @@ static void env_rebuild(void)
         for (int d = 0; d < ENVWEEK_DAYS; d++) {
             int32_t days = today - (ENVWEEK_DAYS - 1 - d);
             char initial = "SMTWTFS"[timecalc_weekday(days)];
-            for (int i = 0; i < 3; i++) envweek_label(&s_env_week[i], d, initial);
+            for (int i = 0; i < ENV_SERIES; i++) envweek_label(&s_env_week[i], d, initial);
         }
     }
     env_fold_t f = { newest.minute };
@@ -1289,13 +1437,22 @@ static void env_fmt_rh(int16_t raw, char *out, int size)
 { snprintf(out, size, "%.0f", (double)raw / 100.0); }
 static void env_fmt_hpa(int16_t raw, char *out, int size)
 { snprintf(out, size, "%.0f", (double)raw / 10.0); }
+/* Parts per billion, whole numbers: tenths of a ppb is a precision a MOX
+   sensor does not have and an axis cannot show. */
+static void env_fmt_tvoc(int16_t raw, char *out, int size)
+{ snprintf(out, size, "%d", (int)(uint16_t)raw); }
+
+static void env_fmt_co2(int16_t raw, char *out, int size)
+{ snprintf(out, size, "%d", (int)(uint16_t)raw); }
 
 static void env_format(int which, int16_t raw, char *out, int size)
 {
     switch (which) {
-    case 0:  snprintf(out, size, "%.1fC", (double)raw / 100.0); break;
-    case 1:  snprintf(out, size, "%.0f%%", (double)raw / 100.0); break;
-    default: snprintf(out, size, "%.0f", (double)raw / 10.0); break;
+    case ENV_TEMP: snprintf(out, size, "%.1fC", (double)raw / 100.0); break;
+    case ENV_RH:   snprintf(out, size, "%.0f%%", (double)raw / 100.0); break;
+    case ENV_HPA:  snprintf(out, size, "%.0f", (double)raw / 10.0); break;
+    case ENV_VOC:  snprintf(out, size, "%dppb", (int)(uint16_t)raw); break;
+    default:       snprintf(out, size, "%dppm", (int)(uint16_t)raw); break;
     }
 }
 
@@ -1363,28 +1520,47 @@ static void draw_trend(canvas_t *c)
 
 static void draw_room(canvas_t *c, int which)
 {
-    static const char *titles[3] = { "TEMP", "HUMIDITY", "PRESSURE" };
-    static const uint16_t colours[3] = { PAL_A1, PAL_A0, PAL_A2 };
-    static const envfmt_fn fmts[3] = { env_fmt_temp, env_fmt_rh, env_fmt_hpa };
+    static const char *titles[ENV_SERIES] = {
+        "TEMP", "HUMIDITY", "PRESSURE", "AIR VOC", "CO2e",
+    };
+    static const uint16_t colours[ENV_SERIES] = {
+        PAL_A1, PAL_A0, PAL_A2, PAL_A4, PAL_A3,
+    };
+    static const envfmt_fn fmts[ENV_SERIES] = {
+        env_fmt_temp, env_fmt_rh, env_fmt_hpa, env_fmt_tvoc, env_fmt_co2,
+    };
 
     env_rebuild();
 
     /*
      * The title carries the reading now and the month's range, because the
      * axis belongs to the day chart and the strip along the bottom has none.
+     * The VOC page carries the chip's own air quality word instead of the
+     * month, which is the more useful of the two on that page: "good" says
+     * something a number of parts per billion does not.
      */
-    char value[48] = "--";
+    char value[72] = "--";
     env_sample_t latest;
     int16_t mlo, mhi;
     bool have_month = envchart_range(&s_env_month[which], &mlo, &mhi);
 
     if (s_env_ready && envstore_latest(&s_env, &latest)) {
-        int16_t raw[3] = { latest.temp_c100, (int16_t)latest.rh_c100,
-                           (int16_t)latest.hpa_x10 };
-        char now_s[12];
+        int16_t raw[ENV_SERIES] = {
+            latest.temp_c100, (int16_t)latest.rh_c100, (int16_t)latest.hpa_x10,
+            (int16_t)latest.tvoc_ppb, (int16_t)latest.eco2_ppm,
+        };
+        char now_s[16];
         env_format(which, raw[which], now_s, sizeof now_s);
-        if (have_month) {
-            char a[12], b[12];
+
+        if (which == ENV_VOC) {
+            /* And say when the chip does not yet stand behind it: a MOX
+               sensor's first hour is real data that does not mean what it
+               will mean, and a page that hides that is lying by omission. */
+            const char *note = ENV_GAS_VALIDITY(latest.flags) == 0
+                             ? ens160_aqi_name(latest.aqi) : "settling";
+            snprintf(value, sizeof value, "%s  %s", now_s, note);
+        } else if (have_month) {
+            char a[16], b[16];
             env_format(which, mlo, a, sizeof a);
             env_format(which, mhi, b, sizeof b);
             snprintf(value, sizeof value, "%s  30d %s-%s", now_s, a, b);
@@ -1393,8 +1569,6 @@ static void draw_room(canvas_t *c, int which)
         }
     }
 
-    /* Where the right-hand edge of the day chart sits on the clock, so the
-       hour marks are real times rather than "so many hours ago". */
     int end_minute = -1;
     if (s_env_now_ok) end_minute = (int)(s_env_now.minute % 1440u);
 
@@ -1468,10 +1642,25 @@ static bool clock_room_line(char *out, int size)
 {
 #if CONFIG_SCREEN_ENV_ONLY
     if (!s_env_now_ok) return false;
-    snprintf(out, size, "%.1fC  %.0f%%  %.1fhPa",
+
+    /*
+     * Only what was actually measured. The reading carries flags saying which
+     * sensors were fitted when it was taken, and a board with no barometer was
+     * printing "0.0hPa" -- a number that looks like a measurement, is not one,
+     * and is not even a plausible pressure.
+     *
+     * Where there is no barometer but there is a gas sensor, the third slot
+     * goes to the VOCs, which is what that board is for.
+     */
+    char tail[24] = "";
+    if (s_env_now.flags & ENV_HAVE_HPA)
+        snprintf(tail, sizeof tail, "  %.0fhPa", (double)s_env_now.hpa_x10 / 10.0);
+    else if (s_env_now.flags & ENV_HAVE_GAS)
+        snprintf(tail, sizeof tail, "  %uppb", (unsigned)s_env_now.tvoc_ppb);
+
+    snprintf(out, size, "%.1fC  %.0f%%%s",
              (double)s_env_now.temp_c100 / 100.0,
-             (double)s_env_now.rh_c100 / 100.0,
-             (double)s_env_now.hpa_x10 / 10.0);
+             (double)s_env_now.rh_c100 / 100.0, tail);
     return true;
 #else
     (void)out; (void)size;
@@ -1577,6 +1766,7 @@ static void draw_clock(canvas_t *c, int64_t now)
 }
 
 
+
 void app_main(void)
 {
     if (display_init() != ESP_OK) {
@@ -1643,10 +1833,23 @@ void app_main(void)
     available &= PAGE_BIT(PAGE_CLOCK)
                | PAGE_BIT(PAGE_ROOM_TEMP) | PAGE_BIT(PAGE_ROOM_RH)
                | PAGE_BIT(PAGE_ROOM_HPA)
+               | PAGE_BIT(PAGE_ROOM_VOC) | PAGE_BIT(PAGE_ROOM_CO2)
                | PAGE_BIT(PAGE_TREND) | PAGE_BIT(PAGE_WEEK);
+
+    /* A page per thing the board can actually measure. Offering a pressure
+       chart on a board with no barometer is offering an empty room. */
+    if (!bme280_present()) available &= ~PAGE_BIT(PAGE_ROOM_HPA);
+    if (!s_env_gas) available &= ~(PAGE_BIT(PAGE_ROOM_VOC) | PAGE_BIT(PAGE_ROOM_CO2));
+#ifdef CONFIG_SCREEN_BOARD_NICEMCU_28
+    /* Four pages, as asked: the clock and the three readings. The pair chart
+       and the week were wave's, and on a board paged by tapping halves every
+       extra page is another tap between you and the one you wanted. */
+    available &= ~(PAGE_BIT(PAGE_TREND) | PAGE_BIT(PAGE_WEEK));
+#endif
 #else
     available &= ~(PAGE_BIT(PAGE_ROOM_TEMP) | PAGE_BIT(PAGE_ROOM_RH)
-                 | PAGE_BIT(PAGE_ROOM_HPA) | PAGE_BIT(PAGE_TREND)
+                 | PAGE_BIT(PAGE_ROOM_HPA) | PAGE_BIT(PAGE_ROOM_VOC)
+                 | PAGE_BIT(PAGE_ROOM_CO2) | PAGE_BIT(PAGE_TREND)
                  | PAGE_BIT(PAGE_WEEK));
 #endif
     /* Both IMU pages need a sensor, which the page table cannot know about:
@@ -1733,6 +1936,14 @@ void app_main(void)
        without a clock. It says so in the log either way, so a module that
        is plugged in but silent is distinguishable from one that is absent. */
     bme280_init();
+#if CONFIG_SCREEN_ENV_ONLY
+    aht21_init();
+    ens160_init();
+    /* The third chart is TVOC where there is a gas sensor and pressure where
+       there is a barometer. A board with both would chart the gas, which is
+       the rarer and more interesting of the two. */
+    s_env_gas = ens160_present();
+#endif
 #if CONFIG_SCREEN_ENV_ONLY
     {
         static envflash_t flash;
@@ -2116,9 +2327,11 @@ void app_main(void)
         }
 
 #if CONFIG_SCREEN_ENV_ONLY
-        if (s_pages.current == PAGE_ROOM_TEMP) draw_room(c, 0);
-        if (s_pages.current == PAGE_ROOM_RH)   draw_room(c, 1);
-        if (s_pages.current == PAGE_ROOM_HPA)  draw_room(c, 2);
+        if (s_pages.current == PAGE_ROOM_TEMP) draw_room(c, ENV_TEMP);
+        if (s_pages.current == PAGE_ROOM_RH)   draw_room(c, ENV_RH);
+        if (s_pages.current == PAGE_ROOM_HPA)  draw_room(c, ENV_HPA);
+        if (s_pages.current == PAGE_ROOM_VOC)  draw_room(c, ENV_VOC);
+        if (s_pages.current == PAGE_ROOM_CO2)  draw_room(c, ENV_CO2);
         if (s_pages.current == PAGE_TREND)     draw_trend(c);
         if (s_pages.current == PAGE_WEEK)      draw_week(c, now);
 #endif

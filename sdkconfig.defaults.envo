@@ -20,7 +20,16 @@ CONFIG_ESP_CONSOLE_UART_DEFAULT=y
 # PSRAM chip not found". So the framebuffer comes from internal DMA memory,
 # and that is what sets the usable height of the panel -- see display_st7789.c.
 
-# Thirty-five per cent. A lit panel is the largest steady draw on these boards
-# and most of what makes them warm; wave sat at fifteen and this one is a
-# bigger panel in a brighter spot.
-CONFIG_SCREEN_BRIGHTNESS=35
+# Seventy per cent. Thirty-five was legible but the colours looked washed --
+# which they would: the brightest thing on the panel is already pure white, so
+# there is no headroom left in the colour and the only lever is the lamp.
+CONFIG_SCREEN_BRIGHTNESS=70
+
+# An environment logger: the clock and the room, and none of the pages that
+# were written for a display of Claude's usage.
+CONFIG_SCREEN_ENV_ONLY=y
+
+# Until the ENS160 + AHT21 are wired, invent three days of readings so the
+# charts can be judged. Every record is marked ENV_SYNTHETIC. Turn this off
+# and erase the log once the sensors are in.
+CONFIG_SCREEN_ENV_DEMO=y

@@ -452,7 +452,7 @@ int main(int argc, char **argv)
 
     /* The MENU tab: drawn in every title bar, hit over a fingertip's area --
        but only on a board that has a finger. */
-    vw_set_touch(true);
+    vw_set_menu_tab(true);
     views_year(&cv, &view, 1.0f, now);
     expect("menu tab drawn top left", count_colour(PAL_A1) > 500 && lit_in(0, 0, 72, 24) > 100);
     expect("tab hit at its centre", vw_menu_tab_hit(&cv, 36, 12));
@@ -467,13 +467,13 @@ int main(int argc, char **argv)
      * six columns of the first line vanish under it -- which is exactly what
      * happened on lilly, where "LILLY TEST ..." arrived reading "TEST ...".
      */
-    vw_set_touch(false);
+    vw_set_menu_tab(false);
     views_year(&cv, &view, 1.0f, now);
     expect("no menu tab without touch", cv.fb[2 * W + 2] == PAL_TITLE_BG);
     expect("nothing hits the tab without touch", !vw_menu_tab_hit(&cv, 36, 12));
     expect("the title reclaims those columns",
            lit_in(0, 0, VW_TAB_COLS * 12, 24) > 0);
-    vw_set_touch(true);
+    vw_set_menu_tab(true);
 
     /* The clock strip in the title bar: absent until set, then on every page. */
     {

@@ -108,6 +108,35 @@ config SCREEN_ENV_ONLY
 
         Needs a BME280 for the readings and an envlog partition to keep them.
 
+config SCREEN_ENV_DEMO
+    bool "Fill an empty log with invented readings"
+    default n
+    help
+        Writes a few days of plausible indoor weather into an empty log, so
+        the charts can be looked at before the sensors are wired.
+
+        Only ever into an EMPTY log, and only when no sensor answered: it will
+        not overwrite readings and it will not run beside real ones. Every
+        record it writes carries ENV_SYNTHETIC, so invented data cannot be
+        mistaken for measured data later, by a person or by a tool.
+
+        Turn it off and erase the log once the sensors are in.
+
+config SCREEN_VIVID_PALETTE
+    bool "Use the vivid accent colours rather than the colour-blind-safe set"
+    default y
+    help
+        The vivid set, chosen on the hardware: Okabe-Ito is a print palette
+        and print is not backlit, so on a lit panel its colours read as washed
+        out rather than as restrained.
+
+        Turning this off returns the Okabe-Ito accents, which stay apart under
+        the common forms of colour blindness. What is given up by leaving it on
+        is that at full saturation the orange and the vermillion sit closer
+        together for a deuteranope, and the charts use that pair to mean
+        different things -- though never colour alone: every bar on every chart
+        here carries a text label as well.
+
 config SCREEN_CLOCK_MS
     bool "Show thousandths on the clock"
     default n if SCREEN_ENV_ONLY

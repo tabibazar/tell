@@ -86,6 +86,10 @@ static env_sample_t made(uint32_t minute)
     s.temp_c100 = (int16_t)(2000 + (minute % 500));
     s.rh_c100 = (uint16_t)(4000 + (minute % 100));
     s.hpa_x10 = (uint16_t)(9800 + (minute % 50));
+    s.tvoc_ppb = (uint16_t)(minute % 1000);
+    s.eco2_ppm = (uint16_t)(400 + (minute % 600));
+    s.aqi = (uint8_t)(1 + (minute % 5));
+    s.flags = ENV_HAVE_TEMP | ENV_HAVE_RH | ENV_HAVE_HPA | ENV_HAVE_GAS;
     return s;
 }
 
@@ -115,16 +119,47 @@ int main(void)
 
     /* Round-tripping, exactly: this is a log read back a month later, so
        every field has to survive the encoding unchanged. */
-    env_sample_t one = { 12345, -1234, 8765, 9847 };
+    env_sample_t one = { 12345, -1234, 8765, 9847, 420, 650, 2,
+                         ENV_HAVE_TEMP | ENV_HAVE_RH | ENV_HAVE_HPA | ENV_HAVE_GAS };
     expect("one reading goes in", envstore_add(&s, &one));
     expect("and comes back", envstore_latest(&s, &got));
     expect("with every field intact",
            got.minute == one.minute && got.temp_c100 == one.temp_c100
-           && got.rh_c100 == one.rh_c100 && got.hpa_x10 == one.hpa_x10);
+           && got.rh_c100 == one.rh_c100 && got.hpa_x10 == one.hpa_x10
+           && got.tvoc_ppb == one.tvoc_ppb && got.eco2_ppm == one.eco2_ppm
+           && got.aqi == one.aqi && got.flags == one.flags);
+
+    /*
+     * A board that cannot measure something says so, rather than storing a
+     * zero that reads back as a real reading. The log outlives the board that
+     * wrote it, and "no barometer" and "1013 hPa" are different facts.
+     */
+    expect("what was measured is recorded as measured",
+           (got.flags & ENV_HAVE_GAS) && (got.flags & ENV_HAVE_HPA));
+    expect("and the gas validity survives with it",
+           ENV_GAS_VALIDITY(got.flags) == 0);
     expect("and is counted", envstore_count(&s) == 1);
 
+    /* A board with no barometer stores no pressure, and says so. */
+    {
+        /* Gas readings taken in the first hour from cold are marked as such:
+           validity 2 means "still settling", not "the air is like this". */
+        env_sample_t dry = { 12347, 2200, 5000, 0, 310, 700, 3,
+                             ENV_HAVE_TEMP | ENV_HAVE_RH | ENV_HAVE_GAS
+                             | ENV_GAS_FLAGS(2) };
+        envstore_add(&s, &dry);
+        envstore_latest(&s, &got);
+        expect("a missing sensor reads back as missing, not as zero",
+               !(got.flags & ENV_HAVE_HPA) && (got.flags & ENV_HAVE_GAS));
+        expect("and a settling gas reading keeps its validity",
+               ENV_GAS_VALIDITY(got.flags) == 2);
+        expect("without disturbing which sensors were present",
+               (got.flags & ENV_HAVE_TEMP) && (got.flags & ENV_HAVE_RH)
+               && !(got.flags & ENV_HAVE_HPA));
+    }
+
     /* Negative temperatures: this board could end up in a shed. */
-    env_sample_t cold = { 12346, -3000, 9000, 10200 };
+    env_sample_t cold = { 12346, -3000, 9000, 10200, 0, 0, 0, ENV_HAVE_TEMP };
     envstore_add(&s, &cold);
     expect("a freezing reading survives the round trip",
            envstore_latest(&s, &got) && got.temp_c100 == -3000);
@@ -240,7 +275,7 @@ int main(void)
     /* The erased-state timestamp cannot be stored: it is how an empty slot is
        recognised, so a reading claiming it would truncate the log. */
     {
-        env_sample_t bad = { ENVSTORE_NO_MINUTE, 0, 0, 0 };
+        env_sample_t bad = { ENVSTORE_NO_MINUTE, 0, 0, 0, 0, 0, 0, 0 };
         expect("a reading cannot claim the erased timestamp", !envstore_add(&s, &bad));
     }
 

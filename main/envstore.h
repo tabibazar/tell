@@ -49,14 +49,46 @@ typedef struct {
  * what two say exactly here, and "exactly" matters in a log that is compared
  * against itself a month later.
  */
+/*
+ * One reading, from whatever the board has. A field a board cannot measure is
+ * stored as zero and marked absent in `have`, so a log can be read back
+ * without knowing which sensors the board carried when it was written -- which
+ * matters, because the boards differ and the log outlives them.
+ */
+#define ENV_HAVE_TEMP  0x01
+#define ENV_HAVE_RH    0x02
+#define ENV_HAVE_HPA   0x04
+#define ENV_HAVE_GAS   0x08     /* tvoc, eco2 and aqi */
+
+/*
+ * Invented, not measured. Set on every reading a demo fill writes.
+ *
+ * A log outlives the board and the afternoon, and plausible fake weather is
+ * indistinguishable from real weather a month later -- so it is marked at the
+ * point of writing rather than remembered. tools/envlog.py says how many of
+ * these it found, and refuses to summarise a log as though they were real.
+ */
+#define ENV_SYNTHETIC  0x80
+
+/* The gas reading's worth, from the ENS160's own validity flag: 0 normal,
+   1 warming up, 2 first hour from cold, 3 invalid. Stored rather than
+   discarded, so an hour of settling readings can be recognised later instead
+   of being mistaken for an hour of bad air. */
+#define ENV_GAS_VALIDITY(flags)  (((flags) >> 4) & 0x03)
+#define ENV_GAS_FLAGS(validity)  (uint8_t)(((validity) & 0x03) << 4)
+
 typedef struct {
-    uint32_t minute;        /* minutes since 2000-01-01 00:00, local */
+    uint32_t minute;        /* minutes since 1970-01-01 00:00, local */
     int16_t  temp_c100;     /* 0.01 C */
     uint16_t rh_c100;       /* 0.01 %, 0..10000 */
     uint16_t hpa_x10;       /* 0.1 hPa */
+    uint16_t tvoc_ppb;      /* parts per billion */
+    uint16_t eco2_ppm;      /* parts per million, and derived -- see ens160.h */
+    uint8_t  aqi;           /* 1..5, the UBA index */
+    uint8_t  flags;         /* ENV_HAVE_* and the gas validity */
 } env_sample_t;
 
-#define ENVSTORE_RECORD   12          /* bytes on flash, serialised explicitly */
+#define ENVSTORE_RECORD   16          /* bytes on flash, serialised explicitly */
 #define ENVSTORE_HDR      8           /* magic and sequence, per sector */
 #define ENVSTORE_NO_MINUTE 0xFFFFFFFFu /* erased state: this slot is unwritten */
 

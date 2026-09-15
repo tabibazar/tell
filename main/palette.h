@@ -1,6 +1,12 @@
 #ifndef PALETTE_H
 #define PALETTE_H
 
+/* sdkconfig.h is not force-included, so without this the vivid test below is
+   silently false and every board gets the muted set. */
+#ifdef ESP_PLATFORM
+#include "sdkconfig.h"
+#endif
+
 /*
  * RGB565, from the Okabe-Ito qualitative palette, which is chosen to stay
  * distinguishable under deuteranopia, protanopia and tritanopia.
@@ -12,17 +18,43 @@
 
 #define PAL_BG       0x0000  /* black */
 #define PAL_FG       0xFFFF  /* white */
+#ifdef CONFIG_SCREEN_VIVID_PALETTE
+#define PAL_DIM      0xBDF7  /* a lighter grey: the muted one disappears here */
+#else
 #define PAL_DIM      0x9CD3  /* Okabe-Ito grey, for labels, axes, gridlines */
+#endif
 #define PAL_TITLE_BG 0x0396  /* blue */
 
-/* Accents, in the order they are handed out. Adjacent entries were picked to
-   stay far apart for the common forms of colour blindness. */
+/*
+ * Accents, in the order they are handed out. Adjacent entries were picked to
+ * stay far apart for the common forms of colour blindness.
+ *
+ * Okabe-Ito is a print palette, and print is not backlit: its colours are
+ * deliberately desaturated so they stay distinguishable, which on a big matte
+ * panel reads as restraint and on a small glossy one reads as washed out. Its
+ * sky blue is (86,190,233) -- a pale, milky blue.
+ *
+ * So a board may ask for the vivid set instead. Same hues in the same order,
+ * so nothing that relies on "A0 is the blue one" changes; saturation pushed to
+ * where the panel can show it. The cost is real and is why this is not the
+ * default: at full saturation the orange and the vermillion move closer
+ * together for a deuteranope, and the charts lean on that pair.
+ */
+#ifdef CONFIG_SCREEN_VIVID_PALETTE
+#define PAL_A0       0x055F  /* sky blue      (0,170,255) */
+#define PAL_A1       0xFC60  /* orange        (255,140,0) */
+#define PAL_A2       0x06D0  /* bluish green  (0,220,130) */
+#define PAL_A3       0xFA99  /* reddish purple(255,80,200) */
+#define PAL_A4       0xFF80  /* yellow        (255,240,0) */
+#define PAL_A5       0xF9E0  /* vermillion    (255,60,0) */
+#else
 #define PAL_A0       0x55BD  /* sky blue */
 #define PAL_A1       0xE4E0  /* orange */
 #define PAL_A2       0x04EE  /* bluish green */
 #define PAL_A3       0xCBD4  /* reddish purple */
 #define PAL_A4       0xF728  /* yellow */
 #define PAL_A5       0xD2E0  /* vermillion */
+#endif
 
 #define PAL_ACCENTS  6
 

@@ -2,7 +2,14 @@
 
 #include <string.h>
 
-#define MAGIC 0x31564E45u        /* "ENV1" little-endian */
+/*
+ * "ENV2". The generation is in the magic because the record grew from twelve
+ * bytes to sixteen when a board arrived that measures gases: a reader that
+ * assumed the old stride would walk off into the middle of records and report
+ * confident nonsense. An unrecognised magic is reformatted, which is the right
+ * answer -- the old readings cannot be understood by this code.
+ */
+#define MAGIC 0x32564E45u
 
 /* Serialised by hand rather than by memcpy of a struct: a struct's padding
    and byte order are the compiler's business, and this data has to be read
@@ -26,7 +33,10 @@ static void encode(uint8_t *p, const env_sample_t *s)
     put_u16(p + 4, (uint16_t)s->temp_c100);
     put_u16(p + 6, s->rh_c100);
     put_u16(p + 8, s->hpa_x10);
-    put_u16(p + 10, 0);                  /* reserved; kept zero so it can be used later */
+    put_u16(p + 10, s->tvoc_ppb);
+    put_u16(p + 12, s->eco2_ppm);
+    p[14] = s->aqi;
+    p[15] = s->flags;
 }
 
 static void decode(const uint8_t *p, env_sample_t *s)
@@ -35,6 +45,10 @@ static void decode(const uint8_t *p, env_sample_t *s)
     s->temp_c100 = (int16_t)get_u16(p + 4);
     s->rh_c100 = get_u16(p + 6);
     s->hpa_x10 = get_u16(p + 8);
+    s->tvoc_ppb = get_u16(p + 10);
+    s->eco2_ppm = get_u16(p + 12);
+    s->aqi = p[14];
+    s->flags = p[15];
 }
 
 static size_t sector_off(const envstore_t *s, int i)

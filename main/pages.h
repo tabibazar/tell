@@ -37,6 +37,8 @@ typedef enum {
     PAGE_ROOM_TEMP,  /* the three room readings, charted from the flash log */
     PAGE_ROOM_RH,
     PAGE_ROOM_HPA,
+    PAGE_ROOM_VOC,   /* volatile organics, with the air quality index */
+    PAGE_ROOM_CO2,   /* equivalent CO2 -- derived from the VOCs, not measured */
     PAGE_TREND,      /* temperature and humidity together, across the day */
     PAGE_WEEK,       /* each day's low and high; cycles the three readings */
     PAGE_SETTINGS,   /* touch-only; last, so it is out of the way */
