@@ -142,10 +142,9 @@ static canvas_t s_canvas;
 static void backlight_init(void);
 
 #if LCD_SWAP_COLOR_BYTES
-/* Declared here because display_init registers the callback and display_blit,
-   further down, is what waits on it. */
-static SemaphoreHandle_t s_band_done;
-static bool band_done(esp_lcd_panel_io_handle_t io,
+/* Declared here because display_init creates it and display_blit waits on it. */
+static SemaphoreHandle_t s_blit_done;
+static bool blit_done(esp_lcd_panel_io_handle_t io,
                       esp_lcd_panel_io_event_data_t *ev, void *ctx);
 #endif
 
@@ -191,8 +190,8 @@ esp_err_t display_init(void)
         (esp_lcd_spi_bus_handle_t)LCD_HOST, &io_cfg, &io_handle));
 
 #if LCD_SWAP_COLOR_BYTES
-    s_band_done = xSemaphoreCreateBinary();
-    const esp_lcd_panel_io_callbacks_t cbs = { .on_color_trans_done = band_done };
+    s_blit_done = xSemaphoreCreateBinary();
+    const esp_lcd_panel_io_callbacks_t cbs = { .on_color_trans_done = blit_done };
     ESP_ERROR_CHECK(esp_lcd_panel_io_register_event_callbacks(io_handle, &cbs, NULL));
 #endif
 
@@ -317,49 +316,45 @@ canvas_t *display_canvas(void) { return &s_canvas; }
 
 #if LCD_SWAP_COLOR_BYTES
 /*
- * Eight rows at a time, byte-swapped on the way out.
+ * This panel wants the two bytes of each pixel the other way round, and the
+ * SPI driver has no flag for it -- only the i80 one does.
  *
- * The i80 driver has a swap_color_bytes flag and the SPI one does not, so
- * this panel's byte order has to be dealt with here. Swapping the canvas in
- * place would work and would be wrong: the canvas is what every page draws
- * into and what the host tests reason about, and leaving it in the panel's
- * byte order would put the endianness of one board into code shared by four.
+ * So the framebuffer is swapped in place, sent, and swapped back. It is
+ * already DMA-capable memory, which a scratch buffer of my own was not: a
+ * static array lands in .bss, which on this chip can sit in D/IRAM, readable
+ * by the CPU and invisible to the SPI DMA. What reached the panel then was
+ * whatever the DMA engine did manage to fetch -- colours close but wrong, and
+ * debris under the glyphs. One transfer out of the buffer that was always
+ * going to work is simpler than a scratch band, and has no second buffer to
+ * get the addressing of wrong.
  *
- * So the swap happens between the canvas and the wire, into a scratch band.
- * Five kilobytes, and about a millisecond for a full screen -- on a page that
- * redraws once a second, which is what this board does.
+ * Two passes over 54,000 halfwords, well under a millisecond, on a page that
+ * redraws once a second. The wait between them is not optional: draw_bitmap
+ * only queues the transfer, so swapping back before it has gone would send
+ * the frame half returned to canvas order.
  */
-#define BLIT_ROWS 8
-static uint16_t s_swap[LCD_W * BLIT_ROWS];
+static void swap_in_place(void)
+{
+    uint16_t *p = s_fb;
+    for (size_t i = 0, n = (size_t)LCD_W * LCD_H; i < n; i++)
+        p[i] = (uint16_t)((p[i] >> 8) | (p[i] << 8));
+}
 
-/* esp_lcd hands the transfer to SPI and returns; this says when the wire is
-   actually free again. */
-static bool IRAM_ATTR band_done(esp_lcd_panel_io_handle_t io,
+static bool IRAM_ATTR blit_done(esp_lcd_panel_io_handle_t io,
                                 esp_lcd_panel_io_event_data_t *ev, void *ctx)
 {
     (void)io; (void)ev; (void)ctx;
     BaseType_t woken = pdFALSE;
-    xSemaphoreGiveFromISR(s_band_done, &woken);
+    xSemaphoreGiveFromISR(s_blit_done, &woken);
     return woken == pdTRUE;
 }
 
 void display_blit(void)
 {
-    for (int y = 0; y < LCD_H; y += BLIT_ROWS) {
-        int rows = LCD_H - y < BLIT_ROWS ? LCD_H - y : BLIT_ROWS;
-        const uint16_t *src = s_fb + (size_t)y * LCD_W;
-        for (int i = 0; i < rows * LCD_W; i++)
-            s_swap[i] = (uint16_t)((src[i] >> 8) | (src[i] << 8));
-        esp_lcd_panel_draw_bitmap(s_panel, 0, y, LCD_W, y + rows, s_swap);
-        /*
-         * And wait, because draw_bitmap only queues the transfer. Every band
-         * goes out of the same scratch buffer, so filling the next one while
-         * the last is still on the wire sends a band half overwritten by its
-         * successor -- which looks exactly like a panel that cannot keep up,
-         * and gets worse the faster the page redraws. It is not the panel.
-         */
-        xSemaphoreTake(s_band_done, pdMS_TO_TICKS(100));
-    }
+    swap_in_place();
+    esp_lcd_panel_draw_bitmap(s_panel, 0, 0, LCD_W, LCD_H, s_fb);
+    xSemaphoreTake(s_blit_done, pdMS_TO_TICKS(200));
+    swap_in_place();
 }
 #else
 void display_blit(void)
