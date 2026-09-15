@@ -32,7 +32,7 @@
 #define PIN_SCK       40
 #define PIN_MOSI      45
 #define LCD_W 320
-#define LCD_H 172
+#define LCD_H 168
 #define LCD_PCLK_HZ (80 * 1000 * 1000)
 /* Waveshare give Offset_X 34 for the panel stood upright. Turned landscape
    the two swap, so the 172 rows sit centred in the controller's 240:
@@ -43,6 +43,56 @@
 #define LCD_MIRROR_Y true
 /* No switched rail: the panel is powered whenever the board is. */
 #undef PIN_TFT_POWER
+
+#elif defined(CONFIG_SCREEN_BOARD_NICEMCU_28)
+/* NiceMCU-32S-DEV 2.8IPS, from the vendor's include/nicemcu/board_config.h. */
+#define PIN_TFT_CS    15
+#define PIN_TFT_DC    12
+#define PIN_TFT_RST    2
+#define PIN_TFT_BL    25
+#define PIN_SCK       14
+#define PIN_MOSI      13
+/*
+ * The panel is 240x320 and we drive it on its side, so landscape it is
+ * 320x240 -- 26 columns by 10 rows. We cannot have all of it.
+ *
+ * A full framebuffer there is 153,600 bytes and this board's largest
+ * contiguous DMA block is 110,592: no PSRAM, and the heap comes up in
+ * fragments. So the panel is letterboxed to 172 rows, which needs 110,080
+ * bytes -- which the allocator still refused, because the largest free block
+ * is not all allocatable once its own bookkeeping is taken out. 168 rows is
+ * 107,520 bytes and does fit, and 168 is still exactly seven rows of the
+ * 24-pixel font: the same 26x7 wave had, so every page written for her works
+ * here untouched. The 72 unused rows are split top and bottom by the gap.
+ */
+#define LCD_W 320
+#define LCD_H 168
+/*
+ * The vendor drives it at 24 MHz. A plain ESP32's SPI can go faster, but
+ * this is their number on their wiring and a full frame at 24 MHz is about
+ * 50 ms, which is fine for a page that changes once a second.
+ */
+#define LCD_PCLK_HZ (24 * 1000 * 1000)
+/* Centred in the 240 the controller drives: (240 - 168) / 2 = 36. */
+#define LCD_GAP_X 0
+#define LCD_GAP_Y 36
+#define LCD_MIRROR_X false
+#define LCD_MIRROR_Y false
+/* No switched rail. */
+#undef PIN_TFT_POWER
+
+/*
+ * GPIO12 is the data/command line here, and on a plain ESP32 GPIO12 is MTDI,
+ * which is read at every reset to choose the flash voltage: low for 3.3 V,
+ * high for 1.8 V. esptool confirms this board leaves it to the strapping pin
+ * rather than an eFuse. So a reset while DC is high would have the chip go
+ * looking for 1.8 V flash and fail to boot -- a board that appears dead with
+ * nothing wrong with it.
+ *
+ * esp_lcd leaves DC low between transfers, and the board has a pull-down for
+ * the moment of reset, which is why it starts at all. Worth knowing before
+ * anyone reassigns this pin or adds a pull-up to it.
+ */
 
 #else
 /* Adafruit Feather ESP32-S3 TFT, from the board's Arduino variant. */
@@ -143,7 +193,17 @@ esp_err_t display_init(void)
     s_fb = heap_caps_malloc(LCD_W * LCD_H * sizeof(uint16_t), MALLOC_CAP_DMA);
 #endif
     if (s_fb == NULL) {
-        ESP_LOGE(TAG, "no DMA memory for framebuffer");
+        ESP_LOGE(TAG, "no memory for a %u byte framebuffer", 
+                 (unsigned)(LCD_W * LCD_H * sizeof(uint16_t)));
+        ESP_LOGE(TAG, "  DMA           largest %u  free %u",
+                 (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_DMA),
+                 (unsigned)heap_caps_get_free_size(MALLOC_CAP_DMA));
+        ESP_LOGE(TAG, "  DMA + 8-bit   largest %u  free %u",
+                 (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_DMA | MALLOC_CAP_8BIT),
+                 (unsigned)heap_caps_get_free_size(MALLOC_CAP_DMA | MALLOC_CAP_8BIT));
+        ESP_LOGE(TAG, "  internal 8bit largest %u  free %u",
+                 (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
+                 (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
         return ESP_ERR_NO_MEM;
     }
     canvas_init(&s_canvas, s_fb, LCD_W, LCD_H, 1);

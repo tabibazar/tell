@@ -18,6 +18,14 @@ config SCREEN_BOARD_TDISPLAY_S3
 config SCREEN_BOARD_WAVESHARE_147B
     bool "Waveshare ESP32-S3-LCD-1.47B (ST7789 320x172, SPI, onboard IMU)"
 
+config SCREEN_BOARD_NICEMCU_28
+    bool "NiceMCU-32S-DEV 2.8IPS (ST7789 240x320, SPI, CST816D touch)"
+    help
+        The only board here that is a plain ESP32 rather than an S3, so it
+        has no native USB-Serial-JTAG and flashes through a UART bridge.
+        Turned landscape the panel is 320x240: lilly's width with three more
+        rows, so pages written for twenty-six columns port straight across.
+
 endchoice
 
 config SCREEN_DEVICE_NAME
@@ -25,6 +33,7 @@ config SCREEN_DEVICE_NAME
     default "big" if SCREEN_BOARD_CROWPANEL_7
     default "lilly" if SCREEN_BOARD_TDISPLAY_S3
     default "wave" if SCREEN_BOARD_WAVESHARE_147B
+    default "envo" if SCREEN_BOARD_NICEMCU_28
     default "small"
     help
         The name this board advertises. Give each board on your desk a
@@ -35,18 +44,21 @@ config SCREEN_I2C_SDA
     default 19 if SCREEN_BOARD_CROWPANEL_7
     default 18 if SCREEN_BOARD_TDISPLAY_S3
     default 48 if SCREEN_BOARD_WAVESHARE_147B
+    default 33 if SCREEN_BOARD_NICEMCU_28
     default 42
     help
         The CrowPanel wires its GT911 touch controller to GPIO19/20. The
         Feather's STEMMA QT port is GPIO42/41, from Adafruit's board variant.
         The T-Display-S3 brings its bus out on GPIO18/17. The Waveshare
-        1.47B wires its onboard QMI8658 to GPIO48/47.
+        1.47B wires its onboard QMI8658 to GPIO48/47. The NiceMCU brings its
+        CST816D out on GPIO33/32, and the gas sensor shares that bus.
 
 config SCREEN_I2C_SCL
     int "I2C SCL pin"
     default 20 if SCREEN_BOARD_CROWPANEL_7
     default 17 if SCREEN_BOARD_TDISPLAY_S3
     default 47 if SCREEN_BOARD_WAVESHARE_147B
+    default 32 if SCREEN_BOARD_NICEMCU_28
     default 41
 
 config SCREEN_BRIGHTNESS

@@ -1,0 +1,21 @@
+CONFIG_IDF_TARGET="esp32"
+CONFIG_SCREEN_BOARD_NICEMCU_28=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions-envo.csv"
+
+# 4 MB, so the base file's setting happens to be right -- stated anyway,
+# because the base file is written for the S3 boards and one of them is 16.
+CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
+
+# A plain ESP32 has no USB peripheral at all: the console is a real UART
+# through the board's bridge chip, not the S3's native USB-Serial-JTAG. The
+# base file turns that on, so it has to come off here.
+CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=n
+CONFIG_ESP_CONSOLE_UART_DEFAULT=y
+
+# The panel is 240x320x2 = 150 KB. Whether that fits internal memory beside
+# NimBLE is the question stage one exists to answer; PSRAM stays off until
+# the board says it has any.
+
+# No PSRAM. Asked on 2026-09-15 and the chip answered: "PSRAM ID read error,
+# PSRAM chip not found". So the framebuffer comes from internal DMA memory,
+# and that is what sets the usable height of the panel -- see display_st7789.c.

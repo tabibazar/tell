@@ -1,9 +1,23 @@
 #include "tempsense.h"
 
-#include "driver/temperature_sensor.h"
 #include "esp_log.h"
+#include "soc/soc_caps.h"
 
 static const char *TAG = "temp";
+
+/*
+ * Not every ESP32 has one. The S3 does; the original ESP32 does not -- it is
+ * a peripheral that arrived with the later parts, and its driver header will
+ * not even compile against the older target.
+ *
+ * So the whole driver stands down rather than the callers being littered with
+ * board tests. Everything downstream already copes with a sensor that will
+ * not answer, because a board can also simply fail to bring one up.
+ */
+#if SOC_TEMP_SENSOR_SUPPORTED
+
+#include "driver/temperature_sensor.h"
+
 static temperature_sensor_handle_t s_sensor;
 
 esp_err_t tempsense_init(void)
@@ -62,3 +76,19 @@ uint32_t tempsense_entropy(void)
     }
     return bits;
 }
+
+#else  /* no sensor on this silicon */
+
+esp_err_t tempsense_init(void)
+{
+    ESP_LOGI(TAG, "this chip has no temperature sensor; doing without");
+    return ESP_ERR_NOT_SUPPORTED;
+}
+
+bool tempsense_read(float *celsius) { (void)celsius; return false; }
+
+/* Zero rather than a guess: the caller mixes this with esp_random(), and a
+   fabricated value would be worse than none. */
+uint32_t tempsense_entropy(void) { return 0; }
+
+#endif

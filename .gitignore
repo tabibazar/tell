@@ -50,3 +50,5 @@ host_tests/test_drift
 host_tests/test_envstore
 host_tests/test_envpage
 host_tests/test_ens160
+build-envo/
+sdkconfig.envo
