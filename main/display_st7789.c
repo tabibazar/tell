@@ -18,6 +18,7 @@
 #include "esp_log.h"
 #include "sdkconfig.h"
 #include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
 #include "freertos/task.h"
 
 #include <string.h>
@@ -76,8 +77,24 @@
 /* Centred in the 240 the controller drives: (240 - 168) / 2 = 36. */
 #define LCD_GAP_X 0
 #define LCD_GAP_Y 36
+/* The controller drives more rows than we use, and they must be blanked or
+   the factory firmware's screen shows through the margins. */
+#define LCD_PANEL_FULL_H 240
 #define LCD_MIRROR_X false
-#define LCD_MIRROR_Y false
+#define LCD_MIRROR_Y true
+/*
+ * This panel wants the two bytes of each RGB565 pixel the other way round.
+ *
+ * Diagnosed from a test pattern rather than guessed, because the symptom
+ * names the cause exactly: red came out blue, green came out red and blue
+ * came out green, while white stayed white. A BGR panel would swap red and
+ * blue and leave green alone; only a byte swap moves all three round a cycle
+ * and leaves white -- which is symmetrical -- untouched.
+ *
+ * Monochrome text cannot reveal this, which is how the same fault survived
+ * on lilly until something coloured was drawn.
+ */
+#define LCD_SWAP_COLOR_BYTES 1
 /* No switched rail. */
 #undef PIN_TFT_POWER
 
@@ -113,6 +130,9 @@
 #define LCD_MIRROR_X true
 #define LCD_MIRROR_Y false
 #endif
+#ifndef LCD_SWAP_COLOR_BYTES
+#define LCD_SWAP_COLOR_BYTES 0
+#endif
 #define LCD_HOST SPI2_HOST
 static const char *TAG = "display";
 static esp_lcd_panel_handle_t s_panel;
@@ -120,6 +140,15 @@ static uint16_t *s_fb;
 static canvas_t s_canvas;
 
 static void backlight_init(void);
+
+#if LCD_SWAP_COLOR_BYTES
+/* Declared here because display_init registers the callback and display_blit,
+   further down, is what waits on it. */
+static SemaphoreHandle_t s_band_done;
+static bool band_done(esp_lcd_panel_io_handle_t io,
+                      esp_lcd_panel_io_event_data_t *ev, void *ctx);
+#endif
+
 
 esp_err_t display_init(void)
 {
@@ -161,6 +190,12 @@ esp_err_t display_init(void)
     ESP_ERROR_CHECK(esp_lcd_new_panel_io_spi(
         (esp_lcd_spi_bus_handle_t)LCD_HOST, &io_cfg, &io_handle));
 
+#if LCD_SWAP_COLOR_BYTES
+    s_band_done = xSemaphoreCreateBinary();
+    const esp_lcd_panel_io_callbacks_t cbs = { .on_color_trans_done = band_done };
+    ESP_ERROR_CHECK(esp_lcd_panel_io_register_event_callbacks(io_handle, &cbs, NULL));
+#endif
+
     esp_lcd_panel_dev_config_t panel_cfg = {
         .reset_gpio_num = PIN_TFT_RST,
         .rgb_ele_order = LCD_RGB_ELEMENT_ORDER_RGB,
@@ -174,6 +209,7 @@ esp_err_t display_init(void)
     ESP_ERROR_CHECK(esp_lcd_panel_swap_xy(s_panel, true));
     ESP_ERROR_CHECK(esp_lcd_panel_mirror(s_panel, LCD_MIRROR_X, LCD_MIRROR_Y));
     ESP_ERROR_CHECK(esp_lcd_panel_set_gap(s_panel, LCD_GAP_X, LCD_GAP_Y));
+
     ESP_ERROR_CHECK(esp_lcd_panel_disp_on_off(s_panel, true));
 
     /*
@@ -207,6 +243,30 @@ esp_err_t display_init(void)
         return ESP_ERR_NO_MEM;
     }
     canvas_init(&s_canvas, s_fb, LCD_W, LCD_H, 1);
+
+#ifdef LCD_PANEL_FULL_H
+    /*
+     * Blank the whole controller, not just the window we draw in.
+     *
+     * A letterboxed panel leaves rows we never write, and the controller's
+     * memory is not ours to assume: on this board it comes up holding the
+     * factory firmware's screen, which then sits in the margins above and
+     * below our pages looking like a fault in ours. Cleared once, with the
+     * gap off so the coordinates are the controller's own, then the gap goes
+     * back for everything after.
+     */
+    {
+        memset(s_fb, 0, (size_t)LCD_W * LCD_H * sizeof(uint16_t));
+        ESP_ERROR_CHECK(esp_lcd_panel_set_gap(s_panel, 0, 0));
+        /* Two passes, overlapping, because the buffer is shorter than the
+           panel: the top LCD_H rows and the bottom LCD_H rows. */
+        esp_lcd_panel_draw_bitmap(s_panel, 0, 0, LCD_W, LCD_H, s_fb);
+        esp_lcd_panel_draw_bitmap(s_panel, 0, LCD_PANEL_FULL_H - LCD_H,
+                                  LCD_W, LCD_PANEL_FULL_H, s_fb);
+        ESP_ERROR_CHECK(esp_lcd_panel_set_gap(s_panel, LCD_GAP_X, LCD_GAP_Y));
+    }
+#endif
+
 
     backlight_init();
     display_set_brightness(CONFIG_SCREEN_BRIGHTNESS);
@@ -255,10 +315,58 @@ void display_set_brightness(int percent)
 
 canvas_t *display_canvas(void) { return &s_canvas; }
 
+#if LCD_SWAP_COLOR_BYTES
+/*
+ * Eight rows at a time, byte-swapped on the way out.
+ *
+ * The i80 driver has a swap_color_bytes flag and the SPI one does not, so
+ * this panel's byte order has to be dealt with here. Swapping the canvas in
+ * place would work and would be wrong: the canvas is what every page draws
+ * into and what the host tests reason about, and leaving it in the panel's
+ * byte order would put the endianness of one board into code shared by four.
+ *
+ * So the swap happens between the canvas and the wire, into a scratch band.
+ * Five kilobytes, and about a millisecond for a full screen -- on a page that
+ * redraws once a second, which is what this board does.
+ */
+#define BLIT_ROWS 8
+static uint16_t s_swap[LCD_W * BLIT_ROWS];
+
+/* esp_lcd hands the transfer to SPI and returns; this says when the wire is
+   actually free again. */
+static bool IRAM_ATTR band_done(esp_lcd_panel_io_handle_t io,
+                                esp_lcd_panel_io_event_data_t *ev, void *ctx)
+{
+    (void)io; (void)ev; (void)ctx;
+    BaseType_t woken = pdFALSE;
+    xSemaphoreGiveFromISR(s_band_done, &woken);
+    return woken == pdTRUE;
+}
+
+void display_blit(void)
+{
+    for (int y = 0; y < LCD_H; y += BLIT_ROWS) {
+        int rows = LCD_H - y < BLIT_ROWS ? LCD_H - y : BLIT_ROWS;
+        const uint16_t *src = s_fb + (size_t)y * LCD_W;
+        for (int i = 0; i < rows * LCD_W; i++)
+            s_swap[i] = (uint16_t)((src[i] >> 8) | (src[i] << 8));
+        esp_lcd_panel_draw_bitmap(s_panel, 0, y, LCD_W, y + rows, s_swap);
+        /*
+         * And wait, because draw_bitmap only queues the transfer. Every band
+         * goes out of the same scratch buffer, so filling the next one while
+         * the last is still on the wire sends a band half overwritten by its
+         * successor -- which looks exactly like a panel that cannot keep up,
+         * and gets worse the faster the page redraws. It is not the panel.
+         */
+        xSemaphoreTake(s_band_done, pdMS_TO_TICKS(100));
+    }
+}
+#else
 void display_blit(void)
 {
     esp_lcd_panel_draw_bitmap(s_panel, 0, 0, LCD_W, LCD_H, s_fb);
 }
+#endif
 
 void display_show_text(const char *utf8)
 {

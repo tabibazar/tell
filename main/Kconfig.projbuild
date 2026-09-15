@@ -111,6 +111,7 @@ config SCREEN_ENV_ONLY
 config SCREEN_CLOCK_MS
     bool "Show thousandths on the clock"
     default n if SCREEN_ENV_ONLY
+    default n if SCREEN_BOARD_NICEMCU_28
     default y
     help
         Thousandths cost a redraw every frame instead of every second, which
