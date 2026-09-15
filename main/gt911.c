@@ -151,4 +151,6 @@ const char *gt911_debug(void)
 esp_err_t touch_init(void) { return gt911_init(); }
 bool touch_tapped(void) { return gt911_tapped(); }
 void touch_point(int *x, int *y) { gt911_point(x, y); }
+/* This controller already reports in the orientation the panel is used in. */
+void touch_raw(int *x, int *y) { gt911_point(x, y); }
 const char *touch_debug(void) { return gt911_debug(); }

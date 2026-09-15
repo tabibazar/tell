@@ -26,6 +26,10 @@
  * set, an unmasked high byte puts the touch several thousand pixels away.
  */
 
+/* The canvas this board draws on, as display_st7789.c letterboxes it. */
+#define CST816_CANVAS_W   320
+#define CST816_CANVAS_H   168
+
 #define CST816_ADDR       0x15
 #define CST816_REG_DATA   0x02
 #define CST816_REG_CHIPID 0xA7
@@ -38,6 +42,7 @@ static uint8_t s_chip_id;
 /* The press being tracked, and the tap waiting to be collected. */
 static bool s_down;
 static int s_last_x, s_last_y;
+static int s_raw_x, s_raw_y;
 static bool s_pending;
 static char s_debug[64];
 
@@ -82,28 +87,56 @@ esp_err_t touch_init(void)
 }
 
 /*
- * Controller coordinates to canvas coordinates.
+ * Controller coordinates to canvas coordinates, measured rather than derived.
  *
- * The glass is 240x320 upright. The panel is driven turned on its side and
- * mirrored top to bottom, and only 168 of the controller's 240 rows are ours
- * -- the rest is the letterbox margin. So a touch has to make the same three
- * journeys the pixels do, in reverse:
+ * The first attempt worked this out from the display's own transform -- turn,
+ * mirror, subtract the letterbox -- and was wrong, because the digitiser does
+ * not share the panel's coordinate space. Touching four known crosses gave:
  *
- *   turned:    the controller's long axis is the canvas's x
- *   mirrored:  the canvas's y runs the other way from the controller's x
- *   inset:     the margin above our rows has to come off
+ *   canvas  24, 24   controller   45, 312
+ *   canvas 296, 24   controller   47,   5
+ *   canvas  24,144   controller  212, 313
+ *   canvas 296,144   controller  210,  12
  *
- * Wrong signs here put taps in the wrong corner rather than nowhere, which is
- * why the raw and the mapped pair are both logged: the answer is settled by
- * touching a known corner and reading what came out, not by reasoning.
+ * Which says three things at once. Canvas x comes from the controller's y and
+ * runs backwards. Canvas y comes from the controller's x and runs forwards.
+ * And neither is one-to-one: the y axis is scaled by about 0.73, so the
+ * digitiser is reporting across a grid that is not the panel's -- common on
+ * these modules, where the touch layer is configured for whatever resolution
+ * the factory had to hand. No amount of reasoning about mirrors would have
+ * produced 0.73; only touching the glass does.
+ *
+ * Kept as the measured endpoints rather than as pre-divided constants, so the
+ * numbers in the code are the numbers that came off the board.
  */
-#define CST816_NATIVE_W 240     /* the glass, upright */
-#define CST816_GAP_Y    36      /* the letterbox margin, as display_st7789.c */
+#define RAW_Y_AT_LEFT    312     /* controller y where canvas x is 24 */
+#define RAW_Y_AT_RIGHT     8     /*               ...and where it is 296 */
+#define CANVAS_X_LEFT     24
+#define CANVAS_X_RIGHT   296
+
+#define RAW_X_AT_TOP      46     /* controller x where canvas y is 24 */
+#define RAW_X_AT_BOTTOM  211     /*               ...and where it is 144 */
+#define CANVAS_Y_TOP      24
+#define CANVAS_Y_BOTTOM  144
+
+static int clamp(int v, int lo, int hi)
+{
+    return v < lo ? lo : v > hi ? hi : v;
+}
 
 static void to_canvas(int raw_x, int raw_y, int *cx, int *cy)
 {
-    *cx = raw_y;
-    *cy = (CST816_NATIVE_W - 1 - raw_x) - CST816_GAP_Y;
+    int x = CANVAS_X_LEFT
+          + (RAW_Y_AT_LEFT - raw_y) * (CANVAS_X_RIGHT - CANVAS_X_LEFT)
+            / (RAW_Y_AT_LEFT - RAW_Y_AT_RIGHT);
+    int y = CANVAS_Y_TOP
+          + (raw_x - RAW_X_AT_TOP) * (CANVAS_Y_BOTTOM - CANVAS_Y_TOP)
+            / (RAW_X_AT_BOTTOM - RAW_X_AT_TOP);
+
+    /* A fingertip beyond the calibrated span still belongs to the nearest
+       edge; letting it run off makes a tap on the rim hit nothing. */
+    *cx = clamp(x, 0, CST816_CANVAS_W - 1);
+    *cy = clamp(y, 0, CST816_CANVAS_H - 1);
 }
 
 bool touch_tapped(void)
@@ -117,6 +150,7 @@ bool touch_tapped(void)
     if (down) {
         int raw_x = ((int)(d[1] & 0x0F) << 8) | d[2];
         int raw_y = ((int)(d[3] & 0x0F) << 8) | d[4];
+        s_raw_x = raw_x; s_raw_y = raw_y;
         to_canvas(raw_x, raw_y, &s_last_x, &s_last_y);
         snprintf(s_debug, sizeof s_debug, "raw %d,%d -> %d,%d",
                  raw_x, raw_y, s_last_x, s_last_y);
@@ -143,6 +177,12 @@ void touch_point(int *x, int *y)
 {
     if (x) *x = s_last_x;
     if (y) *y = s_last_y;
+}
+
+void touch_raw(int *x, int *y)
+{
+    if (x) *x = s_raw_x;
+    if (y) *y = s_raw_y;
 }
 
 const char *touch_debug(void) { return s_debug; }

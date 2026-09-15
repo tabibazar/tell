@@ -27,6 +27,10 @@ bool touch_tapped(void);
    after touch_tapped() returned true. */
 void touch_point(int *x, int *y);
 
+/* The controller's own coordinates, untransformed. Only for calibration:
+   everything else should use touch_point, which speaks canvas. */
+void touch_raw(int *x, int *y);
+
 /* A diagnostic one-liner, for showing on the panel when no cable is on. */
 const char *touch_debug(void);
 

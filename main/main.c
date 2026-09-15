@@ -130,6 +130,7 @@ static bool claude_busy(const ud_view_t *v, int64_t now)
 #define HAVE_TOUCH 0
 #endif
 
+
 /*
  * Anything that needs the IMU. Two boards have one: the Feather, where a
  * QMI8658 hangs off the STEMMA QT port, and wave, where the same chip is
@@ -1568,6 +1569,7 @@ static void draw_clock(canvas_t *c, int64_t now)
     s_drawn_second = (int)secs;
 }
 
+
 void app_main(void)
 {
     if (display_init() != ESP_OK) {
@@ -1599,6 +1601,15 @@ void app_main(void)
         if (pd->needs_touch && !touch) continue;
         available |= PAGE_BIT(i);
     }
+#ifdef CONFIG_SCREEN_BOARD_NICEMCU_28
+    /*
+     * Not a usage display. Every 26x7 panel is offered the small-panel pages,
+     * and those were written for lilly -- Claude's limits and all-time totals,
+     * pushed from the Mac. On a board bought to watch the air they are simply
+     * someone else's pages, which is exactly what they looked like.
+     */
+    available &= ~(PAGE_BIT(PAGE_LIMITS) | PAGE_BIT(PAGE_USAGE));
+#endif
 #if CONFIG_SCREEN_ENV_ONLY
     /* An environment logger, and nothing else: the clock and the three
        readings. Everything else is either compiled out or struck off here. */
