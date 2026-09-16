@@ -7,7 +7,7 @@ CONFIG_ESP_CONSOLE_UART_DEFAULT=n
 
 # Match the partition table already on flash; never written by us.
 CONFIG_PARTITION_TABLE_CUSTOM=y
-CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions-crowpanel.csv"
 CONFIG_PARTITION_TABLE_OFFSET=0x8000
 
 # NimBLE: peripheral only, one connection.

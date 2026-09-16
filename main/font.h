@@ -31,9 +31,6 @@
 #if defined(CONFIG_SCREEN_BOARD_CROWPANEL_7)
 #include "font_clock.h"          /* 96x160, for 800x480 */
 #define HAVE_CLOCK_FONT 1
-#elif defined(CONFIG_SCREEN_BOARD_NICEMCU_28)
-#include "font_clock_40x72.h"    /* 40x72: eight digits across 320 */
-#define HAVE_CLOCK_FONT 1
 #endif
 
 #endif /* FONT_SELECT_H */

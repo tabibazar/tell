@@ -3,7 +3,6 @@ build-crowpanel/
 build-crow/
 build-big/
 build-lilly/
-build-wave/
 build/
 dist/
 .cache/
@@ -38,9 +37,7 @@ sdkconfig.crow
 sdkconfig.big
 sdkconfig.crowpanel.old
 sdkconfig.lilly
-sdkconfig.wave
 sdkconfig.lilly.old
-sdkconfig.wave.old
 sdkconfig.old
 .claude/settings.local.json
 
@@ -50,5 +47,3 @@ host_tests/test_drift
 host_tests/test_envstore
 host_tests/test_envpage
 host_tests/test_ens160
-build-envo/
-sdkconfig.envo

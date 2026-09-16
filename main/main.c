@@ -127,19 +127,17 @@ static bool claude_busy(const ud_view_t *v, int64_t now)
  * same board until envo arrived, and the code said "CrowPanel" where it meant
  * "has touch".
  */
-#if defined(CONFIG_SCREEN_BOARD_CROWPANEL_7) \
- || defined(CONFIG_SCREEN_BOARD_NICEMCU_28)
+#if defined(CONFIG_SCREEN_BOARD_CROWPANEL_7)
 #define HAVE_TOUCH 1
 #else
 #define HAVE_TOUCH 0
 #endif
 
-/* Touch that pages by halves rather than through a menu. */
-#if defined(CONFIG_SCREEN_BOARD_NICEMCU_28)
-#define TOUCH_BY_HALVES 1
-#else
+/* Touch that pages by halves rather than through a menu. Nothing uses it now
+   that envo has gone, but it is two lines and the next touch board may want
+   it: the CrowPanel is the only one here with a finger, and it has the room
+   for a menu. */
 #define TOUCH_BY_HALVES 0
-#endif
 
 
 /*
@@ -153,13 +151,9 @@ static bool claude_busy(const ud_view_t *v, int64_t now)
  * need goes with them. CMakeLists drops the same files, so a reference left
  * behind here shows up as a link error rather than as dead code.
  */
-#if (defined(CONFIG_SCREEN_BOARD_FEATHER_S3_TFT) \
-  || defined(CONFIG_SCREEN_BOARD_WAVESHARE_147B)) \
-  && !defined(CONFIG_SCREEN_ENV_ONLY)
-#define HAVE_IMU 1
-#else
+/* No board here has one any more. The driver and the pages that used it stay
+   in the tree, excluded by CMakeLists, for whatever turns up next. */
 #define HAVE_IMU 0
-#endif
 
 /* What each board does with it. Both pour the grains; only the Feather also
    reads the sensor as an instrument. The axis mapping below is shared,
@@ -1812,21 +1806,6 @@ void app_main(void)
        be reached by paging past it. */
     available &= ~(PAGE_BIT(PAGE_MENU) | PAGE_BIT(PAGE_SETTINGS));
 #endif
-#ifdef CONFIG_SCREEN_BOARD_NICEMCU_28
-    /*
-     * Not a usage display, and not a message board either. Every 26x7 panel
-     * is offered the small-panel pages, and those were written for lilly --
-     * Claude's limits and all-time totals, pushed from the Mac, and a page
-     * for whatever the Mac last said. On a board bought to watch the air they
-     * are someone else's pages, which is exactly what they looked like.
-     *
-     * Which leaves the clock alone until the sensor is wired. That is
-     * honest: a board showing one page it means is better than five it does
-     * not.
-     */
-    available &= ~(PAGE_BIT(PAGE_LIMITS) | PAGE_BIT(PAGE_USAGE)
-                 | PAGE_BIT(PAGE_MESSAGE));
-#endif
 #if CONFIG_SCREEN_ENV_ONLY
     /* An environment logger, and nothing else: the clock and the three
        readings. Everything else is either compiled out or struck off here. */
@@ -1840,12 +1819,6 @@ void app_main(void)
        chart on a board with no barometer is offering an empty room. */
     if (!bme280_present()) available &= ~PAGE_BIT(PAGE_ROOM_HPA);
     if (!s_env_gas) available &= ~(PAGE_BIT(PAGE_ROOM_VOC) | PAGE_BIT(PAGE_ROOM_CO2));
-#ifdef CONFIG_SCREEN_BOARD_NICEMCU_28
-    /* Four pages, as asked: the clock and the three readings. The pair chart
-       and the week were wave's, and on a board paged by tapping halves every
-       extra page is another tap between you and the one you wanted. */
-    available &= ~(PAGE_BIT(PAGE_TREND) | PAGE_BIT(PAGE_WEEK));
-#endif
 #else
     available &= ~(PAGE_BIT(PAGE_ROOM_TEMP) | PAGE_BIT(PAGE_ROOM_RH)
                  | PAGE_BIT(PAGE_ROOM_HPA) | PAGE_BIT(PAGE_ROOM_VOC)

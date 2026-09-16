@@ -9,25 +9,15 @@
 # on. The spirit level is the Feather's alone; the buttons are lilly's. lilly
 # has no sensor of any kind, so she carries none of it and neither does the
 # CrowPanel.
+# Two boards, two panel buses. The IMU and the pages that need one went with
+# the boards that had one; the drivers stay in the tree for whatever turns up
+# next, excluded here rather than deleted.
 if(CONFIG_SCREEN_BOARD_CROWPANEL_7)
-    set(BOARD_EXCLUDES "display_st7789.c" "display_i80.c"
+    set(BOARD_EXCLUDES "display_i80.c"
                        "qmi8658.c" "level.c" "particles.c" "shaketimer.c")
-elseif(CONFIG_SCREEN_BOARD_TDISPLAY_S3)
-    set(BOARD_EXCLUDES "display_st7789.c" "display_rgb.c"
+else()
+    set(BOARD_EXCLUDES "display_rgb.c"
                        "qmi8658.c" "level.c" "particles.c" "shaketimer.c")
-elseif(CONFIG_SCREEN_BOARD_WAVESHARE_147B)
-    set(BOARD_EXCLUDES "display_rgb.c" "display_i80.c")
-else()
-    set(BOARD_EXCLUDES "display_rgb.c" "display_i80.c")
-endif()
-
-# One touch driver per board: a GT911 on the CrowPanel, a CST816D on envo,
-# and neither on a board with no touch at all -- but the files still have to
-# be kept apart, because both define the same touch_* interface.
-if(CONFIG_SCREEN_BOARD_NICEMCU_28)
-    list(APPEND BOARD_EXCLUDES "gt911.c")
-else()
-    list(APPEND BOARD_EXCLUDES "cst816.c")
 endif()
 
 # An environment logger has no use for the sensor toys, and dropping them
