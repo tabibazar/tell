@@ -34,7 +34,8 @@ typedef enum {
     PAGE_TEMPS,      /* die and crystal, charted over time */
     PAGE_RTC,        /* the clock chip, and how far the board has drifted */
     PAGE_LEVEL,      /* the Feather's spirit level; needs its IMU */
-    PAGE_BUBBLE,     /* envio: bubble-level game on the QMI8658 */
+    PAGE_BUBBLE,     /* envio's "Level" slot: the same spirit-level game,
+                        via draw_level(); bubblelevel.c is unused */
     PAGE_SYSTEM,     /* envio: battery, power, chip temp, uptime, clock state */
     PAGE_USAGE,      /* all-time totals, drawn for a small panel */
     PAGE_ROOM_TEMP,  /* the three room readings, charted from the flash log */

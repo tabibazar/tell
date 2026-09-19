@@ -6,7 +6,6 @@
 #include "touch.h"
 #include "level.h"
 #include "particles.h"
-#include "bubblelevel.h"
 #include "qmi8658.h"
 #include "esp_heap_caps.h"
 #include "esp_system.h"
@@ -182,13 +181,11 @@ static bool claude_busy(const ud_view_t *v, int64_t now)
    gravity and grains fall with it. */
 /* Both sensor boards read the level; it is the same instrument either way. A
    Pip board keeps its IMU for the face and does not offer the level or sand.
-   Nor does envio -- her CMakeLists drops level.c and particles.c, so those
-   pages must stay off even though she now has HAVE_IMU. */
-#if defined(CONFIG_SCREEN_BOARD_TOUCH_LCD_35B)
-#define HAVE_LEVEL 0
-#else
+   envio now does too, at her own touch page (PAGE_BUBBLE) rather than
+   PAGE_LEVEL -- the Feather's spirit-level game replaced the sand-free
+   bubblelevel.c there. She still has no sand: CMakeLists keeps
+   particles.c excluded for her. */
 #define HAVE_LEVEL (HAVE_IMU && !HAVE_PIP)
-#endif
 
 /*
  * One convention, everywhere: gravity_from gives the direction things fall.
@@ -754,35 +751,6 @@ static void draw_pip(canvas_t *c, int64_t now)
     display_blit();
 }
 #endif /* HAVE_PIP */
-
-#if HAVE_IMU
-/*
- * envio's bubble level: read the IMU, turn it into gravity the way the sand
- * and the level do, and hand it to bubble_update. The game itself never sees
- * a sensor (bubblelevel.c is host-tested), so this is the same shape as
- * draw_pip's IMU feed. Guarded by HAVE_IMU rather than a HAVE_BUBBLE of its
- * own because the two agree exactly: envio is the only board CMakeLists gives
- * both the QMI8658 and bubblelevel.c to.
- */
-static bubble_t s_bubble;
-
-static void draw_bubble(canvas_t *c, int64_t now)
-{
-    static bool inited;
-    static int64_t last_us;
-    if (!inited) { bubble_init(&s_bubble); inited = true; last_us = now; }
-    float dt = (float)(now - last_us) / 1000000.0f;
-    last_us = now;
-    if (dt > 0.1f) dt = 0.1f;   /* a long stall must not fling the bubble */
-
-    float gx = 0.0f, gy = 0.0f;
-    qmi8658_sample_t sample;
-    if (s_imu && qmi8658_read(&sample) == ESP_OK) gravity_from(&sample, &gx, &gy);
-    bubble_update(&s_bubble, gx, gy, dt);
-    bubble_draw(c, &s_bubble);
-    display_blit();
-}
-#endif /* HAVE_IMU */
 
 #if defined(CONFIG_SCREEN_BOARD_TOUCH_LCD_35B)
 /* System/status page: battery, power source, chip temp, free RAM, uptime and
@@ -2390,6 +2358,7 @@ void app_main(void)
         int64_t period_us = (int64_t)TICK_MS * 1000;
 #if HAVE_LEVEL
         if (s_imu && (s_pages.current == PAGE_LEVEL
+                   || s_pages.current == PAGE_BUBBLE
                    || s_pages.current == PAGE_PARTICLES))
             period_us = 33000;      /* 30 fps while the sensor drives it */
 #endif
@@ -2515,14 +2484,15 @@ void app_main(void)
                 s_pages.last_activity_us = now;
                 s_drawn_page = PAGE_COUNT;
                 ESP_LOGI(TAG, "tap at %d,%d -> setting %d = %d", tx, ty, row, choice);
-#if HAVE_IMU
+#if HAVE_LEVEL
             } else if (s_pages.current == PAGE_BUBBLE) {
                 /* A tap on the Level page restarts the current attempt
                    rather than paging away -- swipes still page, below. */
-                bubble_reset(&s_bubble);
+                s_hold_s = 0.0f;
+                s_armed = false;
                 s_pages.last_activity_us = now;
                 s_drawn_page = PAGE_COUNT;
-                ESP_LOGI(TAG, "tap at %d,%d -> bubble reset", tx, ty);
+                ESP_LOGI(TAG, "tap at %d,%d -> level reset", tx, ty);
 #endif
             } else if (tx < c->w / 2) {
                 /* The left half goes back, the right half forward. Buttons on
@@ -2643,7 +2613,8 @@ void app_main(void)
            on display, so the saver must not take them away underneath you --
            and tilting a board sends it nothing, which is exactly what looks
            like idling. Neither needs protecting from burn-in: both move. */
-        if (s_pages.current == PAGE_LEVEL || s_pages.current == PAGE_PARTICLES)
+        if (s_pages.current == PAGE_LEVEL || s_pages.current == PAGE_BUBBLE
+         || s_pages.current == PAGE_PARTICLES)
             s_pages.last_activity_us = now;
 #endif
 #if HAVE_PARTICLES
@@ -2779,7 +2750,12 @@ void app_main(void)
             display_blit();
         }
 #if HAVE_LEVEL
-        if (s_pages.current == PAGE_LEVEL && s_imu) draw_level(c);
+        /* The Feather's spirit-level game: PAGE_LEVEL on the boards with
+           buttons and no touch, PAGE_BUBBLE at envio's touch "Level" slot.
+           Same driver, same state -- a board only ever offers one of the
+           two pages, so they never contend for it. */
+        if ((s_pages.current == PAGE_LEVEL || s_pages.current == PAGE_BUBBLE)
+            && s_imu) draw_level(c);
 #endif
 #if HAVE_PARTICLES
         if (s_pages.current == PAGE_PARTICLES && s_imu) draw_particles(c, now);
@@ -2788,9 +2764,6 @@ void app_main(void)
 #endif
 #if HAVE_PIP
         if (s_pages.current == PAGE_PIP) draw_pip(c, now);
-#endif
-#if HAVE_IMU
-        if (s_pages.current == PAGE_BUBBLE && s_imu) draw_bubble(c, now);
 #endif
 #if defined(CONFIG_SCREEN_BOARD_TOUCH_LCD_35B)
         if (s_pages.current == PAGE_SYSTEM) draw_system(c);

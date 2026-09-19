@@ -26,12 +26,12 @@ if(CONFIG_SCREEN_BOARD_CROWPANEL_7)
                        "pip.c" "axs_touch.c" "sdcard.c")
 elseif(CONFIG_SCREEN_BOARD_TOUCH_LCD_35B)
     # An environment + weather display: her own QSPI panel and PMIC, the
-    # AXS15231B touch for swipes, and the soldered QMI8658 for the bubble
-    # level -- but not Pip, the sand or level.c (the Feather's own spirit
-    # level). The GT911 is the CrowPanel's touch, not hers. sdcard.c is hers
-    # alone too: she is the only board with a card slot.
+    # AXS15231B touch for swipes, and the soldered QMI8658 for the Level
+    # page -- now the Feather's own spirit-level game (level.c), not the
+    # sand or Pip. The GT911 is the CrowPanel's touch, not hers. sdcard.c is
+    # hers alone too: she is the only board with a card slot.
     set(BOARD_EXCLUDES "display_rgb.c" "display_i80.c"
-                       "level.c" "particles.c" "shaketimer.c"
+                       "particles.c" "shaketimer.c"
                        "pip.c" "gt911.c")
 else()
     set(BOARD_EXCLUDES "display_rgb.c" "display_axs15231b.c" "axp2101.c"
@@ -46,10 +46,10 @@ endif()
 # An environment logger has no use for the sensor toys, and dropping them
 # takes the IMU driver with them. See SCREEN_ENV_ONLY in Kconfig.projbuild.
 if(CONFIG_SCREEN_ENV_ONLY)
-    # envio is ENV_ONLY but keeps her soldered QMI8658 for the maze; the other
-    # sensor toys stay out.
+    # envio is ENV_ONLY but keeps her soldered QMI8658 for the Level page; the
+    # other sensor toys stay out.
     if(CONFIG_SCREEN_BOARD_TOUCH_LCD_35B)
-        list(APPEND BOARD_EXCLUDES "level.c" "particles.c" "shaketimer.c")
+        list(APPEND BOARD_EXCLUDES "particles.c" "shaketimer.c")
     else()
         list(APPEND BOARD_EXCLUDES "qmi8658.c" "level.c" "particles.c" "shaketimer.c")
     endif()
@@ -61,11 +61,10 @@ endif()
 # the maze in envio's page slot -- but no board compiles them now.
 list(APPEND BOARD_EXCLUDES "maze.c" "maze_levels.c")
 
-# bubblelevel.c wants the same panel + IMU pairing the maze used to: only
-# envio has both, so it is the only board that compiles it.
-if(NOT CONFIG_SCREEN_BOARD_TOUCH_LCD_35B)
-    list(APPEND BOARD_EXCLUDES "bubblelevel.c")
-endif()
+# bubblelevel.c was envio's own Level-page game; the Feather's spirit-level
+# game (level.c) replaced it there, so bubblelevel.c is kept in the tree,
+# unused, on every board.
+list(APPEND BOARD_EXCLUDES "bubblelevel.c")
 
 idf_component_register(
     SRC_DIRS "."
