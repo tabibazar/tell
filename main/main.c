@@ -6,6 +6,7 @@
 #include "touch.h"
 #include "level.h"
 #include "particles.h"
+#include "maze.h"
 #include "qmi8658.h"
 #include "esp_heap_caps.h"
 #include "esp_random.h"
@@ -152,12 +153,16 @@ static bool claude_busy(const ud_view_t *v, int64_t now)
  * need goes with them. CMakeLists drops the same files, so a reference left
  * behind here shows up as a link error rather than as dead code.
  */
-/* No board here uses its IMU any more. envio has a QMI8658 soldered on, but
-   she is an environment + weather display, not a games board -- the sensor she
-   reads is the gas sensor on her I2C bus, through the room pages, not the
-   accelerometer. The IMU driver and Pip stay in the tree, excluded by
-   CMakeLists, for whatever turns up next. */
+/* No other board here uses its IMU any more. envio has her QMI8658 back too,
+   but only for the maze -- the room-and-weather pages still read the gas
+   sensor on her I2C bus, not the accelerometer, and she is not a games board
+   for Pip, the sand or the level. The IMU driver and Pip stay in the tree,
+   excluded by CMakeLists on the boards that do not want them. */
+#if defined(CONFIG_SCREEN_BOARD_TOUCH_LCD_35B)
+#define HAVE_IMU 1
+#else
 #define HAVE_IMU 0
+#endif
 #define HAVE_PIP 0
 
 /* What each board does with it. Both pour the grains; only the Feather also
@@ -166,8 +171,14 @@ static bool claude_busy(const ud_view_t *v, int64_t now)
    why the sand has to negate one component of it: a bubble floats against
    gravity and grains fall with it. */
 /* Both sensor boards read the level; it is the same instrument either way. A
-   Pip board keeps its IMU for the face and does not offer the level or sand. */
+   Pip board keeps its IMU for the face and does not offer the level or sand.
+   Nor does envio -- her CMakeLists drops level.c and particles.c, so those
+   pages must stay off even though she now has HAVE_IMU. */
+#if defined(CONFIG_SCREEN_BOARD_TOUCH_LCD_35B)
+#define HAVE_LEVEL 0
+#else
 #define HAVE_LEVEL (HAVE_IMU && !HAVE_PIP)
+#endif
 
 /*
  * One convention, everywhere: gravity_from gives the direction things fall.
@@ -183,8 +194,13 @@ static bool claude_busy(const ud_view_t *v, int64_t now)
  * convention a board is calibrated once, with "!flip", and both pages agree.
  */
 /* The grains pour on either board that has the sensor -- but not on a Pip
-   board, whose IMU is Pip's. */
+   board, whose IMU is Pip's, and not on envio, whose CMakeLists drops
+   particles.c along with level.c. */
+#if defined(CONFIG_SCREEN_BOARD_TOUCH_LCD_35B)
+#define HAVE_PARTICLES 0
+#else
 #define HAVE_PARTICLES (HAVE_IMU && !HAVE_PIP)
+#endif
 
 #if HAVE_IMU
 static bool s_imu;
@@ -728,6 +744,35 @@ static void draw_pip(canvas_t *c, int64_t now)
     display_blit();
 }
 #endif /* HAVE_PIP */
+
+#if HAVE_IMU
+/*
+ * envio's maze: read the IMU, turn it into gravity the way the sand and the
+ * level do, and hand it to maze_update. The maze itself never sees a sensor
+ * (maze.c is host-tested), so this is the same shape as draw_pip's IMU feed.
+ * Guarded by HAVE_IMU rather than a HAVE_MAZE of its own because the two
+ * agree exactly: envio is the only board CMakeLists gives both the QMI8658
+ * and maze.c to.
+ */
+static maze_t s_maze;
+
+static void draw_maze(canvas_t *c, int64_t now)
+{
+    static bool inited;
+    static int64_t last_us;
+    if (!inited) { maze_init(&s_maze); inited = true; last_us = now; }
+    float dt = (float)(now - last_us) / 1000000.0f;
+    last_us = now;
+    if (dt > 0.1f) dt = 0.1f;   /* a long stall must not fling the ball */
+
+    float gx = 0.0f, gy = 0.0f;
+    qmi8658_sample_t sample;
+    if (s_imu && qmi8658_read(&sample) == ESP_OK) gravity_from(&sample, &gx, &gy);
+    maze_update(&s_maze, gx, gy, dt);
+    maze_draw(c, &s_maze);
+    display_blit();
+}
+#endif /* HAVE_IMU */
 
 /* Charts grow into place when a page appears; 0 means no animation running. */
 #define ANIM_US (600 * 1000LL)
@@ -1976,6 +2021,13 @@ void app_main(void)
     available &= ~(PAGE_BIT(PAGE_PARTICLES) | PAGE_BIT(PAGE_TIMER)
                  | PAGE_BIT(PAGE_STOPWATCH));
 #endif
+    /* envio's maze needs the sensor too, and is added after the ENV_ONLY
+       mask above and the imu_pages strip so it is not immediately cleared
+       by either -- it is not one of the "both IMU pages" above and does
+       not want to be struck off with them. */
+#if HAVE_IMU
+    if (s_imu) available |= PAGE_BIT(PAGE_MAZE);
+#endif
 #if HAVE_PIP
     /* envio is Pip's board: the face is home, with the clock and BLE messages
        still reachable behind it. The data pages want a panel she does not have,
@@ -2245,6 +2297,15 @@ void app_main(void)
                 s_pages.last_activity_us = now;
                 s_drawn_page = PAGE_COUNT;
                 ESP_LOGI(TAG, "tap at %d,%d -> setting %d = %d", tx, ty, row, choice);
+#if HAVE_IMU
+            } else if (s_pages.current == PAGE_MAZE) {
+                /* A tap on the Maze page restarts the level rather than
+                   paging away -- swipes still page, below. */
+                maze_restart_level(&s_maze);
+                s_pages.last_activity_us = now;
+                s_drawn_page = PAGE_COUNT;
+                ESP_LOGI(TAG, "tap at %d,%d -> maze restart", tx, ty);
+#endif
             } else if (tx < c->w / 2) {
                 /* The left half goes back, the right half forward. Buttons on
                    the settings page were tested first, so they still win. */
@@ -2509,6 +2570,9 @@ void app_main(void)
 #endif
 #if HAVE_PIP
         if (s_pages.current == PAGE_PIP) draw_pip(c, now);
+#endif
+#if HAVE_IMU
+        if (s_pages.current == PAGE_MAZE && s_imu) draw_maze(c, now);
 #endif
         /* Pages with ages on them redraw on their own so the ages keep counting. */
         if (pd->refresh_us > 0 && now - s_page_drawn_us > pd->refresh_us)
