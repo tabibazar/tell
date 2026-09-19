@@ -1,5 +1,7 @@
 #include "maze.h"
 #include "maze_levels.h"
+#include "canvas.h"
+#include "palette.h"
 #include <stdio.h>
 static int failures;
 static void expect(const char *what, int cond) {
@@ -57,6 +59,20 @@ static void test_levels(void) {
         expect("border is walled",   l->wall[0][0] == 1 && l->wall[MAZE_ROWS-1][MAZE_COLS-1] == 1);
     }
 }
+static void test_draw(void) {
+    static uint16_t fb[320*480];
+    canvas_t c; canvas_init(&c, fb, 320, 480, 1);
+    maze_t m; maze_init(&m);
+    maze_draw(&c, &m);
+    /* border cell (0,0) is wall -> blue somewhere in its 32x32 block */
+    int found_wall = 0;
+    for (int y = 0; y < MAZE_CELL; y++)
+        for (int x = 0; x < MAZE_CELL; x++)
+            if (fb[y*320+x] == PAL_A0) found_wall = 1;
+    expect("walls drawn in blue", found_wall);
+    /* ball centre pixel is amber */
+    expect("ball drawn in amber", fb[(int)m.by*320 + (int)m.bx] == PAL_A1);
+}
 int main(void) {
     test_gravity();
     test_wall_stops();
@@ -64,6 +80,7 @@ int main(void) {
     test_goal_advances();
     test_win_on_last();
     test_levels();
+    test_draw();
     printf("%s\n", failures ? "FAILURES" : "all pass");
     return failures ? 1 : 0;
 }

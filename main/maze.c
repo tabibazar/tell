@@ -1,5 +1,6 @@
 #include "maze.h"
 #include "palette.h"
+#include <stdio.h>
 
 #define MAZE_ACCEL 900.0f    /* px/s^2 at full tilt; brisk but controllable */
 #define MAZE_FRICTION 3.0f   /* per second; keeps the ball from sliding forever */
@@ -56,4 +57,20 @@ void maze_update(maze_t *m, float gx, float gy, float dt) {
     }
 }
 
-void maze_draw(canvas_t *c, const maze_t *m) { (void)c; (void)m; }  /* A3 */
+void maze_draw(canvas_t *c, const maze_t *m) {
+    canvas_clear(c);
+    const maze_level_t *l = &maze_levels[m->level];
+    for (int r = 0; r < MAZE_ROWS; r++)
+        for (int col = 0; col < MAZE_COLS; col++)
+            if (l->wall[r][col])
+                canvas_fill_rect(c, col*MAZE_CELL, r*MAZE_CELL, MAZE_CELL, MAZE_CELL, PAL_A0);
+    /* goal marker: an amber ring cell so it reads before you reach it */
+    canvas_fill_rect(c, l->goal_c*MAZE_CELL+8, l->goal_r*MAZE_CELL+8,
+                     MAZE_CELL-16, MAZE_CELL-16, PAL_A1);
+    canvas_disc(c, (int)m->bx, (int)m->by, MAZE_BALL_R, PAL_A1);
+
+    char line[32];
+    if (m->won) snprintf(line, sizeof line, "WON %.1fs", (double)m->time_s);
+    else        snprintf(line, sizeof line, "L%d  %.1fs", m->level + 1, (double)m->time_s);
+    canvas_puts_px(c, 6, 2, line, PAL_FG);
+}
