@@ -205,6 +205,17 @@ esp_err_t display_init(void)
     esp_lcd_panel_io_spi_config_t io_cfg =
         AXS15231B_PANEL_IO_QSPI_CONFIG(PIN_LCD_CS, NULL, NULL);
     io_cfg.pclk_hz = LCD_PCLK_HZ;
+    /*
+     * The framebuffer is in PSRAM, so each queued transfer needs an internal
+     * DMA bounce buffer. The component's default queue depth is 10, and ten
+     * bounces of a 24-row band (~15 KB each) is ~150 KB of internal RAM at
+     * once -- more than is free beside NimBLE, so the later chunks fail
+     * silently and the bottom of the frame is never written ("bottom half
+     * blank"). A shallow queue keeps only a few bounces in flight and lets
+     * them recycle, so the whole frame gets through. A near-static dashboard
+     * does not need the pipelining.
+     */
+    io_cfg.trans_queue_depth = 3;
     ESP_ERROR_CHECK(esp_lcd_new_panel_io_spi(
         (esp_lcd_spi_bus_handle_t)LCD_HOST, &io_cfg, &io_handle));
 
