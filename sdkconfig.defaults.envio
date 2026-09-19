@@ -36,3 +36,10 @@ CONFIG_SCREEN_ROTATE_SECS=0
 # legacy driver/i2c backend would abort at boot against our i2c_master bus.
 # NEW is the component default but pinned here so a stale cache cannot revert it.
 CONFIG_SCCB_HARDWARE_I2C_DRIVER_NEW=y
+
+# Long filenames for FATFS. The default is 8.3 short names only, which the
+# spike's "spike.jpg" satisfied by luck but sd_photo_name's
+# "IMG_20260919_120000.jpg" does not -- fopen would fail on every real photo.
+# Heap-allocated LFN buffers, not stack, to avoid growing every FATFS call's
+# stack frame.
+CONFIG_FATFS_LFN_HEAP=y
