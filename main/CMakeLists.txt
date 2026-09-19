@@ -23,20 +23,21 @@
 if(CONFIG_SCREEN_BOARD_CROWPANEL_7)
     set(BOARD_EXCLUDES "display_i80.c" "display_axs15231b.c" "axp2101.c"
                        "qmi8658.c" "level.c" "particles.c" "shaketimer.c"
-                       "pip.c" "axs_touch.c" "sdcard.c")
+                       "pip.c" "axs_touch.c" "sdcard.c" "camera.c")
 elseif(CONFIG_SCREEN_BOARD_TOUCH_LCD_35B)
     # An environment + weather display: her own QSPI panel and PMIC, the
     # AXS15231B touch for swipes, and the soldered QMI8658 for the Level
     # page -- now the Feather's own spirit-level game (level.c), not the
     # sand or Pip. The GT911 is the CrowPanel's touch, not hers. sdcard.c is
-    # hers alone too: she is the only board with a card slot.
+    # hers alone too: she is the only board with a card slot. camera.c is
+    # hers too: the OV5640 rides her DVP header, which no other board has.
     set(BOARD_EXCLUDES "display_rgb.c" "display_i80.c"
                        "particles.c" "shaketimer.c"
                        "pip.c" "gt911.c")
 else()
     set(BOARD_EXCLUDES "display_rgb.c" "display_axs15231b.c" "axp2101.c"
                        "qmi8658.c" "level.c" "particles.c" "shaketimer.c"
-                       "pip.c" "axs_touch.c" "sdcard.c")
+                       "pip.c" "axs_touch.c" "sdcard.c" "camera.c")
 endif()
 
 # One touch driver per board -- both define the same touch_* interface, so

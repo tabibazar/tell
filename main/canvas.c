@@ -262,3 +262,26 @@ void canvas_disc(canvas_t *c, int cx, int cy, int r, uint16_t colour)
         canvas_fill_rect(c, cx - span, cy + dy, 2 * span + 1, 1, colour);
     }
 }
+
+void canvas_blit(canvas_t *c, const uint16_t *src, int sw, int sh, int dx, int dy)
+{
+    if (src == NULL || sw <= 0 || sh <= 0) return;
+
+    /* Clip the source rectangle to the panel, then copy row by row. */
+    int sx0 = 0, sy0 = 0;
+    int x0 = dx, y0 = dy;
+    if (x0 < 0) { sx0 = -x0; x0 = 0; }
+    if (y0 < 0) { sy0 = -y0; y0 = 0; }
+
+    int x1 = dx + sw > c->w ? c->w : dx + sw;
+    int y1 = dy + sh > c->h ? c->h : dy + sh;
+    if (x0 >= x1 || y0 >= y1) return;
+
+    int row_pixels = x1 - x0;
+    for (int y = y0; y < y1; y++) {
+        int sy = sy0 + (y - y0);
+        const uint16_t *srow = src + (size_t)sy * sw + sx0;
+        uint16_t *drow = c->fb + (size_t)y * c->w + x0;
+        for (int x = 0; x < row_pixels; x++) drow[x] = srow[x];
+    }
+}

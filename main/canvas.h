@@ -61,4 +61,8 @@ void canvas_puts(canvas_t *c, int col, int row, const char *s, uint16_t colour);
    with something drawn off the text grid. */
 void canvas_puts_px(canvas_t *c, int x, int y, const char *s, uint16_t colour);
 
+/* Copies an sw x sh RGB565 image to (dx,dy), clipped to the panel. For the
+   camera viewfinder. */
+void canvas_blit(canvas_t *c, const uint16_t *src, int sw, int sh, int dx, int dy);
+
 #endif /* CANVAS_H */

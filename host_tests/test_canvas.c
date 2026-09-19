@@ -142,6 +142,28 @@ int main(void)
         expect("the disc is widest across its middle", widest > at_edge);
     }
 
+    /* canvas_blit: a small image lands exactly at its offset, clipped, and
+       leaves everything else untouched. */
+    {
+        canvas_t g;
+        static uint16_t big2_fb[320 * 480];
+        canvas_init(&g, big2_fb, 320, 480, 1);
+        canvas_clear(&g);
+
+        static const uint16_t img2x2[4] = { 0x1111, 0x2222, 0x3333, 0x4444 };
+        canvas_blit(&g, img2x2, 2, 2, 10, 10);
+
+        expect("blit top-left pixel matches", g.fb[10 * 320 + 10] == 0x1111);
+        expect("blit top-right pixel matches", g.fb[10 * 320 + 11] == 0x2222);
+        expect("blit bottom-left pixel matches", g.fb[11 * 320 + 10] == 0x3333);
+        expect("blit bottom-right pixel matches", g.fb[11 * 320 + 11] == 0x4444);
+        expect("a pixel outside the blit is untouched",
+               g.fb[9 * 320 + 9] == CANVAS_BG);
+        expect("blit painted exactly four pixels", lit_colour(&g, 0x1111) +
+               lit_colour(&g, 0x2222) + lit_colour(&g, 0x3333) +
+               lit_colour(&g, 0x4444) == 4);
+    }
+
     if (failures == 0) { printf("all tests passed\n"); return 0; }
     printf("%d test(s) failed\n", failures);
     return 1;

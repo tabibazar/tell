@@ -185,4 +185,15 @@ config SCREEN_I2C_AUX_SCL
     int "Second I2C SCL pin, or -1 for none"
     default -1
 
+config SCREEN_HAVE_CAMERA
+    bool "Board carries an OV5640 on a DVP header"
+    default y if SCREEN_BOARD_TOUCH_LCD_35B
+    default n
+    help
+        Only envio (Touch-LCD-3.5B) has the 24-pin DVP header the OV5640
+        rides on, so this is the only board that pulls in camera.c and the
+        esp32-camera component. Guards camera.c's body and its header
+        include so a board without the header never pulls in esp_camera.h
+        or its symbols.
+
 endmenu
