@@ -34,6 +34,7 @@ const page_def_t page_defs[PAGE_COUNT] = {
     [PAGE_TEMPS]    = { "Temps",         0,                             NULL,           false, SEC(2),   PG_BOTH,  false, true  },
     [PAGE_RTC]      = { "RTC",           0,                             NULL,           false, SEC(1),   PG_BOTH,  false, false },
     [PAGE_LEVEL]    = { "Level",         0,                             NULL,           false, 0,        PG_BOTH,  false, false },
+    [PAGE_MAZE]     = { "Maze",          0,                             NULL,           false, 0,        PG_BOTH,  false, false },
     /* Small panels only: 26x7 of the figures worth glancing at, where the
        big panel has a page each for models, cost and the year. */
     [PAGE_USAGE]    = { "Usage",         UD_FEED(UD_STATS) | UD_FEED(UD_COST)

@@ -26,10 +26,11 @@ if(CONFIG_SCREEN_BOARD_CROWPANEL_7)
                        "pip.c" "axs_touch.c")
 elseif(CONFIG_SCREEN_BOARD_TOUCH_LCD_35B)
     # An environment + weather display: her own QSPI panel and PMIC, the
-    # AXS15231B touch for swipes, and none of the IMU games (Pip, the maze) she
-    # briefly carried. The GT911 is the CrowPanel's touch, not hers.
+    # AXS15231B touch for swipes, and the soldered QMI8658 for the maze --
+    # but not Pip, the sand or the level. The GT911 is the CrowPanel's touch,
+    # not hers.
     set(BOARD_EXCLUDES "display_rgb.c" "display_i80.c"
-                       "qmi8658.c" "level.c" "particles.c" "shaketimer.c"
+                       "level.c" "particles.c" "shaketimer.c"
                        "pip.c" "gt911.c")
 else()
     set(BOARD_EXCLUDES "display_rgb.c" "display_axs15231b.c" "axp2101.c"
@@ -44,9 +45,21 @@ endif()
 # An environment logger has no use for the sensor toys, and dropping them
 # takes the IMU driver with them. See SCREEN_ENV_ONLY in Kconfig.projbuild.
 if(CONFIG_SCREEN_ENV_ONLY)
-    list(APPEND BOARD_EXCLUDES "qmi8658.c" "level.c" "particles.c" "shaketimer.c")
+    # envio is ENV_ONLY but keeps her soldered QMI8658 for the maze; the other
+    # sensor toys stay out.
+    if(CONFIG_SCREEN_BOARD_TOUCH_LCD_35B)
+        list(APPEND BOARD_EXCLUDES "level.c" "particles.c" "shaketimer.c")
+    else()
+        list(APPEND BOARD_EXCLUDES "qmi8658.c" "level.c" "particles.c" "shaketimer.c")
+    endif()
 else()
     list(APPEND BOARD_EXCLUDES "envstore.c" "envpage.c" "envflash.c")
+endif()
+
+# maze.c/maze_levels.c are new; only envio has the panel + IMU pairing the
+# maze wants, so every other board excludes them.
+if(NOT CONFIG_SCREEN_BOARD_TOUCH_LCD_35B)
+    list(APPEND BOARD_EXCLUDES "maze.c" "maze_levels.c")
 endif()
 
 idf_component_register(
