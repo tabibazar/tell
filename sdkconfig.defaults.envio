@@ -22,7 +22,8 @@ CONFIG_SPIRAM_MODE_OCT=y
 # arrives on the clock page from the Mac; the forecast page is added on top.
 CONFIG_SCREEN_ENV_ONLY=y
 
-# Glance-able: the readings cycle on their own every 20 seconds rather than
-# waiting for a button, since envio has no wired navigation yet. Explicit
-# because the cached sdkconfig keeps a stale value otherwise.
+# No auto-cycling: envio stays on whatever page you leave it, and swipe or tap
+# navigates (she has touch). 0 disables the timed rotation; the idle saver only
+# drifts the clock. Explicit because the cached sdkconfig keeps a stale value
+# otherwise.
 CONFIG_SCREEN_ROTATE_SECS=0
