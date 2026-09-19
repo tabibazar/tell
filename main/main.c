@@ -25,6 +25,7 @@
 #endif
 #if defined(CONFIG_SCREEN_BOARD_TOUCH_LCD_35B)
 #include "axp2101.h"
+#include "levelbig.h"
 /* SPIKE (task B1, throwaway): camera + SD bring-up. Remove with camera_spike(). */
 #include "esp_camera.h"
 #include "esp_vfs_fat.h"
@@ -414,10 +415,28 @@ static void zero_command(const char *text)
     zero_save();
 }
 
-static void draw_level(canvas_t *c)
+/*
+ * The whole game, shared by every board that has it: reads the sensor,
+ * filters it, works out how far off level the panel is, and runs the
+ * arm/hold/score clock against that. Returns false (and touches nothing)
+ * when the sensor did not answer this frame, exactly as draw_level used to
+ * bail before ever reaching level_draw.
+ *
+ * `*tx_out`/`*ty_out` come back ABSOLUTE -- never adjusted for "!zero". The
+ * scoring itself still honours a zero, on whichever board can set one (see
+ * below): a board zeroed by hand should still have to hold *that* level to
+ * keep the clock running, exactly as before this was factored out of
+ * draw_level. A caller that wants the zeroed reading for its own display
+ * applies the same subtraction itself, as draw_level does just below. envio's
+ * draw_levelbig does not, which is what makes "!zero" inert for her -- and
+ * the command handler further down never lets her reach zero_command at all,
+ * so the point is moot there, but this keeps the two boards' math identical
+ * either way.
+ */
+static bool level_step(float *tx_out, float *ty_out)
 {
     qmi8658_sample_t sample;
-    if (qmi8658_read(&sample) != ESP_OK) return;
+    if (qmi8658_read(&sample) != ESP_OK) return false;
 
     float gx, gy;
     gravity_from(&sample, &gx, &gy);
@@ -455,13 +474,17 @@ static void draw_level(canvas_t *c)
     float ay = s_ly < -1.0f ? -1.0f : (s_ly > 1.0f ? 1.0f : s_ly);
     float tx = asinf(ax) * 180.0f / (float)M_PI;
     float ty = asinf(ay) * 180.0f / (float)M_PI;
-    if (s_zeroed) { tx -= s_zero_x; ty -= s_zero_y; }
+
+    /* Scored against the zeroed reading when there is one -- absolute tx/ty
+       is what callers get back. */
+    float zx = tx, zy = ty;
+    if (s_zeroed) { zx -= s_zero_x; zy -= s_zero_y; }
 
     /* The clock. It runs while the board is true and resets the moment it is
        not, which is the whole game. */
-    if (!level_is_true(tx, ty)) s_armed = true;
+    if (!level_is_true(zx, zy)) s_armed = true;
 
-    if (level_is_true(tx, ty) && s_armed) {
+    if (level_is_true(zx, zy) && s_armed) {
         /* The best is not raised while the run is still going. It is the best
            *finished* run, which is what is written to flash; raising it live
            would show a record on screen that a sub-second run never earned
@@ -484,12 +507,37 @@ static void draw_level(canvas_t *c)
         s_hold_s = 0.0f;
     }
 
+    *tx_out = tx;
+    *ty_out = ty;
+    return true;
+}
+
+static void draw_level(canvas_t *c)
+{
+    float tx, ty;
+    if (!level_step(&tx, &ty)) return;
+    if (s_zeroed) { tx -= s_zero_x; ty -= s_zero_y; }
+
     /* One letter, bottom right: z means the angles are relative to a surface
        taken as true with "!zero", nothing means they are absolute. */
     level_draw(c, tx, ty, s_hold_s, s_last_hold_s, s_prev_hold_s,
                s_best_hold_s, s_armed);
     display_blit();
 }
+
+#if defined(CONFIG_SCREEN_BOARD_TOUCH_LCD_35B)
+/* envio's own big rendering of the same game, in levelbig.c: absolute tx/ty
+   (a "!zero" can never reach her -- see the command gate below), drawn large
+   for her tall panel instead of the Feather's small one. */
+static void draw_levelbig(canvas_t *c)
+{
+    float tx, ty;
+    if (!level_step(&tx, &ty)) return;
+    levelbig_draw(c, tx, ty, s_hold_s, s_last_hold_s, s_prev_hold_s,
+                  s_best_hold_s, s_armed);
+    display_blit();
+}
+#endif
 #endif /* HAVE_LEVEL */
 
 #if HAVE_PARTICLES
@@ -1005,14 +1053,23 @@ static void on_message(const char *text, size_t len)
 #if HAVE_LEVEL
     if (kind == UD_LEVEL || kind == UD_FLIP || kind == UD_ZERO
      || kind == UD_NEWGAME) {
-        if (kind == UD_ZERO) zero_command(text);
-        if (kind == UD_NEWGAME) {
-            /* Wipe the scoreboard. A score set before the clock knew to ask
-               whether anyone was holding the board is not one anybody made,
-               and there was no way to clear it without a reflash. */
-            s_hold_s = s_last_hold_s = s_prev_hold_s = s_best_hold_s = 0.0f;
-            runs_save();
-            ESP_LOGI(TAG, "scoreboard cleared");
+        /* "!zero" and "!newgame" change state that only PAGE_LEVEL boards
+           can see or clear -- envio has PAGE_BUBBLE instead, with no way to
+           re-zero or wipe her scoreboard from her own page, so letting these
+           through anyway would silently shift her readout or blank her
+           scoreboard from a stray BLE command. Gated on the availability
+           mask rather than the board macro so it reads the same way
+           home_page() already tests for "a board with the Feather's page". */
+        if (s_pages.available & PAGE_BIT(PAGE_LEVEL)) {
+            if (kind == UD_ZERO) zero_command(text);
+            if (kind == UD_NEWGAME) {
+                /* Wipe the scoreboard. A score set before the clock knew to
+                   ask whether anyone was holding the board is not one anybody
+                   made, and there was no way to clear it without a reflash. */
+                s_hold_s = s_last_hold_s = s_prev_hold_s = s_best_hold_s = 0.0f;
+                runs_save();
+                ESP_LOGI(TAG, "scoreboard cleared");
+            }
         }
         pages_show(&s_pages, PAGE_LEVEL, now);
         s_drawn_page = PAGE_COUNT;
@@ -2752,10 +2809,16 @@ void app_main(void)
 #if HAVE_LEVEL
         /* The Feather's spirit-level game: PAGE_LEVEL on the boards with
            buttons and no touch, PAGE_BUBBLE at envio's touch "Level" slot.
-           Same driver, same state -- a board only ever offers one of the
-           two pages, so they never contend for it. */
+           Same state either way (level_step, in main.c) -- a board only
+           ever offers one of the two pages, so they never contend for it.
+           envio alone gets her own big rendering; everyone else keeps
+           level.c's small-panel look untouched. */
+#if defined(CONFIG_SCREEN_BOARD_TOUCH_LCD_35B)
+        if (s_pages.current == PAGE_BUBBLE && s_imu) draw_levelbig(c);
+#else
         if ((s_pages.current == PAGE_LEVEL || s_pages.current == PAGE_BUBBLE)
             && s_imu) draw_level(c);
+#endif
 #endif
 #if HAVE_PARTICLES
         if (s_pages.current == PAGE_PARTICLES && s_imu) draw_particles(c, now);
