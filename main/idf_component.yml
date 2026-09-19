@@ -1,7 +1,7 @@
 # Managed dependencies pulled from the ESP Component Registry.
 #
-# esp_lcd_axs15231b drives visio's panel: the AXS15231B display controller over
+# esp_lcd_axs15231b drives envio's panel: the AXS15231B display controller over
 # QSPI. It is only referenced by display_axs15231b.c, which is compiled for
-# visio alone, so on the other boards it is pulled but simply not linked.
+# envio alone, so on the other boards it is pulled but simply not linked.
 dependencies:
   espressif/esp_lcd_axs15231b: "^2"

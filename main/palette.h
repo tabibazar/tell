@@ -18,12 +18,23 @@
 
 #define PAL_BG       0x0000  /* black */
 #define PAL_FG       0xFFFF  /* white */
-#ifdef CONFIG_SCREEN_VIVID_PALETTE
+
+#if defined(CONFIG_SCREEN_BOARD_TOUCH_LCD_35B)
+/*
+ * envio wears blue, amber and white, and nothing else -- a two-hue scheme,
+ * not the six-accent chart palette, because she shows the weather and the
+ * room, not the colour-coded usage charts. The two readings on a stacked page
+ * take one hue each, so they stay apart at a glance.
+ */
+#define PAL_DIM      0x8410  /* dim grey-white, for axes and gridlines */
+#define PAL_TITLE_BG 0x02D8  /* blue header bar, white text on it */
+#elif defined(CONFIG_SCREEN_VIVID_PALETTE)
 #define PAL_DIM      0xBDF7  /* a lighter grey: the muted one disappears here */
+#define PAL_TITLE_BG 0x0396  /* blue */
 #else
 #define PAL_DIM      0x9CD3  /* Okabe-Ito grey, for labels, axes, gridlines */
-#endif
 #define PAL_TITLE_BG 0x0396  /* blue */
+#endif
 
 /*
  * Accents, in the order they are handed out. Adjacent entries were picked to
@@ -40,7 +51,15 @@
  * default: at full saturation the orange and the vermillion move closer
  * together for a deuteranope, and the charts lean on that pair.
  */
-#ifdef CONFIG_SCREEN_VIVID_PALETTE
+#if defined(CONFIG_SCREEN_BOARD_TOUCH_LCD_35B)
+/* Blue and amber, alternating, so a stacked pair reads as two. */
+#define PAL_A0       0x04BF  /* blue   (0,150,255) */
+#define PAL_A1       0xFD40  /* amber  (255,168,0) */
+#define PAL_A2       0x04BF  /* blue */
+#define PAL_A3       0x04BF  /* blue */
+#define PAL_A4       0xFD40  /* amber */
+#define PAL_A5       0xFD40  /* amber */
+#elif defined(CONFIG_SCREEN_VIVID_PALETTE)
 #define PAL_A0       0x055F  /* sky blue      (0,170,255) */
 #define PAL_A1       0xFC60  /* orange        (255,140,0) */
 #define PAL_A2       0x06D0  /* bluish green  (0,220,130) */

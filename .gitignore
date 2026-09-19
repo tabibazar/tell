@@ -3,7 +3,7 @@ build-crowpanel/
 build-crow/
 build-big/
 build-lilly/
-build-visio/
+build-envio/
 build/
 
 # Managed components are fetched from idf_component.yml + dependencies.lock,
@@ -43,8 +43,8 @@ sdkconfig.big
 sdkconfig.crowpanel.old
 sdkconfig.lilly
 sdkconfig.lilly.old
-sdkconfig.visio
-sdkconfig.visio.old
+sdkconfig.envio
+sdkconfig.envio.old
 sdkconfig.old
 .claude/settings.local.json
 

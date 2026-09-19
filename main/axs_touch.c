@@ -1,5 +1,5 @@
 /*
- * visio's touch: the AXS15231B's touch half, read over I2C at 0x3B on the
+ * envio's touch: the AXS15231B's touch half, read over I2C at 0x3B on the
  * shared bus. It is the same chip as the display; only the touch side is here.
  *
  * The controller reports in the panel's native 320x480 portrait frame, which

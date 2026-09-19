@@ -40,11 +40,11 @@ printf '!clock\ndate %s\nymd %s\nutc %s\ntz %s\nwx %s\n' "$DATE" "$YMD" "$UTC_OF
     | ./tools/tell-locked.sh --device "$DEVICE"
 say "clock: $DATE | $WX"
 
-# The multi-day forecast, but only to the weather dashboard (visio). lilly is
+# The multi-day forecast, but only to the weather dashboard (envio). lilly is
 # a clock/usage slideshow and has no forecast page; worse, a board whose
 # firmware predates !forecast shows the payload as raw text. Its own message so
 # the clock still updates if the forecast fetch is slow or fails.
-if [ "$DEVICE" = "visio" ]; then
+if [ "$DEVICE" = "envio" ]; then
     FC=$(./tools/weather.py --forecast)
     if [ -n "$FC" ]; then
         printf '!forecast\n%s\n' "$FC" | ./tools/tell-locked.sh --device "$DEVICE"

@@ -71,6 +71,13 @@ typedef void (*envfmt_fn)(int16_t raw, char *out, int size);
  * marks can be real clock times rather than "twelve hours ago"; pass -1 when
  * the time is unknown and the hours are left off.
  */
+/* A reference line drawn across the chart, at a raw value, with a short label
+   -- "ok", "vent" -- so a reading means something without knowing the numbers. */
+typedef struct {
+    int16_t     value;
+    const char *label;
+} env_thresh_t;
+
 typedef struct {
     const char *title;
     const char *value;
@@ -80,6 +87,8 @@ typedef struct {
     const envchart_t *longer;     /* the strip along the bottom */
     int span_minutes;             /* what `recent` covers, for the hour marks */
     int end_minute;               /* minute of the day at the right edge, or -1 */
+    const env_thresh_t *thresh;   /* reference lines drawn across, or NULL */
+    int thresh_n;
 } envpage_t;
 
 void envpage_draw(canvas_t *c, const envpage_t *p);

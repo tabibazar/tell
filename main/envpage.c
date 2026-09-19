@@ -61,17 +61,15 @@ static int plot_y(int16_t v, int16_t lo, int16_t hi, int top, int bottom)
  * fell in it. A steady reading draws a thin line, a swinging one draws a thick
  * band, and neither can conceal the other.
  */
-static void band_at(canvas_t *c, const envchart_t *ch, int left, int top,
-                    int bottom, uint16_t colour)
+/* Draws the trace against an explicit lo..hi, so a caller that also draws
+   threshold lines can share one scale between them. */
+static void band_range(canvas_t *c, const envchart_t *ch, int left, int top,
+                       int bottom, uint16_t colour, int16_t lo, int16_t hi)
 {
     if (bottom - top < 2) return;
     if (left < 0) left = 0;
     if (left >= c->w) return;
-    int16_t lo, hi;
-    if (!envchart_range(ch, &lo, &hi)) return;
 
-    /* A flat trace scaled to itself would divide by zero, and drawn hard
-       against an edge it reads as a fault rather than as steadiness. */
     /*
      * Each column spans from its own edge to the next one's, worked out from
      * the width rather than from a fixed integer step. With a gutter the plot
@@ -101,6 +99,14 @@ static void band_at(canvas_t *c, const envchart_t *ch, int left, int top,
         int y1 = plot_y(ch->lo[i], lo, hi, top, bottom);
         canvas_fill_rect(c, x0, y0, x1 > x0 ? x1 - x0 : 1, y1 - y0 + 1, colour);
     }
+}
+
+static void band_at(canvas_t *c, const envchart_t *ch, int left, int top,
+                    int bottom, uint16_t colour)
+{
+    int16_t lo, hi;
+    if (!envchart_range(ch, &lo, &hi)) return;
+    band_range(c, ch, left, top, bottom, colour, lo, hi);
 }
 
 /* The pair page and the week draw edge to edge, with no gutter. */
@@ -263,9 +269,30 @@ static void env2_panel(canvas_t *c, int r0, int r1, const envpage_t *p)
     if (bottom - top < 6) return;
 
     int16_t lo, hi;
-    if (envchart_range(p->recent, &lo, &hi))
-        axis_values(c, p, lo, hi, left, top, bottom, r1 - 1);
-    band_at(c, p->recent, left, top, bottom, p->colour);
+    bool have = envchart_range(p->recent, &lo, &hi);
+
+    /* Stretch the scale to take in the reference lines, so "you are well under
+       the ventilate line" is visible even when the trace itself is calm. */
+    for (int i = 0; i < p->thresh_n; i++) {
+        int16_t v = p->thresh[i].value;
+        if (!have) { lo = hi = v; have = true; }
+        else { if (v < lo) lo = v; if (v > hi) hi = v; }
+    }
+    if (!have) return;
+
+    if (p->fmt) axis_values(c, p, lo, hi, left, top, bottom, r1 - 1);
+
+    /* Reference lines behind the trace; their labels on top of it. */
+    for (int i = 0; i < p->thresh_n; i++)
+        rule_h(c, left, c->w, plot_y(p->thresh[i].value, lo, hi, top, bottom), PAL_DIM);
+    band_range(c, p->recent, left, top, bottom, p->colour, lo, hi);
+    for (int i = 0; i < p->thresh_n; i++) {
+        const char *lab = p->thresh[i].label;
+        if (!lab) continue;
+        int y = plot_y(p->thresh[i].value, lo, hi, top, bottom);
+        int x = c->w - (int)strlen(lab) * c->cell_w - 1;
+        canvas_puts_px(c, x, y - c->cell_h, lab, PAL_FG);
+    }
 }
 
 /*

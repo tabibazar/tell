@@ -1,5 +1,5 @@
 /*
- * AXP2101 rail bring-up for visio. See axp2101.h for why this exists at all.
+ * AXP2101 rail bring-up for envio. See axp2101.h for why this exists at all.
  *
  * The register map and the voltages come from Waveshare's factory firmware
  * (ESP-IDF/01_factory bsp_axp2101) read against the X-Powers AXP2101 datasheet,

@@ -4,7 +4,7 @@
 #include "esp_err.h"
 
 /*
- * The AXP2101 power-management chip on visio (Waveshare ESP32-S3-Touch-LCD-3.5B).
+ * The AXP2101 power-management chip on envio (Waveshare ESP32-S3-Touch-LCD-3.5B).
  *
  * Unlike lilly's GPIO15 or the Feather's GPIO21, the panel rail here is not a
  * pin the SoC toggles: it comes out of this PMIC, which sits on the board's

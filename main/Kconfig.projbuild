@@ -27,7 +27,7 @@ config SCREEN_DEVICE_NAME
     string "Advertised BLE name"
     default "big" if SCREEN_BOARD_CROWPANEL_7
     default "lilly" if SCREEN_BOARD_TDISPLAY_S3
-    default "visio" if SCREEN_BOARD_TOUCH_LCD_35B
+    default "envio" if SCREEN_BOARD_TOUCH_LCD_35B
     default "small"
     help
         The name this board advertises. Give each board on your desk a
@@ -46,7 +46,7 @@ config SCREEN_I2C_SDA
         1.47B wires its onboard QMI8658 to GPIO48/47. The NiceMCU brings its
         CST816D out on GPIO33/32, and the gas sensor shares that bus.
 
-        visio (Touch-LCD-3.5B) hangs everything off one bus on GPIO8/7: the
+        envio (Touch-LCD-3.5B) hangs everything off one bus on GPIO8/7: the
         AXP2101 PMIC, the AXS15231B touch, a QMI8658, a PCF85063 RTC and a
         TCA9554 expander. The display itself is QSPI, not on here.
 
@@ -165,7 +165,7 @@ config SCREEN_ROTATE_SECS
         0 leaves the display wherever it was last put, which is what the big
         panel and the Feather do.
 
-        visio stays put on Pip, her home face, rather than rotating: a desk
+        envio stays put on Pip, her home face, rather than rotating: a desk
         familiar you glance at is not a slideshow. Her other subsystems become
         pages you can reach once touch is wired.
 

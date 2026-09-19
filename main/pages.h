@@ -27,7 +27,7 @@ typedef enum {
     PAGE_TURNS,      /* how long Claude takes */
     PAGE_MESSAGE,
     PAGE_DAILY,      /* tokens per day as bars */
-    PAGE_PIP,        /* visio's desk familiar: a face that watches gravity */
+    PAGE_PIP,        /* envio's desk familiar: a face that watches gravity */
     PAGE_PARTICLES,  /* tilt-poured sand; the Feather and wave, which have IMUs */
     PAGE_TIMER,      /* a countdown you shake to restart */
     PAGE_STOPWATCH,  /* counting up; shake to start and stop */

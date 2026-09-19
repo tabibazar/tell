@@ -1,4 +1,4 @@
-# Waveshare ESP32-S3-Touch-LCD-3.5B (visio): 16 MB flash, native USB, a plain
+# Waveshare ESP32-S3-Touch-LCD-3.5B (envio): 16 MB flash, native USB, a plain
 # single-app layout with room for the environment log the CrowPanel's 4 MB
 # never had. envlog is a raw partition, not a filesystem: a ring of 4 KB
 # sectors that main/envstore.c writes -- the same ring wave and envo used.

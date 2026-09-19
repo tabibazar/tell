@@ -67,7 +67,7 @@ esp_err_t qmi8658_init(void)
         i2c_device_config_t dev = {
             .dev_addr_length = I2C_ADDR_BIT_LEN_7,
             .device_address = addrs[i],
-            /* 100 kHz. On visio the QMI shares one bus with the AXP2101, the
+            /* 100 kHz. On envio the QMI shares one bus with the AXP2101, the
                RTC, the touch, the codec and an expander -- far more loaded than
                wave's, where 400 kHz was fine -- so the conservative rate. It is
                not the cure for the "I2C transaction timeout" the driver logs on

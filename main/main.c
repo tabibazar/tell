@@ -152,7 +152,7 @@ static bool claude_busy(const ud_view_t *v, int64_t now)
  * need goes with them. CMakeLists drops the same files, so a reference left
  * behind here shows up as a link error rather than as dead code.
  */
-/* No board here uses its IMU any more. visio has a QMI8658 soldered on, but
+/* No board here uses its IMU any more. envio has a QMI8658 soldered on, but
    she is an environment + weather display, not a games board -- the sensor she
    reads is the gas sensor on her I2C bus, through the room pages, not the
    accelerometer. The IMU driver and Pip stay in the tree, excluded by
@@ -761,7 +761,7 @@ static page_t home_page(void)
        home to the instrument rather than to the toy. This matters most on a
        board with no RTC: the clock it would otherwise show after every power
        cycle reads --:--:-- until a Mac speaks to it. */
-    /* visio comes home to Pip -- her whole reason for a screen. */
+    /* envio comes home to Pip -- her whole reason for a screen. */
     if (s_pages.available & PAGE_BIT(PAGE_PIP)) return PAGE_PIP;
     if (s_pages.available & PAGE_BIT(PAGE_PARTICLES)) return PAGE_PARTICLES;
     if (s_pages.available & PAGE_BIT(PAGE_LEVEL)) return PAGE_LEVEL;
@@ -1606,6 +1606,19 @@ static void env_page(int which, envpage_t *p, char *value, size_t vsz, bool full
     p->longer = &s_env_month[which];
     p->span_minutes = ENV_DAY_MIN;
     p->end_minute = s_env_now_ok ? (int)(s_env_now.minute % 1440u) : -1;
+
+    /*
+     * Reference lines for the air pages, so the trace reads as a place on a
+     * scale, not just a number. TVOC in ppb and eCO2 in ppm: below the low
+     * line is fine, above the high one is time to open a window. Values are
+     * common indoor-air guidance, not the sensor's exact bands.
+     */
+    static const env_thresh_t voc_thresh[] = { { 300, "ok" }, { 1000, "vent" } };
+    static const env_thresh_t co2_thresh[] = { { 800, "ok" }, { 1200, "vent" } };
+    p->thresh = NULL;
+    p->thresh_n = 0;
+    if (which == ENV_VOC)      { p->thresh = voc_thresh; p->thresh_n = 2; }
+    else if (which == ENV_CO2) { p->thresh = co2_thresh; p->thresh_n = 2; }
 }
 
 static void draw_room(canvas_t *c, int which)
@@ -1648,9 +1661,9 @@ static void centred(canvas_t *c, int row, const char *s, uint16_t colour)
 /* "Narrow" means the weather does not fit on one line, so the digits pin under
    the date and the weather gets the rows below rather than two crammed at the
    foot. The weather runs to 62 characters (weather.py caps it), so only a panel
-   that wide reads as wide -- the CrowPanel's 64 does, visio's 40 does not, even
+   that wide reads as wide -- the CrowPanel's 64 does, envio's 40 does not, even
    landscape. Below 40 was the old test, from when 26 and 64 were the only widths
-   and nothing sat between them; visio at exactly 40 fell on the wrong side and
+   and nothing sat between them; envio at exactly 40 fell on the wrong side and
    truncated the day's low. */
 static bool clock_narrow(const canvas_t *c) { return c->cols < 62; }
 
@@ -1767,7 +1780,7 @@ static void draw_clock_extras(canvas_t *c, int first_row)
 static void draw_saver(canvas_t *c, uint32_t secs)
 {
     /* Clear first: the saver draws only the drifting time, and without this it
-       left the page underneath showing around it -- on visio's wide landscape
+       left the page underneath showing around it -- on envio's wide landscape
        that was a whole room chart bleeding through beside the clock. */
     canvas_clear(c);
 
@@ -1838,13 +1851,15 @@ static void draw_clock(canvas_t *c, int64_t now)
 static void draw_forecast(canvas_t *c)
 {
     canvas_clear(c);
-    canvas_fill_rect(c, 0, 0, c->w, c->cell_h, PAL_A0);
-    canvas_puts(c, 1, 0, "FORECAST", PAL_BG);
+    canvas_fill_rect(c, 0, 0, c->w, c->cell_h, PAL_TITLE_BG);
+    canvas_puts(c, 1, 0, "FORECAST", PAL_FG);
 
     int row = 2, shown = 0;
     for (int i = 0; i < UD_FC_DAYS && row < c->rows; i++) {
         if (s_data.forecast[i][0] == '\0') continue;
-        canvas_puts(c, 1, row, s_data.forecast[i], i == 0 ? PAL_FG : PAL_DIM);
+        /* Today in white, the rest in amber -- the dim grey was too dark to
+           read on this panel. Still a clear hierarchy, both legible. */
+        canvas_puts(c, 1, row, s_data.forecast[i], i == 0 ? PAL_FG : PAL_A1);
         row += 2;
         shown++;
     }
@@ -1924,7 +1939,7 @@ void app_main(void)
     if (!s_env_gas) available &= ~PAGE_BIT(PAGE_AIR);
     if (!aht21_present() && !bme280_present()) available &= ~PAGE_BIT(PAGE_CLIMATE);
 #else
-    /* The forecast belongs to the weather dashboard (visio), not to lilly's
+    /* The forecast belongs to the weather dashboard (envio), not to lilly's
        clock/usage slideshow -- strip it here or a small non-ENV panel offers
        it too. */
     available &= ~(PAGE_BIT(PAGE_ROOM_TEMP) | PAGE_BIT(PAGE_ROOM_RH)
@@ -1951,7 +1966,7 @@ void app_main(void)
                  | PAGE_BIT(PAGE_STOPWATCH));
 #endif
 #if HAVE_PIP
-    /* visio is Pip's board: the face is home, with the clock and BLE messages
+    /* envio is Pip's board: the face is home, with the clock and BLE messages
        still reachable behind it. The data pages want a panel she does not have,
        and her other subsystems become their own apps in later increments. Pip
        needs the IMU; without it she falls back to the clock. */
@@ -2430,7 +2445,7 @@ void app_main(void)
                    merged view. The clock draws itself below, every second, and
                    does not clear as it goes -- so wipe the previous page here,
                    on entry, or it shows through beneath the clock (a room chart
-                   bleeding around the digits on visio's cycling dashboard). */
+                   bleeding around the digits on envio's cycling dashboard). */
                 canvas_clear(c);
                 switch (s_pages.current) {
                 case PAGE_MESSAGE:  draw_message(c); display_blit(); break;

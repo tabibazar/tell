@@ -11,13 +11,13 @@
 # CrowPanel.
 # The IMU and the pages that need one went with the boards that had one; the
 # drivers stay in the tree for whatever turns up next, excluded here rather
-# than deleted. visio has a QMI8658 soldered on, so the sand could come back to
+# than deleted. envio has a QMI8658 soldered on, so the sand could come back to
 # her -- but not in this first cut, which brings the panel up and no more.
 # Three boards now, three panel buses: the CrowPanel's RGB, lilly's i80, and
-# visio's AXS15231B over QSPI. Each has its own display_*.c and only one is
-# compiled. visio also carries axp2101.c, the PMIC that powers her panel rail;
+# envio's AXS15231B over QSPI. Each has its own display_*.c and only one is
+# compiled. envio also carries axp2101.c, the PMIC that powers her panel rail;
 # the others have no such chip, so it is excluded from their builds.
-# visio keeps the IMU (qmi8658) and the shake detector (in shaketimer.c) for
+# envio keeps the IMU (qmi8658) and the shake detector (in shaketimer.c) for
 # Pip, her desk familiar (pip.c), but not the sand or the level. The other
 # boards have no sensor and carry none of it, Pip included.
 if(CONFIG_SCREEN_BOARD_CROWPANEL_7)
@@ -38,7 +38,7 @@ else()
 endif()
 
 # One touch driver per board -- both define the same touch_* interface, so
-# exactly one is compiled. gt911 on the CrowPanel, axs_touch on visio, and on a
+# exactly one is compiled. gt911 on the CrowPanel, axs_touch on envio, and on a
 # board with no touch it does not matter which is left in; gt911 stays.
 
 # An environment logger has no use for the sensor toys, and dropping them

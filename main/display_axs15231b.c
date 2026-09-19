@@ -1,5 +1,5 @@
 /*
- * visio (Waveshare ESP32-S3-Touch-LCD-3.5B): AXS15231B 320x480 over QSPI.
+ * envio (Waveshare ESP32-S3-Touch-LCD-3.5B): AXS15231B 320x480 over QSPI.
  *
  * A third panel bus for this tree -- neither lilly's 8-bit i80 nor the ST7789
  * SPI the returned boards used. The controller is one part that is both the
@@ -260,7 +260,7 @@ esp_err_t display_init(void)
     ESP_ERROR_CHECK(esp_lcd_panel_disp_on_off(s_panel, false));
 
     /* 320*480*2 = 307 KB does not fit internal DMA memory beside NimBLE, so the
-       framebuffer goes to PSRAM. visio has 8 MB octal; the build turns it on. */
+       framebuffer goes to PSRAM. envio has 8 MB octal; the build turns it on. */
     s_fb = heap_caps_malloc(LCD_W * LCD_H * sizeof(uint16_t), MALLOC_CAP_SPIRAM);
     if (s_fb == NULL) {
         ESP_LOGE(TAG, "no PSRAM for framebuffer");

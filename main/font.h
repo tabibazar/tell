@@ -31,6 +31,9 @@
 #if defined(CONFIG_SCREEN_BOARD_CROWPANEL_7)
 #include "font_clock.h"          /* 96x160, for 800x480 */
 #define HAVE_CLOCK_FONT 1
+#elif defined(CONFIG_SCREEN_BOARD_TOUCH_LCD_35B)
+#include "font_clock_envio.h"    /* 38x80, for 320x480 portrait -- 8 digits fit */
+#define HAVE_CLOCK_FONT 1
 #endif
 
 #endif /* FONT_SELECT_H */

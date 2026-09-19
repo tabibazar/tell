@@ -6,7 +6,7 @@
 #include <stdbool.h>
 
 /*
- * Pip, visio's desk familiar: a face that watches which way is down and
+ * Pip, envio's desk familiar: a face that watches which way is down and
  * startles when the board is shaken.
  *
  * Free of hardware -- it is fed gravity and a shake flag and decides where the
