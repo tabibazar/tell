@@ -1,0 +1,59 @@
+#include "maze.h"
+#include "palette.h"
+
+#define MAZE_ACCEL 900.0f    /* px/s^2 at full tilt; brisk but controllable */
+#define MAZE_FRICTION 3.0f   /* per second; keeps the ball from sliding forever */
+
+static void place_at_start(maze_t *m) {
+    const maze_level_t *l = &maze_levels[m->level];
+    m->bx = (l->start_c + 0.5f) * MAZE_CELL;
+    m->by = (l->start_r + 0.5f) * MAZE_CELL;
+    m->vx = m->vy = 0.0f;
+}
+
+void maze_init(maze_t *m) {
+    m->level = 0; m->time_s = 0.0f; m->won = false;
+    place_at_start(m);
+}
+void maze_restart_level(maze_t *m) { place_at_start(m); }
+
+static bool wall_at_px(const maze_level_t *l, float x, float y) {
+    int c = (int)(x / MAZE_CELL), r = (int)(y / MAZE_CELL);
+    if (c < 0 || c >= MAZE_COLS || r < 0 || r >= MAZE_ROWS) return true;
+    return l->wall[r][c] != 0;
+}
+
+/* True if a ball centred at (x,y) with radius R overlaps any wall cell. Checks
+   the four points at the ball's edges — enough for axis-separated resolution. */
+static bool blocked(const maze_level_t *l, float x, float y) {
+    return wall_at_px(l, x - MAZE_BALL_R, y) || wall_at_px(l, x + MAZE_BALL_R, y)
+        || wall_at_px(l, x, y - MAZE_BALL_R) || wall_at_px(l, x, y + MAZE_BALL_R);
+}
+
+void maze_update(maze_t *m, float gx, float gy, float dt) {
+    if (m->won) return;
+    const maze_level_t *l = &maze_levels[m->level];
+
+    m->vx += MAZE_ACCEL * gx * dt;
+    m->vy += MAZE_ACCEL * gy * dt;
+    float damp = 1.0f - MAZE_FRICTION * dt;
+    if (damp < 0.0f) damp = 0.0f;
+    m->vx *= damp; m->vy *= damp;
+
+    /* Move each axis independently and stop that axis on a wall, so the ball
+       slides along walls instead of sticking in corners. */
+    float nx = m->bx + m->vx * dt;
+    if (!blocked(l, nx, m->by)) m->bx = nx; else m->vx = 0.0f;
+    float ny = m->by + m->vy * dt;
+    if (!blocked(l, m->bx, ny)) m->by = ny; else m->vy = 0.0f;
+
+    m->time_s += dt;
+
+    int bc = (int)(m->bx / MAZE_CELL), br = (int)(m->by / MAZE_CELL);
+    if (bc == l->goal_c && br == l->goal_r) {
+        if (m->level + 1 < maze_level_count) { m->level++; place_at_start(m); }
+        else m->won = true;
+    }
+}
+
+void maze_draw(canvas_t *c, const maze_t *m) { (void)c; (void)m; }  /* A3 */
