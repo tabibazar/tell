@@ -13,8 +13,8 @@
 ## Global Constraints
 
 - **Board gate:** all new code compiles on `CONFIG_SCREEN_BOARD_TOUCH_LCD_35B` only. lilly and the CrowPanel must still build green and be byte-for-byte unaffected. ([[boards-stay-independent]])
-- **Pins are read from the vendor, never guessed.** DVP pins (verbatim from the spec): XCLK 38, PCLK 41, VSYNC 17, HREF 18, D0–D7 = 45/47/48/46/42/40/39/21, PWDN -1, RESET -1, SCCB SIOD 8 / SIOC 7. SD SDMMC (CLK/CMD/D0) pins are unknown until read off Waveshare's demo download in Task C1 — do not hard-code a guess.
-- **SCCB shares GPIO8/7 with `I2CBUS_MAIN`.** The camera must ride the existing bus, not re-init those pins. If the pinned `esp32-camera` release cannot share the new-driver bus, take the fallback (camera owns the bus, other devices attach to its handle) — decided in Task C1.
+- **Pins are read from the vendor, never guessed.** DVP pins (verbatim from the spec): XCLK 38, PCLK 41, VSYNC 17, HREF 18, D0–D7 = 45/47/48/46/42/40/39/21, PWDN -1, RESET -1, SCCB SIOD 8 / SIOC 7. SD SDMMC (CLK/CMD/D0) pins are unknown until read off Waveshare's demo download in Task B1 — do not hard-code a guess.
+- **SCCB shares GPIO8/7 with `I2CBUS_MAIN`.** The camera must ride the existing bus, not re-init those pins. If the pinned `esp32-camera` release cannot share the new-driver bus, take the fallback (camera owns the bus, other devices attach to its handle) — decided in Task B1.
 - **Palette:** envio's blue/amber/white tokens from `palette.h` (`PAL_A0` blue, `PAL_A1` amber, `PAL_FG` white, `PAL_BG` black). No new colours.
 - **Panel is native portrait 320×480.** Canvas is 320 wide × 480 tall.
 - **Build (envio):** `export PATH="/tmp/py313shim:$PATH" && . /Users/reza/esp/esp-idf/export.sh && idf.py -B build-envio -D SDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.defaults.envio" -D SDKCONFIG=sdkconfig.envio build` (the py313 shim exists because system `python3` is 3.14 but the IDF venv is 3.13; recreate with `ln -sf /opt/homebrew/bin/python3.13 /tmp/py313shim/python3` and `.../python`).
@@ -792,3 +792,71 @@ git commit -m "envio camera: viewfinder-when-held page, tap to save a JPEG to SD
 **Placeholder scan:** No "TBD"/"handle errors"/"similar to". The one genuinely unknown value (SD pins) is a first-step vendor lookup, not a code placeholder; every code step carries real code.
 
 **Type consistency:** `maze_t` fields (`bx,by,vx,vy,level,time_s,won`) and functions (`maze_init/restart_level/update/draw`) are consistent A2↔A3↔A5. `canvas_blit` signature is identical in B3 Step 1 (canvas.h) and its use in `camera.c`. `sd_mount/sd_write/sd_photo_name` and `camera_start/stop/preview/capture_jpeg/resume_preview` names match between B2/B3 definitions and B4 uses.
+
+---
+
+## Phase C — System page (added 2026-09-19 at user request)
+
+envio has an AXP2101 PMIC (battery + charging) and reports chip temp, RAM,
+uptime and clock state. It has **no microphone** (no ES7210/ES8311/I2S codec on
+the 3.5B — the mic is on the separate CAM board), so none is shown. This page is
+swipeable but not in the auto-cycle, like the maze.
+
+### Task C1: Battery + system status page
+
+**Files:**
+- Modify: `main/axp2101.h`, `main/axp2101.c` (add a battery/power read)
+- Modify: `main/pages.h` (add `PAGE_SYSTEM`), `main/pagedefs.c` (row)
+- Modify: `main/main.c` (availability on envio, dispatch, `draw_system`)
+
+**Interfaces:**
+- Consumes: `i2cbus` (AXP2101 at 0x34 on I2CBUS_MAIN, as the rest of `axp2101.c` does), `tempsense_read`, `esp_get_free_heap_size`, `esp_timer_get_time`, the `s_env_now_ok`/`s_synced` clock state, `canvas_*`, `palette.h`.
+- Produces in `axp2101.h`:
+  ```c
+  typedef enum { AXP_CHG_STANDBY, AXP_CHG_CHARGING, AXP_CHG_DISCHARGING } axp2101_charge_t;
+  typedef struct {
+      int  percent;      /* 0-100, or -1 when the gauge has no reading */
+      int  millivolts;   /* battery voltage, mV */
+      axp2101_charge_t charge;
+      bool vbus;         /* external (USB) power present */
+  } axp2101_batt_t;
+  bool axp2101_battery(axp2101_batt_t *out);   /* false if the PMIC did not answer */
+  ```
+
+- [ ] **Step 1: Enable the battery ADC and gauge**
+  In `axp2101.c` (in `axp2101_init`, after the rails, or lazily on first read), enable the battery voltage ADC — reg `0x30` bit0 — and battery detection/gauge — reg `0x68`. These may already be on from Waveshare's factory init; enabling them again is harmless. **Verify on hardware** (Step 6) that a plausible voltage/percent comes back; if 0xA4 reads 0xFF/none, the gauge needs its enable bit — adjust per the AXP2101 datasheet / XPowersLib (lewisxhe/XPowersLib) AXP2101 map.
+
+- [ ] **Step 2: Implement `axp2101_battery()`**
+  Read over the shared bus (device at 0x34, same pattern as the rest of `axp2101.c`):
+  - `percent` = reg `0xA4` (0-100; if the value is >100, set `percent = -1`).
+  - `charge` from reg `0x01` bits [6:5]: `0b01` → `AXP_CHG_CHARGING`, `0b10` → `AXP_CHG_DISCHARGING`, else `AXP_CHG_STANDBY`.
+  - `vbus` from reg `0x00` bit5 (VBUS good).
+  - `millivolts`: `raw = ((read(0x34) & 0x3F) << 8) | read(0x35)`; `millivolts = raw` (LSB = 1 mV).
+  Return `false` if any register read errors; `true` otherwise. (The AXP2101 has no battery-current channel — do not attempt one.)
+
+- [ ] **Step 3: Register the page**
+  `main/pages.h`: add `PAGE_SYSTEM,` before `PAGE_COUNT`. `main/pagedefs.c`: add
+  `[PAGE_SYSTEM] = { "System", 0, NULL, false, 0, PG_BOTH, false, false },`
+  (last field `in_saver` = false → swipeable, not auto-cycled, like `PAGE_PIP`).
+
+- [ ] **Step 4: `draw_system(canvas_t *c)`**
+  `canvas_clear(c)`, a `PAL_TITLE_BG` title bar reading "System" (like the other pages' headers), then value rows via `canvas_puts` in `PAL_FG`, with the charging state in `PAL_A1` (amber) when charging:
+  - `Battery  NN%` (or `--` when percent<0), and the state word: charging / on battery / idle.
+  - `         X.XX V` from `millivolts/1000.0`.
+  - `Power    USB in` when `vbus` else `on battery`.
+  - `Chip     NN.N C` from `tempsense_read` (omit the line if it returns false).
+  - `Free RAM NNN KB` from `esp_get_free_heap_size()/1024`.
+  - `Uptime   HHh MMm` from `esp_timer_get_time()` (µs).
+  - `Clock    RTC ok` when the clock is set (`s_synced`), else `no time`.
+
+- [ ] **Step 5: Availability + dispatch**
+  In `main.c`, add `available |= PAGE_BIT(PAGE_SYSTEM);` for envio (ENV_ONLY availability block, near where `PAGE_MAZE` is added), and wire `PAGE_SYSTEM` into the render dispatch to call `draw_system(c)`.
+
+- [ ] **Step 6: Build, flash, verify on hardware**
+  Build (`idf.py -B build-envio ...` per Global Constraints) and `tools/flash-envio.sh`. Swipe to the System page: confirm battery %, voltage and charging state are plausible, and that the state flips when USB power is plugged/unplugged. Confirm lilly still builds.
+
+- [ ] **Step 7: Commit**
+  ```bash
+  git add main/axp2101.h main/axp2101.c main/pages.h main/pagedefs.c main/main.c
+  git commit -m "envio: system page — battery, power, chip temp, uptime"
+  ```
