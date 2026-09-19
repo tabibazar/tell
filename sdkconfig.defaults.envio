@@ -25,4 +25,4 @@ CONFIG_SCREEN_ENV_ONLY=y
 # Glance-able: the readings cycle on their own every 20 seconds rather than
 # waiting for a button, since envio has no wired navigation yet. Explicit
 # because the cached sdkconfig keeps a stale value otherwise.
-CONFIG_SCREEN_ROTATE_SECS=20
+CONFIG_SCREEN_ROTATE_SECS=0
