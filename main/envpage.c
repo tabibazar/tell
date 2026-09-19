@@ -2,6 +2,7 @@
 
 #include "palette.h"
 
+#include <math.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -44,16 +45,33 @@ bool envchart_range(const envchart_t *c, int16_t *lo, int16_t *hi)
     return true;
 }
 
-/* Where a value sits between top and bottom, clamped. */
-static int plot_y(int16_t v, int16_t lo, int16_t hi, int top, int bottom)
+/* A value on the axis, linear or log. Log is for gas concentrations, which
+   span decades: on a linear axis a calm baseline and its ventilate line bunch
+   into the top of the panel. Non-positive values are clamped to 1 -- log has
+   no floor, and a stray zero must not send the trace to minus infinity. */
+static double scale_pos(int16_t v, bool logscale)
 {
-    if (hi <= lo) return (top + bottom) / 2;
-    long span = (long)hi - (long)lo;
-    long up = ((long)v - (long)lo) * (long)(bottom - top) / span;
-    int y = bottom - (int)up;
+    if (!logscale) return (double)v;
+    return log10(v < 1 ? 1.0 : (double)v);
+}
+
+/* Where a value sits between top and bottom, clamped, on the given scale. */
+static int plot_y_s(int16_t v, int16_t lo, int16_t hi, int top, int bottom,
+                    bool logscale)
+{
+    double L = scale_pos(lo, logscale), H = scale_pos(hi, logscale);
+    if (H <= L) return (top + bottom) / 2;
+    double up = (scale_pos(v, logscale) - L) * (double)(bottom - top) / (H - L);
+    int y = bottom - (int)(up + 0.5);
     if (y < top) y = top;
     if (y > bottom) y = bottom;
     return y;
+}
+
+/* The linear case, for the many callers that never want anything else. */
+static int plot_y(int16_t v, int16_t lo, int16_t hi, int top, int bottom)
+{
+    return plot_y_s(v, lo, hi, top, bottom, false);
 }
 
 /*
@@ -64,7 +82,8 @@ static int plot_y(int16_t v, int16_t lo, int16_t hi, int top, int bottom)
 /* Draws the trace against an explicit lo..hi, so a caller that also draws
    threshold lines can share one scale between them. */
 static void band_range(canvas_t *c, const envchart_t *ch, int left, int top,
-                       int bottom, uint16_t colour, int16_t lo, int16_t hi)
+                       int bottom, uint16_t colour, int16_t lo, int16_t hi,
+                       bool logscale)
 {
     if (bottom - top < 2) return;
     if (left < 0) left = 0;
@@ -95,8 +114,8 @@ static void band_range(canvas_t *c, const envchart_t *ch, int left, int top,
         if (!envchart_used(ch, i)) continue;
         int x0 = left + (int)((long)i * width / ENVCHART_COLS);
         int x1 = left + (int)((long)(i + 1) * width / ENVCHART_COLS);
-        int y0 = plot_y(ch->hi[i], lo, hi, top, bottom);
-        int y1 = plot_y(ch->lo[i], lo, hi, top, bottom);
+        int y0 = plot_y_s(ch->hi[i], lo, hi, top, bottom, logscale);
+        int y1 = plot_y_s(ch->lo[i], lo, hi, top, bottom, logscale);
         canvas_fill_rect(c, x0, y0, x1 > x0 ? x1 - x0 : 1, y1 - y0 + 1, colour);
     }
 }
@@ -106,7 +125,7 @@ static void band_at(canvas_t *c, const envchart_t *ch, int left, int top,
 {
     int16_t lo, hi;
     if (!envchart_range(ch, &lo, &hi)) return;
-    band_range(c, ch, left, top, bottom, colour, lo, hi);
+    band_range(c, ch, left, top, bottom, colour, lo, hi, false);
 }
 
 /* The pair page and the week draw edge to edge, with no gutter. */
@@ -153,33 +172,53 @@ static void rule_v(canvas_t *c, int x, int y0, int y1, uint16_t colour)
  * The value axis: round gridlines across the plot, each labelled in the
  * gutter. Drawn before the trace, so where they meet the data wins.
  */
+/* One gridline and its gutter label, at a round value. */
+static void axis_tick(canvas_t *c, const envpage_t *p, int v, int16_t lo,
+                      int16_t hi, int left, int top, int bottom, int last_row,
+                      bool logscale)
+{
+    int y = plot_y_s((int16_t)v, lo, hi, top, bottom, logscale);
+    rule_h(c, left, c->w, y, pal_darken(PAL_DIM));
+
+    char label[12];
+    p->fmt((int16_t)v, label, sizeof label);
+    int len = (int)strlen(label);
+    if (len > ENVPAGE_GUTTER) len = ENVPAGE_GUTTER;
+    /* Right-aligned against the plot, level with its own line, and never down
+       on the row of hours: a value among the clock times reads as one. */
+    int row = (y - c->cell_h / 2) / c->cell_h;
+    if (row < 1) row = 1;
+    if (row > last_row) row = last_row;
+    canvas_puts(c, ENVPAGE_GUTTER - len, row, label, PAL_DIM);
+}
+
 static void axis_values(canvas_t *c, const envpage_t *p, int16_t lo, int16_t hi,
                         int left, int top, int bottom, int last_row)
 {
     if (p->fmt == NULL) return;
+
+    /* A log axis wants round decade lines -- 100, 200, 500, 1000 -- not the
+       linear nice step, which on a log scale would crowd at the top. */
+    if (p->log_scale && hi > 0) {
+        static const int mult[3] = { 1, 2, 5 };
+        bool done = false;
+        for (long p10 = 1; p10 <= 1000000 && !done; p10 *= 10)
+            for (int mi = 0; mi < 3 && !done; mi++) {
+                long v = (long)mult[mi] * p10;
+                if (v < lo) continue;
+                if (v > hi) { done = true; break; }
+                axis_tick(c, p, (int)v, lo, hi, left, top, bottom, last_row, true);
+            }
+        return;
+    }
+
     int step = envchart_nice_step(lo, hi, 3);
     if (step <= 0) return;
-
     /* Start at the first round value at or above the bottom of the range. */
     int first = (lo >= 0) ? ((lo + step - 1) / step) * step
                           : -(((-lo) / step) * step);
-    for (int v = first; v <= hi; v += step) {
-        int y = plot_y((int16_t)v, lo, hi, top, bottom);
-        rule_h(c, left, c->w, y, pal_darken(PAL_DIM));
-
-        char label[12];
-        p->fmt((int16_t)v, label, sizeof label);
-        int len = (int)strlen(label);
-        if (len > ENVPAGE_GUTTER) len = ENVPAGE_GUTTER;
-        /* Right-aligned against the plot, and nudged so the text sits level
-           with its line rather than hanging below it. */
-        /* Level with its own line, and never down on the row of hours: a
-           value sitting among the clock times reads as one of them. */
-        int row = (y - c->cell_h / 2) / c->cell_h;
-        if (row < 1) row = 1;
-        if (row > last_row) row = last_row;
-        canvas_puts(c, ENVPAGE_GUTTER - len, row, label, PAL_DIM);
-    }
+    for (int v = first; v <= hi; v += step)
+        axis_tick(c, p, v, lo, hi, left, top, bottom, last_row, false);
 }
 
 /*
@@ -242,13 +281,17 @@ void envpage_draw(canvas_t *c, const envpage_t *p)
     if (envchart_range(p->recent, &lo, &hi)) {
         axis_values(c, p, lo, hi, left, top, bottom, hour_row - 1);
         axis_hours(c, p, left, top, bottom, hour_row);
+        band_range(c, p->recent, left, top, bottom, p->colour, lo, hi,
+                   p->log_scale && hi > 0);
     }
-    band_at(c, p->recent, left, top, bottom, p->colour);
 
     /* The strip, in the darker shade, with no axis of its own: it is there to
        say where today sits in the month, and a second set of labels on four
        rows of chart would cost more than it told. */
-    band_at(c, p->longer, left, strip_top, strip_bottom, pal_darken(p->colour));
+    int16_t slo, shi;
+    if (envchart_range(p->longer, &slo, &shi))
+        band_range(c, p->longer, left, strip_top, strip_bottom,
+                   pal_darken(p->colour), slo, shi, p->log_scale && shi > 0);
     canvas_fill_rect(c, 0, (c->rows - 1) * c->cell_h - 1, c->w, 1, PAL_DIM);
 }
 
@@ -280,18 +323,38 @@ static void env2_panel(canvas_t *c, int r0, int r1, const envpage_t *p)
     }
     if (!have) return;
 
+    bool logscale = p->log_scale && hi > 0;
+
     if (p->fmt) axis_values(c, p, lo, hi, left, top, bottom, r1 - 1);
 
-    /* Reference lines behind the trace; their labels on top of it. */
-    for (int i = 0; i < p->thresh_n; i++)
-        rule_h(c, left, c->w, plot_y(p->thresh[i].value, lo, hi, top, bottom), PAL_DIM);
-    band_range(c, p->recent, left, top, bottom, p->colour, lo, hi);
+    /* Reference lines behind the trace; their labels on top of it. The danger
+       line and its label turn amber once the reading has reached it -- the
+       point of the whole page is to catch the eye exactly then. */
+    for (int i = 0; i < p->thresh_n; i++) {
+        bool hit = p->thresh[i].alarm && p->has_latest
+                   && p->latest >= p->thresh[i].value;
+        int y = plot_y_s(p->thresh[i].value, lo, hi, top, bottom, logscale);
+        rule_h(c, left, c->w, y, hit ? PAL_A1 : PAL_DIM);
+    }
+    band_range(c, p->recent, left, top, bottom, p->colour, lo, hi, logscale);
     for (int i = 0; i < p->thresh_n; i++) {
         const char *lab = p->thresh[i].label;
         if (!lab) continue;
-        int y = plot_y(p->thresh[i].value, lo, hi, top, bottom);
+        bool hit = p->thresh[i].alarm && p->has_latest
+                   && p->latest >= p->thresh[i].value;
+        int y = plot_y_s(p->thresh[i].value, lo, hi, top, bottom, logscale);
         int x = c->w - (int)strlen(lab) * c->cell_w - 1;
-        canvas_puts_px(c, x, y - c->cell_h, lab, PAL_FG);
+        /* Sit the label above its line, but when the line is at the top of the
+           plot -- which the ventilate line is, being the top of the range --
+           above would land on the title bar, so hang it below the line instead
+           and keep it inside the chart. */
+        int ly = y - c->cell_h;
+        if (ly < top) ly = y + 1;
+        uint16_t col = hit ? PAL_A1 : PAL_FG;
+        canvas_puts_px(c, x, ly, lab, col);
+        /* Faux-bold: a second pass one pixel over thickens the strokes, so the
+           warning reads as heavier without a second font. */
+        if (hit) canvas_puts_px(c, x + 1, ly, lab, col);
     }
 }
 

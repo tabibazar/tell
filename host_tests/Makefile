@@ -32,7 +32,7 @@ test_envstore: test_envstore.c ../main/envstore.c
 	$(CC) $(CFLAGS) -o $@ $^
 
 test_envpage: test_envpage.c ../main/envpage.c ../main/canvas.c ../main/textwrap.c
-	$(CC) $(CFLAGS) -o $@ $^
+	$(CC) $(CFLAGS) -o $@ $^ -lm
 
 test_ens160: test_ens160.c ../main/ens160.c ../main/aht21.c
 	$(CC) $(CFLAGS) -o $@ $^ -lm

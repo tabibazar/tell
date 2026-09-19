@@ -76,6 +76,8 @@ typedef void (*envfmt_fn)(int16_t raw, char *out, int size);
 typedef struct {
     int16_t     value;
     const char *label;
+    bool        alarm;    /* the danger line: its label goes bold and amber
+                             once the current reading reaches it. */
 } env_thresh_t;
 
 typedef struct {
@@ -89,6 +91,13 @@ typedef struct {
     int end_minute;               /* minute of the day at the right edge, or -1 */
     const env_thresh_t *thresh;   /* reference lines drawn across, or NULL */
     int thresh_n;
+    bool log_scale;               /* a log value axis: for gas concentrations,
+                                     which span decades and bunch on a linear
+                                     scale. Left false for temperature and the
+                                     like, where log is meaningless and a
+                                     negative reading would break it. */
+    int16_t latest;               /* the current reading, for the alarm test */
+    bool has_latest;
 } envpage_t;
 
 void envpage_draw(canvas_t *c, const envpage_t *p);

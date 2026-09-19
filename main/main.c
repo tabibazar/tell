@@ -1572,6 +1572,7 @@ static const envfmt_fn env_fmts[ENV_SERIES] = {
 static void env_page(int which, envpage_t *p, char *value, size_t vsz, bool full)
 {
     snprintf(value, vsz, "--");
+    p->has_latest = false;   /* set true below if a reading is available */
     env_sample_t latest;
     int16_t mlo, mhi;
     bool have_month = envchart_range(&s_env_month[which], &mlo, &mhi);
@@ -1581,6 +1582,9 @@ static void env_page(int which, envpage_t *p, char *value, size_t vsz, bool full
             latest.temp_c100, (int16_t)latest.rh_c100, (int16_t)latest.hpa_x10,
             (int16_t)latest.tvoc_ppb, (int16_t)latest.eco2_ppm,
         };
+        p->latest = raw[which];
+        p->has_latest = true;
+
         char now_s[16];
         env_format(which, raw[which], now_s, sizeof now_s);
 
@@ -1613,10 +1617,17 @@ static void env_page(int which, envpage_t *p, char *value, size_t vsz, bool full
      * line is fine, above the high one is time to open a window. Values are
      * common indoor-air guidance, not the sensor's exact bands.
      */
-    static const env_thresh_t voc_thresh[] = { { 300, "ok" }, { 1000, "vent" } };
-    static const env_thresh_t co2_thresh[] = { { 800, "ok" }, { 1200, "vent" } };
+    static const env_thresh_t voc_thresh[] = {
+        { 300, "ok", false }, { 1000, "vent", true },
+    };
+    static const env_thresh_t co2_thresh[] = {
+        { 800, "ok", false }, { 1200, "vent", true },
+    };
     p->thresh = NULL;
     p->thresh_n = 0;
+    /* Gas concentrations get a log axis and a danger line; the trace bunches
+       against a linear scale and a wide-open room can spike a decade. */
+    p->log_scale = (which == ENV_VOC || which == ENV_CO2);
     if (which == ENV_VOC)      { p->thresh = voc_thresh; p->thresh_n = 2; }
     else if (which == ENV_CO2) { p->thresh = co2_thresh; p->thresh_n = 2; }
 }
