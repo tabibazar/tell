@@ -6,7 +6,7 @@
 #include "touch.h"
 #include "level.h"
 #include "particles.h"
-#include "maze.h"
+#include "bubblelevel.h"
 #include "qmi8658.h"
 #include "esp_heap_caps.h"
 #include "esp_system.h"
@@ -164,7 +164,7 @@ static bool claude_busy(const ud_view_t *v, int64_t now)
  * behind here shows up as a link error rather than as dead code.
  */
 /* No other board here uses its IMU any more. envio has her QMI8658 back too,
-   but only for the maze -- the room-and-weather pages still read the gas
+   but only for the bubble level -- the room-and-weather pages still read the gas
    sensor on her I2C bus, not the accelerometer, and she is not a games board
    for Pip, the sand or the level. The IMU driver and Pip stay in the tree,
    excluded by CMakeLists on the boards that do not want them. */
@@ -757,29 +757,29 @@ static void draw_pip(canvas_t *c, int64_t now)
 
 #if HAVE_IMU
 /*
- * envio's maze: read the IMU, turn it into gravity the way the sand and the
- * level do, and hand it to maze_update. The maze itself never sees a sensor
- * (maze.c is host-tested), so this is the same shape as draw_pip's IMU feed.
- * Guarded by HAVE_IMU rather than a HAVE_MAZE of its own because the two
- * agree exactly: envio is the only board CMakeLists gives both the QMI8658
- * and maze.c to.
+ * envio's bubble level: read the IMU, turn it into gravity the way the sand
+ * and the level do, and hand it to bubble_update. The game itself never sees
+ * a sensor (bubblelevel.c is host-tested), so this is the same shape as
+ * draw_pip's IMU feed. Guarded by HAVE_IMU rather than a HAVE_BUBBLE of its
+ * own because the two agree exactly: envio is the only board CMakeLists gives
+ * both the QMI8658 and bubblelevel.c to.
  */
-static maze_t s_maze;
+static bubble_t s_bubble;
 
-static void draw_maze(canvas_t *c, int64_t now)
+static void draw_bubble(canvas_t *c, int64_t now)
 {
     static bool inited;
     static int64_t last_us;
-    if (!inited) { maze_init(&s_maze); inited = true; last_us = now; }
+    if (!inited) { bubble_init(&s_bubble); inited = true; last_us = now; }
     float dt = (float)(now - last_us) / 1000000.0f;
     last_us = now;
-    if (dt > 0.1f) dt = 0.1f;   /* a long stall must not fling the ball */
+    if (dt > 0.1f) dt = 0.1f;   /* a long stall must not fling the bubble */
 
     float gx = 0.0f, gy = 0.0f;
     qmi8658_sample_t sample;
     if (s_imu && qmi8658_read(&sample) == ESP_OK) gravity_from(&sample, &gx, &gy);
-    maze_update(&s_maze, gx, gy, dt);
-    maze_draw(c, &s_maze);
+    bubble_update(&s_bubble, gx, gy, dt);
+    bubble_draw(c, &s_bubble);
     display_blit();
 }
 #endif /* HAVE_IMU */
@@ -2234,12 +2234,12 @@ void app_main(void)
     available &= ~(PAGE_BIT(PAGE_PARTICLES) | PAGE_BIT(PAGE_TIMER)
                  | PAGE_BIT(PAGE_STOPWATCH));
 #endif
-    /* envio's maze needs the sensor too, and is added after the ENV_ONLY
-       mask above and the imu_pages strip so it is not immediately cleared
-       by either -- it is not one of the "both IMU pages" above and does
-       not want to be struck off with them. */
+    /* envio's bubble level needs the sensor too, and is added after the
+       ENV_ONLY mask above and the imu_pages strip so it is not immediately
+       cleared by either -- it is not one of the "both IMU pages" above and
+       does not want to be struck off with them. */
 #if HAVE_IMU
-    if (s_imu) available |= PAGE_BIT(PAGE_MAZE);
+    if (s_imu) available |= PAGE_BIT(PAGE_BUBBLE);
 #endif
     /* The System page needs no sensor and no touch, so it is not behind the
        IMU guard above -- it is always available on envio. */
@@ -2516,13 +2516,13 @@ void app_main(void)
                 s_drawn_page = PAGE_COUNT;
                 ESP_LOGI(TAG, "tap at %d,%d -> setting %d = %d", tx, ty, row, choice);
 #if HAVE_IMU
-            } else if (s_pages.current == PAGE_MAZE) {
-                /* A tap on the Maze page restarts the level rather than
-                   paging away -- swipes still page, below. */
-                maze_restart_level(&s_maze);
+            } else if (s_pages.current == PAGE_BUBBLE) {
+                /* A tap on the Level page restarts the current attempt
+                   rather than paging away -- swipes still page, below. */
+                bubble_reset(&s_bubble);
                 s_pages.last_activity_us = now;
                 s_drawn_page = PAGE_COUNT;
-                ESP_LOGI(TAG, "tap at %d,%d -> maze restart", tx, ty);
+                ESP_LOGI(TAG, "tap at %d,%d -> bubble reset", tx, ty);
 #endif
             } else if (tx < c->w / 2) {
                 /* The left half goes back, the right half forward. Buttons on
@@ -2790,7 +2790,7 @@ void app_main(void)
         if (s_pages.current == PAGE_PIP) draw_pip(c, now);
 #endif
 #if HAVE_IMU
-        if (s_pages.current == PAGE_MAZE && s_imu) draw_maze(c, now);
+        if (s_pages.current == PAGE_BUBBLE && s_imu) draw_bubble(c, now);
 #endif
 #if defined(CONFIG_SCREEN_BOARD_TOUCH_LCD_35B)
         if (s_pages.current == PAGE_SYSTEM) draw_system(c);

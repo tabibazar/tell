@@ -26,9 +26,9 @@ if(CONFIG_SCREEN_BOARD_CROWPANEL_7)
                        "pip.c" "axs_touch.c")
 elseif(CONFIG_SCREEN_BOARD_TOUCH_LCD_35B)
     # An environment + weather display: her own QSPI panel and PMIC, the
-    # AXS15231B touch for swipes, and the soldered QMI8658 for the maze --
-    # but not Pip, the sand or the level. The GT911 is the CrowPanel's touch,
-    # not hers.
+    # AXS15231B touch for swipes, and the soldered QMI8658 for the bubble
+    # level -- but not Pip, the sand or level.c (the Feather's own spirit
+    # level). The GT911 is the CrowPanel's touch, not hers.
     set(BOARD_EXCLUDES "display_rgb.c" "display_i80.c"
                        "level.c" "particles.c" "shaketimer.c"
                        "pip.c" "gt911.c")
@@ -56,10 +56,14 @@ else()
     list(APPEND BOARD_EXCLUDES "envstore.c" "envpage.c" "envflash.c")
 endif()
 
-# maze.c/maze_levels.c are new; only envio has the panel + IMU pairing the
-# maze wants, so every other board excludes them.
+# maze.c/maze_levels.c are kept in the tree -- the bubble-level game replaced
+# the maze in envio's page slot -- but no board compiles them now.
+list(APPEND BOARD_EXCLUDES "maze.c" "maze_levels.c")
+
+# bubblelevel.c wants the same panel + IMU pairing the maze used to: only
+# envio has both, so it is the only board that compiles it.
 if(NOT CONFIG_SCREEN_BOARD_TOUCH_LCD_35B)
-    list(APPEND BOARD_EXCLUDES "maze.c" "maze_levels.c")
+    list(APPEND BOARD_EXCLUDES "bubblelevel.c")
 endif()
 
 idf_component_register(
