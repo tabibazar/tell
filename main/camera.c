@@ -29,6 +29,17 @@ static bool s_started = false;
  * LEDC: the backlight owns LEDC_TIMER_0/CHANNEL_0 (display_axs15231b.c), so
  * the XCLK generator is pushed to TIMER_1/CHANNEL_1 or it would kill the
  * backlight.
+ *
+ * Switching modes: cam_hal's framebuffer/DMA sizing and jpeg_mode are fixed
+ * once, in cam_config() at esp_camera_init() time, and are NOT updated by
+ * sensor_t::set_pixformat/set_framesize -- those only write SCCB sensor
+ * registers. A runtime sensor switch therefore leaves cam_hal sized for the
+ * old format, and esp_camera_fb_get() after it is unreliable. The B1 spike
+ * proved the only method that works on this hardware: a full
+ * esp_camera_deinit() followed by esp_camera_init() with a config for the
+ * new mode. The shared SCCB bus survives that deinit (B1: a DS3231 read
+ * worked right after), so this costs nothing extra on the shared-port
+ * design above.
  */
 static void camera_fill_config(camera_config_t *c)
 {
@@ -48,6 +59,20 @@ static void camera_fill_config(camera_config_t *c)
     };
 }
 
+static void camera_fill_preview_config(camera_config_t *c)
+{
+    camera_fill_config(c);
+    c->pixel_format = PIXFORMAT_RGB565;
+    c->frame_size = FRAMESIZE_QVGA;
+}
+
+static void camera_fill_capture_config(camera_config_t *c)
+{
+    camera_fill_config(c);
+    c->pixel_format = PIXFORMAT_JPEG;
+    c->frame_size = FRAMESIZE_SVGA;
+}
+
 esp_err_t camera_start(void)
 {
     if (s_started) return ESP_OK;
@@ -60,9 +85,7 @@ esp_err_t camera_start(void)
     }
 
     camera_config_t cfg;
-    camera_fill_config(&cfg);
-    cfg.pixel_format = PIXFORMAT_RGB565;
-    cfg.frame_size = FRAMESIZE_QVGA;
+    camera_fill_preview_config(&cfg);
 
     err = esp_camera_init(&cfg);
     if (err != ESP_OK) {
@@ -109,6 +132,23 @@ static void discard_settling_frames(int n)
     }
 }
 
+/* Deinits whatever mode is running and reinits into the preview config, so
+   error paths never leave the camera stuck in JPEG mode. Best-effort: if
+   this reinit itself fails there is nothing more to do but log it, and
+   s_started reflects the true state so a later camera_start() will retry. */
+static void fall_back_to_preview(void)
+{
+    esp_camera_deinit();
+    camera_config_t cfg;
+    camera_fill_preview_config(&cfg);
+    esp_err_t err = esp_camera_init(&cfg);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "fall_back_to_preview: reinit failed: %s",
+                 esp_err_to_name(err));
+        s_started = false;
+    }
+}
+
 esp_err_t camera_capture_jpeg(const uint8_t **out, size_t *len,
                               camera_fb_t **fb_to_return)
 {
@@ -116,20 +156,29 @@ esp_err_t camera_capture_jpeg(const uint8_t **out, size_t *len,
         return ESP_ERR_INVALID_ARG;
     if (!s_started) return ESP_ERR_INVALID_STATE;
 
-    sensor_t *sensor = esp_camera_sensor_get();
-    if (sensor == NULL) return ESP_FAIL;
+    /* cam_hal's DMA/framebuffer sizing and jpeg_mode are fixed at
+       esp_camera_init() and are not updated by a runtime sensor switch
+       (see the comment above camera_fill_config), so a mode change is a
+       full deinit + reinit with a config for the new mode. */
+    esp_camera_deinit();
+    camera_config_t cfg;
+    camera_fill_capture_config(&cfg);
+    esp_err_t err = esp_camera_init(&cfg);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "camera_capture_jpeg: esp_camera_init(JPEG) failed: %s",
+                 esp_err_to_name(err));
+        fall_back_to_preview();
+        return err;
+    }
 
-    sensor->set_pixformat(sensor, PIXFORMAT_JPEG);
-    sensor->set_framesize(sensor, FRAMESIZE_SVGA);
-
-    /* Let auto-exposure settle after the reconfigure before keeping a
-       frame. */
+    /* Let auto-exposure settle after the reinit before keeping a frame. */
     discard_settling_frames(3);
     vTaskDelay(pdMS_TO_TICKS(300));
 
     camera_fb_t *fb = esp_camera_fb_get();
     if (fb == NULL) {
         ESP_LOGE(TAG, "camera_capture_jpeg: fb_get returned NULL");
+        fall_back_to_preview();
         return ESP_FAIL;
     }
 
@@ -142,12 +191,7 @@ esp_err_t camera_capture_jpeg(const uint8_t **out, size_t *len,
 void camera_resume_preview(void)
 {
     if (!s_started) return;
-
-    sensor_t *sensor = esp_camera_sensor_get();
-    if (sensor == NULL) return;
-
-    sensor->set_pixformat(sensor, PIXFORMAT_RGB565);
-    sensor->set_framesize(sensor, FRAMESIZE_QVGA);
+    fall_back_to_preview();
 }
 
 #endif /* CONFIG_SCREEN_HAVE_CAMERA */
