@@ -24,6 +24,7 @@
 #endif
 #include "settings.h"
 #include "shaketimer.h"
+#include "pip.h"
 #include "templog.h"
 #include "tempsense.h"
 #include "textwrap.h"
@@ -127,7 +128,7 @@ static bool claude_busy(const ud_view_t *v, int64_t now)
  * same board until envo arrived, and the code said "CrowPanel" where it meant
  * "has touch".
  */
-#if defined(CONFIG_SCREEN_BOARD_CROWPANEL_7)
+#if defined(CONFIG_SCREEN_BOARD_CROWPANEL_7) || defined(CONFIG_SCREEN_BOARD_TOUCH_LCD_35B)
 #define HAVE_TOUCH 1
 #else
 #define HAVE_TOUCH 0
@@ -151,17 +152,22 @@ static bool claude_busy(const ud_view_t *v, int64_t now)
  * need goes with them. CMakeLists drops the same files, so a reference left
  * behind here shows up as a link error rather than as dead code.
  */
-/* No board here has one any more. The driver and the pages that used it stay
-   in the tree, excluded by CMakeLists, for whatever turns up next. */
+/* No board here uses its IMU any more. visio has a QMI8658 soldered on, but
+   she is an environment + weather display, not a games board -- the sensor she
+   reads is the gas sensor on her I2C bus, through the room pages, not the
+   accelerometer. The IMU driver and Pip stay in the tree, excluded by
+   CMakeLists, for whatever turns up next. */
 #define HAVE_IMU 0
+#define HAVE_PIP 0
 
 /* What each board does with it. Both pour the grains; only the Feather also
    reads the sensor as an instrument. The axis mapping below is shared,
    because it describes the sensor rather than either page -- which is exactly
    why the sand has to negate one component of it: a bubble floats against
    gravity and grains fall with it. */
-/* Both sensor boards read the level; it is the same instrument either way. */
-#define HAVE_LEVEL HAVE_IMU
+/* Both sensor boards read the level; it is the same instrument either way. A
+   Pip board keeps its IMU for the face and does not offer the level or sand. */
+#define HAVE_LEVEL (HAVE_IMU && !HAVE_PIP)
 
 /*
  * One convention, everywhere: gravity_from gives the direction things fall.
@@ -176,8 +182,9 @@ static bool claude_busy(const ud_view_t *v, int64_t now)
  * depending on which page it had been calibrated against. With one
  * convention a board is calibrated once, with "!flip", and both pages agree.
  */
-/* The grains pour on either board that has the sensor. */
-#define HAVE_PARTICLES HAVE_IMU
+/* The grains pour on either board that has the sensor -- but not on a Pip
+   board, whose IMU is Pip's. */
+#define HAVE_PARTICLES (HAVE_IMU && !HAVE_PIP)
 
 #if HAVE_IMU
 static bool s_imu;
@@ -691,6 +698,37 @@ static void draw_timer(canvas_t *c, int64_t now)
 }
 #endif /* HAVE_PARTICLES */
 
+#if HAVE_PIP
+/*
+ * Pip's page: read the IMU, turn it into gravity and a shake, and let the face
+ * react. gravity_from is the same mapping the sand and the level use, so a
+ * "!flip" that gets Pip's eyes looking the right way is the board's one axis
+ * calibration, kept in NVS. The face itself is in pip.c and host-tested.
+ */
+static pip_t s_pip;
+static shakedet_t s_pip_shake;
+static int64_t s_pip_last_us;
+
+static void draw_pip(canvas_t *c, int64_t now)
+{
+    float dt = s_pip_last_us ? (float)(now - s_pip_last_us) / 1000000.0f : 0.05f;
+    s_pip_last_us = now;
+    if (dt > 0.2f) dt = 0.2f;
+
+    float gx = 0.0f, gy = 0.0f;
+    bool shaken = false;
+    qmi8658_sample_t sample;
+    if (s_imu && qmi8658_read(&sample) == ESP_OK) {
+        gravity_from(&sample, &gx, &gy);
+        shaken = shakedet_update(&s_pip_shake, sample.ax, sample.ay, sample.az,
+                                 dt, now);
+    }
+    pip_update(&s_pip, gx, gy, shaken, dt);
+    pip_draw(c, &s_pip);
+    display_blit();
+}
+#endif /* HAVE_PIP */
+
 /* Charts grow into place when a page appears; 0 means no animation running. */
 #define ANIM_US (600 * 1000LL)
 static int64_t s_anim_start = 0;
@@ -723,6 +761,8 @@ static page_t home_page(void)
        home to the instrument rather than to the toy. This matters most on a
        board with no RTC: the clock it would otherwise show after every power
        cycle reads --:--:-- until a Mac speaks to it. */
+    /* visio comes home to Pip -- her whole reason for a screen. */
+    if (s_pages.available & PAGE_BIT(PAGE_PIP)) return PAGE_PIP;
     if (s_pages.available & PAGE_BIT(PAGE_PARTICLES)) return PAGE_PARTICLES;
     if (s_pages.available & PAGE_BIT(PAGE_LEVEL)) return PAGE_LEVEL;
     if (s_settings.home_now && (s_pages.available & PAGE_BIT(PAGE_NOW))) return PAGE_NOW;
@@ -919,7 +959,7 @@ static void draw_message(canvas_t *c)
         return;
     }
     canvas_text(c, s_message);
-    vw_menu_tab(c);
+    if (s_pages.available & PAGE_BIT(PAGE_MENU)) vw_menu_tab(c);
 }
 
 /*
@@ -1512,28 +1552,26 @@ static void draw_trend(canvas_t *c)
     display_blit();
 }
 
-static void draw_room(canvas_t *c, int which)
+static const char *const env_titles[ENV_SERIES] = {
+    "TEMP", "HUMIDITY", "PRESSURE", "AIR VOC", "CO2e",
+};
+static const uint16_t env_colours[ENV_SERIES] = {
+    PAL_A1, PAL_A0, PAL_A2, PAL_A4, PAL_A3,
+};
+static const envfmt_fn env_fmts[ENV_SERIES] = {
+    env_fmt_temp, env_fmt_rh, env_fmt_hpa, env_fmt_tvoc, env_fmt_co2,
+};
+
+/*
+ * Builds the page and its title-bar value for one reading. env_rebuild() must
+ * have run. The title carries the reading now; with `full` it adds the month's
+ * range, which the single-chart page has room for but the stacked pair does
+ * not. The VOC value carries the chip's air-quality word instead: "good" says
+ * something a count of parts per billion does not.
+ */
+static void env_page(int which, envpage_t *p, char *value, size_t vsz, bool full)
 {
-    static const char *titles[ENV_SERIES] = {
-        "TEMP", "HUMIDITY", "PRESSURE", "AIR VOC", "CO2e",
-    };
-    static const uint16_t colours[ENV_SERIES] = {
-        PAL_A1, PAL_A0, PAL_A2, PAL_A4, PAL_A3,
-    };
-    static const envfmt_fn fmts[ENV_SERIES] = {
-        env_fmt_temp, env_fmt_rh, env_fmt_hpa, env_fmt_tvoc, env_fmt_co2,
-    };
-
-    env_rebuild();
-
-    /*
-     * The title carries the reading now and the month's range, because the
-     * axis belongs to the day chart and the strip along the bottom has none.
-     * The VOC page carries the chip's own air quality word instead of the
-     * month, which is the more useful of the two on that page: "good" says
-     * something a number of parts per billion does not.
-     */
-    char value[72] = "--";
+    snprintf(value, vsz, "--");
     env_sample_t latest;
     int16_t mlo, mhi;
     bool have_month = envchart_range(&s_env_month[which], &mlo, &mhi);
@@ -1547,38 +1585,53 @@ static void draw_room(canvas_t *c, int which)
         env_format(which, raw[which], now_s, sizeof now_s);
 
         if (which == ENV_VOC) {
-            /* And say when the chip does not yet stand behind it: a MOX
-               sensor's first hour is real data that does not mean what it
-               will mean, and a page that hides that is lying by omission. */
             const char *note = ENV_GAS_VALIDITY(latest.flags) == 0
                              ? ens160_aqi_name(latest.aqi) : "settling";
-            snprintf(value, sizeof value, "%s  %s", now_s, note);
-        } else if (have_month) {
+            snprintf(value, vsz, "%s  %s", now_s, note);
+        } else if (full && have_month) {
             char a[16], b[16];
             env_format(which, mlo, a, sizeof a);
             env_format(which, mhi, b, sizeof b);
-            snprintf(value, sizeof value, "%s  30d %s-%s", now_s, a, b);
+            snprintf(value, vsz, "%s  30d %s-%s", now_s, a, b);
         } else {
-            snprintf(value, sizeof value, "%s", now_s);
+            snprintf(value, vsz, "%s", now_s);
         }
     }
 
-    int end_minute = -1;
-    if (s_env_now_ok) end_minute = (int)(s_env_now.minute % 1440u);
+    p->title = env_titles[which];
+    p->value = value;
+    p->colour = env_colours[which];
+    p->fmt = env_fmts[which];
+    p->recent = &s_env_day[which];
+    p->longer = &s_env_month[which];
+    p->span_minutes = ENV_DAY_MIN;
+    p->end_minute = s_env_now_ok ? (int)(s_env_now.minute % 1440u) : -1;
+}
 
-    envpage_t page = {
-        .title = titles[which],
-        .value = value,
-        .colour = colours[which],
-        .fmt = fmts[which],
-        .recent = &s_env_day[which],
-        .longer = &s_env_month[which],
-        .span_minutes = ENV_DAY_MIN,
-        .end_minute = end_minute,
-    };
-    envpage_draw(c, &page);
+static void draw_room(canvas_t *c, int which)
+{
+    env_rebuild();
+    static char value[72];
+    envpage_t p;
+    env_page(which, &p, value, sizeof value, true);
+    envpage_draw(c, &p);
     display_blit();
 }
+
+/* Two related readings stacked to fill the tall portrait panel. */
+static void draw_pair(canvas_t *c, int top, int bottom)
+{
+    env_rebuild();
+    static char va[40], vb[40];
+    envpage_t a, b;
+    env_page(top, &a, va, sizeof va, false);
+    env_page(bottom, &b, vb, sizeof vb, false);
+    env2_draw(c, &a, &b);
+    display_blit();
+}
+
+static void draw_climate(canvas_t *c) { draw_pair(c, ENV_TEMP, ENV_RH); }
+static void draw_air(canvas_t *c)     { draw_pair(c, ENV_VOC, ENV_CO2); }
 #endif /* CONFIG_SCREEN_ENV_ONLY */
 
 /* One line of text, centred on the page. */
@@ -1592,7 +1645,14 @@ static void centred(canvas_t *c, int row, const char *s, uint16_t colour)
  * A panel too narrow to hold the weather on one line. Twenty-six columns is
  * one; the CrowPanel's sixty-four is not, and it keeps the layout it has.
  */
-static bool clock_narrow(const canvas_t *c) { return c->cols < 40; }
+/* "Narrow" means the weather does not fit on one line, so the digits pin under
+   the date and the weather gets the rows below rather than two crammed at the
+   foot. The weather runs to 62 characters (weather.py caps it), so only a panel
+   that wide reads as wide -- the CrowPanel's 64 does, visio's 40 does not, even
+   landscape. Below 40 was the old test, from when 26 and 64 were the only widths
+   and nothing sat between them; visio at exactly 40 fell on the wrong side and
+   truncated the day's low. */
+static bool clock_narrow(const canvas_t *c) { return c->cols < 62; }
 
 /*
  * Where the digits go, and how many rows they take.
@@ -1706,6 +1766,11 @@ static void draw_clock_extras(canvas_t *c, int first_row)
    frame: it must hold still while you read it. */
 static void draw_saver(canvas_t *c, uint32_t secs)
 {
+    /* Clear first: the saver draws only the drifting time, and without this it
+       left the page underneath showing around it -- on visio's wide landscape
+       that was a whole room chart bleeding through beside the clock. */
+    canvas_clear(c);
+
     char buf[9];
     timecalc_format_hms(secs, buf);
 
@@ -1732,8 +1797,9 @@ static void draw_clock(canvas_t *c, int64_t now)
     if (!s_synced) {
         if (s_drawn_second != -2) {
             s_drawn_second = -2;
+            canvas_clear(c);
             draw_clock_extras(c, clock_face(c, "--:--:--"));
-            vw_menu_tab(c);
+            if (s_pages.available & PAGE_BIT(PAGE_MENU)) vw_menu_tab(c);
             display_blit();
         }
         return;
@@ -1753,10 +1819,37 @@ static void draw_clock(canvas_t *c, int64_t now)
 #else
     if ((int)secs == s_drawn_second) return;
 #endif
+    /* Wipe the whole canvas, not just the digits: the clock redraws only its
+       own area, so without this the page underneath (a room chart) stays frozen
+       on the rest of the screen while only the time ticks. Double-buffered
+       through the rotation, so a full clear each second does not flicker. */
+    canvas_clear(c);
     draw_clock_extras(c, clock_face(c, buf));
-    vw_menu_tab(c);
+    if (s_pages.available & PAGE_BIT(PAGE_MENU)) vw_menu_tab(c);
     display_blit();
     s_drawn_second = (int)secs;
+}
+
+/*
+ * The multi-day forecast, one day a row, pushed from the Mac (push-clock.sh).
+ * Each line is already formatted there, so this only lays them out -- today
+ * bright at the top, the rest dimmer, a blank row between on the tall panel.
+ */
+static void draw_forecast(canvas_t *c)
+{
+    canvas_clear(c);
+    canvas_fill_rect(c, 0, 0, c->w, c->cell_h, PAL_A0);
+    canvas_puts(c, 1, 0, "FORECAST", PAL_BG);
+
+    int row = 2, shown = 0;
+    for (int i = 0; i < UD_FC_DAYS && row < c->rows; i++) {
+        if (s_data.forecast[i][0] == '\0') continue;
+        canvas_puts(c, 1, row, s_data.forecast[i], i == 0 ? PAL_FG : PAL_DIM);
+        row += 2;
+        shown++;
+    }
+    if (shown == 0) centred(c, c->rows / 2, "no forecast yet", PAL_DIM);
+    display_blit();
 }
 
 
@@ -1807,23 +1900,37 @@ void app_main(void)
     available &= ~(PAGE_BIT(PAGE_MENU) | PAGE_BIT(PAGE_SETTINGS));
 #endif
 #if CONFIG_SCREEN_ENV_ONLY
+    /* Probe the room sensors before the page list is built just below: the VOC,
+       CO2 and pressure pages are each offered only if their sensor actually
+       answered, and deciding that needs the sensor known here, not after. The
+       gas sensor being detected after the list was built is exactly why the
+       air-quality and CO2 pages were missing. The shared bme280_init later is
+       skipped for this board so it is not probed twice. */
+    bme280_init();
+    aht21_init();
+    ens160_init();
+    s_env_gas = ens160_present();
+
     /* An environment logger, and nothing else: the clock and the three
        readings. Everything else is either compiled out or struck off here. */
-    available &= PAGE_BIT(PAGE_CLOCK)
-               | PAGE_BIT(PAGE_ROOM_TEMP) | PAGE_BIT(PAGE_ROOM_RH)
-               | PAGE_BIT(PAGE_ROOM_HPA)
-               | PAGE_BIT(PAGE_ROOM_VOC) | PAGE_BIT(PAGE_ROOM_CO2)
-               | PAGE_BIT(PAGE_TREND) | PAGE_BIT(PAGE_WEEK);
+    /* The dashboard: clock, forecast, and two stacked readings-pages that fill
+       the tall panel -- Climate (temperature over humidity) and Air (air
+       quality over CO2). The single-reading pages, pressure, the trend and the
+       week are struck off; they are for the short panels this one is not. */
+    available &= PAGE_BIT(PAGE_CLOCK) | PAGE_BIT(PAGE_FORECAST)
+               | PAGE_BIT(PAGE_CLIMATE) | PAGE_BIT(PAGE_AIR);
 
-    /* A page per thing the board can actually measure. Offering a pressure
-       chart on a board with no barometer is offering an empty room. */
-    if (!bme280_present()) available &= ~PAGE_BIT(PAGE_ROOM_HPA);
-    if (!s_env_gas) available &= ~(PAGE_BIT(PAGE_ROOM_VOC) | PAGE_BIT(PAGE_ROOM_CO2));
+    /* A page only for what the board can actually measure. */
+    if (!s_env_gas) available &= ~PAGE_BIT(PAGE_AIR);
+    if (!aht21_present() && !bme280_present()) available &= ~PAGE_BIT(PAGE_CLIMATE);
 #else
+    /* The forecast belongs to the weather dashboard (visio), not to lilly's
+       clock/usage slideshow -- strip it here or a small non-ENV panel offers
+       it too. */
     available &= ~(PAGE_BIT(PAGE_ROOM_TEMP) | PAGE_BIT(PAGE_ROOM_RH)
                  | PAGE_BIT(PAGE_ROOM_HPA) | PAGE_BIT(PAGE_ROOM_VOC)
                  | PAGE_BIT(PAGE_ROOM_CO2) | PAGE_BIT(PAGE_TREND)
-                 | PAGE_BIT(PAGE_WEEK));
+                 | PAGE_BIT(PAGE_WEEK) | PAGE_BIT(PAGE_FORECAST));
 #endif
     /* Both IMU pages need a sensor, which the page table cannot know about:
        it describes boards, and this is a question about what is plugged into
@@ -1842,6 +1949,16 @@ void app_main(void)
 #if !HAVE_PARTICLES
     available &= ~(PAGE_BIT(PAGE_PARTICLES) | PAGE_BIT(PAGE_TIMER)
                  | PAGE_BIT(PAGE_STOPWATCH));
+#endif
+#if HAVE_PIP
+    /* visio is Pip's board: the face is home, with the clock and BLE messages
+       still reachable behind it. The data pages want a panel she does not have,
+       and her other subsystems become their own apps in later increments. Pip
+       needs the IMU; without it she falls back to the clock. */
+    if (!s_imu) available &= ~PAGE_BIT(PAGE_PIP);
+    available &= PAGE_BIT(PAGE_PIP) | PAGE_BIT(PAGE_CLOCK) | PAGE_BIT(PAGE_MESSAGE);
+#else
+    available &= ~PAGE_BIT(PAGE_PIP);
 #endif
     /* Any board may have a DS3231 wired to its I2C bus, so every board asks.
        One without simply does without, the way a board without an IMU does --
@@ -1907,15 +2024,11 @@ void app_main(void)
     drift_init(&s_drift, DRIFT_EVERY_S);
     /* Not finding one is ordinary: the board does without, as it does
        without a clock. It says so in the log either way, so a module that
-       is plugged in but silent is distinguishable from one that is absent. */
+       is plugged in but silent is distinguishable from one that is absent.
+       On an ENV_ONLY board these were already brought up before the page list
+       was built, so only the other boards probe here. */
+#if !CONFIG_SCREEN_ENV_ONLY
     bme280_init();
-#if CONFIG_SCREEN_ENV_ONLY
-    aht21_init();
-    ens160_init();
-    /* The third chart is TVOC where there is a gas sensor and pressure where
-       there is a barometer. A board with both would chart the gas, which is
-       the rarer and more interesting of the two. */
-    s_env_gas = ens160_present();
 #endif
 #if CONFIG_SCREEN_ENV_ONLY
     {
@@ -1959,6 +2072,13 @@ void app_main(void)
         shakedet_init(&s_shake);
     }
 #endif
+#if HAVE_PIP
+    if (s_imu) {
+        pip_init(&s_pip);
+        shakedet_init(&s_pip_shake);
+        ESP_LOGI(TAG, "pip awake on %dx%d", c->w, c->h);
+    }
+#endif
     pages_show(&s_pages, home_page(), esp_timer_get_time());
 
     int64_t last_beat = 0;
@@ -1980,6 +2100,10 @@ void app_main(void)
 #if HAVE_PARTICLES
         if (s_imu && s_pages.current == PAGE_PARTICLES)
             period_us = 33000;      /* the liquid wants every frame it can get */
+#endif
+#if HAVE_PIP
+        if (s_pages.current == PAGE_PIP)
+            period_us = 33000;      /* 30 fps so the eyes move smoothly */
 #endif
         int64_t rest_ms = (period_us - (esp_timer_get_time() - last_wake)) / 1000;
         vTaskDelay(rest_ms > 1 ? pdMS_TO_TICKS(rest_ms) : 1);
@@ -2063,7 +2187,8 @@ void app_main(void)
                    the page, which would be a surprise. */
                 s_pages.last_activity_us = now;
                 ESP_LOGI(TAG, "tap at %d,%d -> wake", tx, ty);
-            } else if (s_pages.current != PAGE_MENU && vw_menu_tab_hit(c, tx, ty)) {
+            } else if ((s_pages.available & PAGE_BIT(PAGE_MENU))
+                       && s_pages.current != PAGE_MENU && vw_menu_tab_hit(c, tx, ty)) {
                 pages_show(&s_pages, PAGE_MENU, now);
                 s_drawn_page = PAGE_COUNT;
                 ESP_LOGI(TAG, "tap at %d,%d -> menu tab", tx, ty);
@@ -2104,6 +2229,27 @@ void app_main(void)
                 ESP_LOGI(TAG, "tap at %d,%d -> page %d", tx, ty, (int)p);
             }
             s_auto_jumped = false;          /* a tap means a person is choosing */
+        }
+
+        /*
+         * A horizontal swipe pages left or right. touch_tapped() above already
+         * polled the controller, so this only reads what the gesture came to;
+         * a driver with no swipe (the CrowPanel's) returns 0. A swipe during
+         * the saver just wakes, like a tap.
+         */
+        if (touch) {
+            int swipe = touch_swipe();
+            if (swipe != 0) {
+                if (s_saver) {
+                    s_pages.last_activity_us = now;
+                } else {
+                    page_t p = swipe > 0 ? pages_advance(&s_pages, now)
+                                         : pages_back(&s_pages, now);
+                    ESP_LOGI(TAG, "swipe %s -> page %d",
+                             swipe > 0 ? "next" : "prev", (int)p);
+                    s_auto_jumped = false;
+                }
+            }
         }
 
         /* The double-tap window has closed with no second tap, so the first
@@ -2205,6 +2351,12 @@ void app_main(void)
         if (s_pages.current == PAGE_TIMER) s_pages.last_activity_us = now;
         if (s_pages.current == PAGE_STOPWATCH) s_pages.last_activity_us = now;
 #endif
+#if HAVE_PIP
+        /* Pip is a live face, always moving -- no burn-in to protect against,
+           and a screensaver that replaced her with a drifting clock would be a
+           downgrade. She is home and stays put. */
+        if (s_pages.current == PAGE_PIP) s_pages.last_activity_us = now;
+#endif
         bool saver_now = s_synced && pages_saver_active(&s_pages, now);
         if (saver_now != s_saver) {
             s_saver = saver_now;
@@ -2275,7 +2427,11 @@ void app_main(void)
                 display_blit();
             } else {
                 /* The few pages that draw from something other than the
-                   merged view. The clock draws itself below, every second. */
+                   merged view. The clock draws itself below, every second, and
+                   does not clear as it goes -- so wipe the previous page here,
+                   on entry, or it shows through beneath the clock (a room chart
+                   bleeding around the digits on visio's cycling dashboard). */
+                canvas_clear(c);
                 switch (s_pages.current) {
                 case PAGE_MESSAGE:  draw_message(c); display_blit(); break;
                 case PAGE_TODAY:    views_today(c, &s_data); display_blit(); break;
@@ -2305,10 +2461,13 @@ void app_main(void)
         if (s_pages.current == PAGE_ROOM_HPA)  draw_room(c, ENV_HPA);
         if (s_pages.current == PAGE_ROOM_VOC)  draw_room(c, ENV_VOC);
         if (s_pages.current == PAGE_ROOM_CO2)  draw_room(c, ENV_CO2);
+        if (s_pages.current == PAGE_CLIMATE)   draw_climate(c);
+        if (s_pages.current == PAGE_AIR)       draw_air(c);
         if (s_pages.current == PAGE_TREND)     draw_trend(c);
         if (s_pages.current == PAGE_WEEK)      draw_week(c, now);
 #endif
         if (s_pages.current == PAGE_CLOCK) draw_clock(c, now);
+        if (s_pages.current == PAGE_FORECAST) draw_forecast(c);
         if (s_pages.current == PAGE_RTC) draw_rtc(c, now);
         if (s_pages.current == PAGE_TEMPS) {
             templog_draw(&s_templog, c);
@@ -2321,6 +2480,9 @@ void app_main(void)
         if (s_pages.current == PAGE_PARTICLES && s_imu) draw_particles(c, now);
         if (s_pages.current == PAGE_TIMER && s_imu) draw_timer(c, now);
         if (s_pages.current == PAGE_STOPWATCH && s_imu) draw_stopwatch(c, now);
+#endif
+#if HAVE_PIP
+        if (s_pages.current == PAGE_PIP) draw_pip(c, now);
 #endif
         /* Pages with ages on them redraw on their own so the ages keep counting. */
         if (pd->refresh_us > 0 && now - s_page_drawn_us > pd->refresh_us)

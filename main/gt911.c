@@ -153,4 +153,6 @@ bool touch_tapped(void) { return gt911_tapped(); }
 void touch_point(int *x, int *y) { gt911_point(x, y); }
 /* This controller already reports in the orientation the panel is used in. */
 void touch_raw(int *x, int *y) { gt911_point(x, y); }
+/* The CrowPanel navigates by tapping tiles, not swiping, so it has no gesture. */
+int touch_swipe(void) { return 0; }
 const char *touch_debug(void) { return gt911_debug(); }

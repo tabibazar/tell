@@ -56,6 +56,12 @@ idf.py -B build-wave \
   -D SDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.defaults.wave" \
   -D SDKCONFIG=sdkconfig.wave build
 tools/flash-wave.sh --full      # first flash only; app alone after that
+
+# Waveshare ESP32-S3-Touch-LCD-3.5B, visio -- AXS15231B panel over QSPI
+idf.py -B build-visio \
+  -D SDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.defaults.visio" \
+  -D SDKCONFIG=sdkconfig.visio build
+tools/flash-visio.sh --full     # first flash wipes Waveshare's factory demo
 ```
 
 See [hardware/t-display-s3.md](hardware/t-display-s3.md) and

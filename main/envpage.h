@@ -102,6 +102,11 @@ int envchart_nice_step(int16_t lo, int16_t hi, int max_lines);
  * worth paying: what the page is for is the shape of one against the other,
  * and that survives the separate scaling intact.
  */
+/* Two readings stacked -- `a` in the top half of the panel, `b` in the bottom,
+   each a titled chart with its own axis. Fills a tall portrait panel that one
+   chart leaves half empty. */
+void env2_draw(canvas_t *c, const envpage_t *a, const envpage_t *b);
+
 void envpair_draw(canvas_t *c, const char *title, const char *value,
                   const char *footer, const envchart_t *a, uint16_t colour_a,
                   const envchart_t *b, uint16_t colour_b);

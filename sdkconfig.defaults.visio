@@ -1,0 +1,28 @@
+CONFIG_SCREEN_BOARD_TOUCH_LCD_35B=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions-visio.csv"
+
+# 16 MB flash, like lilly, so the base file's 4 MB must be undone.
+CONFIG_ESPTOOLPY_FLASHSIZE_4MB=n
+CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+
+# Native USB-Serial-JTAG like lilly, so the console settings in
+# sdkconfig.defaults are already right and nothing is overridden here.
+
+# PSRAM on, unlike lilly. Her framebuffer was 107 KB and fit internal memory;
+# visio's is 320*480*2 = 307 KB and cannot, so it goes to PSRAM. The fingerprint
+# read the chip's eFuse as 8 MB AP_3v3, which is octal, so octal mode it is.
+# Flash stays quad -- the eFuse says so, and only the PSRAM is octal here.
+CONFIG_SPIRAM=y
+CONFIG_SPIRAM_MODE_OCT=y
+
+# An environment + weather dashboard, not a games board. ENV_ONLY brings up
+# the AHT21 and ENS160 (temp/humidity and the gas sensor) and the room pages,
+# and drops everything that is not the clock or a reading. The DS3231 the user
+# wired is probed regardless and gives battery-backed time. Weather still
+# arrives on the clock page from the Mac; the forecast page is added on top.
+CONFIG_SCREEN_ENV_ONLY=y
+
+# Glance-able: the readings cycle on their own every 20 seconds rather than
+# waiting for a button, since visio has no wired navigation yet. Explicit
+# because the cached sdkconfig keeps a stale value otherwise.
+CONFIG_SCREEN_ROTATE_SECS=20

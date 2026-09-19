@@ -40,6 +40,39 @@ CODES = {
 }
 
 
+def forecast():
+    """Print up to seven days, one per line, tagged d0..d6 for !forecast."""
+    import datetime
+    url = ("https://api.open-meteo.com/v1/forecast"
+           "?latitude=%s&longitude=%s"
+           "&daily=weather_code,temperature_2m_max,temperature_2m_min,"
+           "precipitation_probability_max"
+           "&forecast_days=7&timezone=%s") % (LAT, LON, TZ)
+    try:
+        out = subprocess.run(["curl", "-sS", "--max-time", "15", url],
+                             capture_output=True, text=True, timeout=20)
+        d = json.loads(out.stdout)
+        day = d["daily"]
+    except Exception as e:                      # noqa: BLE001
+        print("forecast: %s" % e, file=sys.stderr)
+        return 0
+
+    times = day.get("time", [])
+    for i in range(min(7, len(times))):
+        date = datetime.date.fromisoformat(times[i])
+        name = date.strftime("%a")              # Mon, Tue, ...
+        cond = CODES.get(day["weather_code"][i], "?")
+        hi = day["temperature_2m_max"][i]
+        lo = day["temperature_2m_min"][i]
+        pop = (day.get("precipitation_probability_max") or [None] * 7)[i]
+        line = "%-3s %-9s %2.0f/%2.0f" % (name, cond[:9], hi, lo)
+        if pop:
+            line += " %d%%" % pop
+        line = "".join(c for c in line if 32 <= ord(c) <= 126)[:40]
+        print("d%d %s" % (i, line))
+    return 0
+
+
 def main():
     # curl rather than urllib: this machine's Python has no usable CA bundle
     # and urlopen fails with CERTIFICATE_VERIFY_FAILED.
@@ -95,4 +128,6 @@ def main():
 
 
 if __name__ == "__main__":
+    if "--forecast" in sys.argv:
+        sys.exit(forecast())
     sys.exit(main())

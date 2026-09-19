@@ -3,7 +3,12 @@ build-crowpanel/
 build-crow/
 build-big/
 build-lilly/
+build-visio/
 build/
+
+# Managed components are fetched from idf_component.yml + dependencies.lock,
+# so the tree keeps the manifest and the lock, not the downloaded sources.
+managed_components/
 dist/
 .cache/
 firmware-backup/
@@ -38,6 +43,8 @@ sdkconfig.big
 sdkconfig.crowpanel.old
 sdkconfig.lilly
 sdkconfig.lilly.old
+sdkconfig.visio
+sdkconfig.visio.old
 sdkconfig.old
 .claude/settings.local.json
 
@@ -47,3 +54,4 @@ host_tests/test_drift
 host_tests/test_envstore
 host_tests/test_envpage
 host_tests/test_ens160
+host_tests/test_pip

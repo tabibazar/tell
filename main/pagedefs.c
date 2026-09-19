@@ -27,6 +27,7 @@ const page_def_t page_defs[PAGE_COUNT] = {
     [PAGE_TURNS]    = { "Turns",         UD_FEED(UD_TURNS),             views_turns,    true,  0,        PG_BIG,  false, true  },
     [PAGE_MESSAGE]  = { "Message",       0,                             NULL,           false, 0,        PG_BOTH,  false, true  },
     [PAGE_DAILY]    = { "Tokens per day", UD_FEED(UD_DAILY),            views_daily,    true,  0,        PG_BIG,  false, true  },
+    [PAGE_PIP]      = { "Pip",           0,                             NULL,           false, 0,        PG_BOTH,  false, false },
     [PAGE_PARTICLES]= { "Sand",          0,                             NULL,           false, 0,        PG_BOTH,  false, false },
     [PAGE_TIMER]    = { "Timer",         0,                             NULL,           false, 0,        PG_BOTH,  false, false },
     [PAGE_STOPWATCH]= { "Stopwatch",     0,                             NULL,           false, 0,        PG_BOTH,  false, false },
@@ -49,5 +50,8 @@ const page_def_t page_defs[PAGE_COUNT] = {
        ones made the rotation seven pages, and a loop you have to wait two
        minutes for is one nobody watches. */
     [PAGE_WEEK]     = { "This week",     0,                             NULL,           false, SEC(1),   PG_SMALL, false, true  },
+    [PAGE_FORECAST] = { "Forecast",      UD_FEED(UD_FORECAST),          NULL,           false, 0,        PG_SMALL, false, true  },
+    [PAGE_CLIMATE]  = { "Climate",       0,                             NULL,           false, SEC(10),  PG_SMALL, false, true  },
+    [PAGE_AIR]      = { "Air",           0,                             NULL,           false, SEC(10),  PG_SMALL, false, true  },
     [PAGE_SETTINGS] = { "Settings",      0,                             NULL,           false, 0,        PG_BIG,  true,  false },
 };

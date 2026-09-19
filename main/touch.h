@@ -31,6 +31,14 @@ void touch_point(int *x, int *y);
    everything else should use touch_point, which speaks canvas. */
 void touch_raw(int *x, int *y);
 
+/*
+ * A horizontal swipe, consumed once on release: -1 for a swipe left, +1 for a
+ * swipe right, 0 for none. Reads the controller itself, so calling it is what
+ * drives the gesture -- poll it once a frame. A driver whose panel does not
+ * swipe returns 0.
+ */
+int touch_swipe(void);
+
 /* A diagnostic one-liner, for showing on the panel when no cable is on. */
 const char *touch_debug(void);
 

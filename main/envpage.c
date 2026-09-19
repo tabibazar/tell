@@ -246,6 +246,43 @@ void envpage_draw(canvas_t *c, const envpage_t *p)
     canvas_fill_rect(c, 0, (c->rows - 1) * c->cell_h - 1, c->w, 1, PAL_DIM);
 }
 
+/* One titled chart filling rows [r0, r1): a title bar on r0, then a charted
+   band with a value axis down the rest. Used by env2_draw to stack two. */
+static void env2_panel(canvas_t *c, int r0, int r1, const envpage_t *p)
+{
+    canvas_fill_rect(c, 0, r0 * c->cell_h, c->w, c->cell_h, PAL_TITLE_BG);
+    if (p->title) canvas_puts(c, 0, r0, p->title, PAL_FG);
+    if (p->value) {
+        int len = (int)strlen(p->value);
+        int col = c->cols - len;
+        canvas_puts(c, col < 0 ? 0 : col, r0, p->value, PAL_FG);
+    }
+    const int left = ENVPAGE_GUTTER * c->cell_w;
+    const int top = (r0 + 1) * c->cell_h + 1;
+    const int bottom = r1 * c->cell_h - 2;
+    if (bottom - top < 6) return;
+
+    int16_t lo, hi;
+    if (envchart_range(p->recent, &lo, &hi))
+        axis_values(c, p, lo, hi, left, top, bottom, r1 - 1);
+    band_at(c, p->recent, left, top, bottom, p->colour);
+}
+
+/*
+ * Two related readings, stacked -- one chart in the top half, one in the
+ * bottom. This is what fills a tall portrait panel that a single chart leaves
+ * half empty: temperature over humidity, or air quality over CO2.
+ */
+void env2_draw(canvas_t *c, const envpage_t *a, const envpage_t *b)
+{
+    canvas_clear(c);
+    int mid = c->rows / 2;
+    if (mid < 3) { envpage_draw(c, a); return; }   /* too short to split */
+    env2_panel(c, 0, mid, a);
+    env2_panel(c, mid, c->rows, b);
+    canvas_fill_rect(c, 0, mid * c->cell_h - 1, c->w, 1, PAL_DIM);
+}
+
 void envpair_draw(canvas_t *c, const char *title, const char *value,
                   const char *footer, const envchart_t *a, uint16_t colour_a,
                   const envchart_t *b, uint16_t colour_b)

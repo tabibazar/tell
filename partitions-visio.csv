@@ -1,0 +1,12 @@
+# Waveshare ESP32-S3-Touch-LCD-3.5B (visio): 16 MB flash, native USB, a plain
+# single-app layout with room for the environment log the CrowPanel's 4 MB
+# never had. envlog is a raw partition, not a filesystem: a ring of 4 KB
+# sectors that main/envstore.c writes -- the same ring wave and envo used.
+# Name,     Type, SubType,  Offset,   Size,  Flags
+nvs,        data, nvs,      0x9000,   24K,
+phy_init,   data, phy,      0xf000,   4K,
+factory,    app,  factory,  0x10000,  4M,
+# 2 MB of envlog, not the 512 KB wave used: at one reading a minute and ~16
+# bytes a reading, 2 MB holds ~90 days -- what Reza asked to keep. 16 MB flash
+# has the room lilly's and wave's never did.
+envlog,     data, 0x40,     0x410000, 2M,

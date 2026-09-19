@@ -67,7 +67,15 @@ esp_err_t qmi8658_init(void)
         i2c_device_config_t dev = {
             .dev_addr_length = I2C_ADDR_BIT_LEN_7,
             .device_address = addrs[i],
-            .scl_speed_hz = 400000,
+            /* 100 kHz. On visio the QMI shares one bus with the AXP2101, the
+               RTC, the touch, the codec and an expander -- far more loaded than
+               wave's, where 400 kHz was fine -- so the conservative rate. It is
+               not the cure for the "I2C transaction timeout" the driver logs on
+               a few percent of reads here (that rate is the same at either
+               speed and looks like an IDF driver quirk on a busy bus); those
+               reads just return an error and Pip coasts that one frame. A
+               12-byte read at 100 kHz is ~1.2 ms, far inside a 30 fps frame. */
+            .scl_speed_hz = 100000,
         };
         if (i2c_master_bus_add_device(i2cbus_handle(I2CBUS_MAIN), &dev, &s_dev) != ESP_OK)
             continue;

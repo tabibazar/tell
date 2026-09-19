@@ -9,16 +9,37 @@
 # on. The spirit level is the Feather's alone; the buttons are lilly's. lilly
 # has no sensor of any kind, so she carries none of it and neither does the
 # CrowPanel.
-# Two boards, two panel buses. The IMU and the pages that need one went with
-# the boards that had one; the drivers stay in the tree for whatever turns up
-# next, excluded here rather than deleted.
+# The IMU and the pages that need one went with the boards that had one; the
+# drivers stay in the tree for whatever turns up next, excluded here rather
+# than deleted. visio has a QMI8658 soldered on, so the sand could come back to
+# her -- but not in this first cut, which brings the panel up and no more.
+# Three boards now, three panel buses: the CrowPanel's RGB, lilly's i80, and
+# visio's AXS15231B over QSPI. Each has its own display_*.c and only one is
+# compiled. visio also carries axp2101.c, the PMIC that powers her panel rail;
+# the others have no such chip, so it is excluded from their builds.
+# visio keeps the IMU (qmi8658) and the shake detector (in shaketimer.c) for
+# Pip, her desk familiar (pip.c), but not the sand or the level. The other
+# boards have no sensor and carry none of it, Pip included.
 if(CONFIG_SCREEN_BOARD_CROWPANEL_7)
-    set(BOARD_EXCLUDES "display_i80.c"
-                       "qmi8658.c" "level.c" "particles.c" "shaketimer.c")
+    set(BOARD_EXCLUDES "display_i80.c" "display_axs15231b.c" "axp2101.c"
+                       "qmi8658.c" "level.c" "particles.c" "shaketimer.c"
+                       "pip.c" "axs_touch.c")
+elseif(CONFIG_SCREEN_BOARD_TOUCH_LCD_35B)
+    # An environment + weather display: her own QSPI panel and PMIC, the
+    # AXS15231B touch for swipes, and none of the IMU games (Pip, the maze) she
+    # briefly carried. The GT911 is the CrowPanel's touch, not hers.
+    set(BOARD_EXCLUDES "display_rgb.c" "display_i80.c"
+                       "qmi8658.c" "level.c" "particles.c" "shaketimer.c"
+                       "pip.c" "gt911.c")
 else()
-    set(BOARD_EXCLUDES "display_rgb.c"
-                       "qmi8658.c" "level.c" "particles.c" "shaketimer.c")
+    set(BOARD_EXCLUDES "display_rgb.c" "display_axs15231b.c" "axp2101.c"
+                       "qmi8658.c" "level.c" "particles.c" "shaketimer.c"
+                       "pip.c" "axs_touch.c")
 endif()
+
+# One touch driver per board -- both define the same touch_* interface, so
+# exactly one is compiled. gt911 on the CrowPanel, axs_touch on visio, and on a
+# board with no touch it does not matter which is left in; gt911 stays.
 
 # An environment logger has no use for the sensor toys, and dropping them
 # takes the IMU driver with them. See SCREEN_ENV_ONLY in Kconfig.projbuild.
@@ -32,4 +53,4 @@ idf_component_register(
     SRC_DIRS "."
     EXCLUDE_SRCS ${BOARD_EXCLUDES}
     INCLUDE_DIRS "."
-    REQUIRES esp_lcd driver esp_driver_ledc esp_driver_i2c esp_driver_tsens esp_timer bt nvs_flash esp_event)
+    REQUIRES esp_lcd driver esp_driver_ledc esp_driver_i2c esp_driver_spi esp_driver_tsens esp_timer bt nvs_flash esp_event)

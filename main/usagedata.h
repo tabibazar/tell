@@ -270,6 +270,11 @@ typedef struct {
        but not a sentence. Zero year means none was sent. */
     int date_year, date_month, date_day, date_wday;
     char weather[UD_TEXT_MAX + 1];
+
+    /* Up to a week of forecast, one pre-formatted line per day from the Mac
+       ("Sat  Rain   18/10  60%"). Empty lines are days not sent. */
+#define UD_FC_DAYS 7
+    char forecast[UD_FC_DAYS][UD_TEXT_MAX + 1];
     /* Also from the Mac's clock payload: the local offset from UTC in
        minutes and the zone's name, so the title bars can show UTC beside the
        local time. have_utc is false until a Mac has said. */
@@ -488,6 +493,7 @@ typedef enum {
        sand or liquid, and the Feather's spirit level. A board without the
        sensor never offers the page; the kinds cost it nothing but a name. */
     UD_PARTICLES, UD_LEVEL, UD_FLIP, UD_ZERO, UD_NEWGAME, UD_TIMER, UD_PAGE, UD_STOPWATCH,
+    UD_FORECAST,
     UD_KIND_COUNT
 } ud_kind_t;
 
