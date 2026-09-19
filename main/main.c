@@ -26,6 +26,12 @@
 #endif
 #if defined(CONFIG_SCREEN_BOARD_TOUCH_LCD_35B)
 #include "axp2101.h"
+/* SPIKE (task B1, throwaway): camera + SD bring-up. Remove with camera_spike(). */
+#include "esp_camera.h"
+#include "esp_vfs_fat.h"
+#include "driver/sdmmc_host.h"
+#include "sdmmc_cmd.h"
+#include "i2cbus.h"
 #endif
 #include "settings.h"
 #include "shaketimer.h"
@@ -1998,6 +2004,124 @@ static void draw_forecast(canvas_t *c)
 
 
 
+#if defined(CONFIG_SCREEN_BOARD_TOUCH_LCD_35B)
+/*
+ * SPIKE (task B1) — THROWAWAY bring-up, not the real camera module (B2/B3).
+ * Proves one OV5640 frame over the DVP header and one JPEG to microSD.
+ *
+ * SCCB decision: SHARED PORT. The OV5640's SCCB lines are GPIO8/7, which are
+ * I2CBUS_MAIN (i2cbus.c, I2C_NUM_0) driven by the new i2c_master driver. We set
+ * sccb_i2c_port=0 and pin_sccb_sda/scl=-1 so esp_camera calls SCCB_Use_Port():
+ * it attaches to the existing bus (i2c_master_get_bus_handle) and, because it
+ * does not own the port, esp_camera_deinit() removes only its own SCCB device
+ * and leaves i2cbus's bus alive. Requires CONFIG_SCCB_HARDWARE_I2C_DRIVER_NEW.
+ *
+ * LEDC: the backlight owns LEDC_TIMER_0/CHANNEL_0 (display_axs15231b.c), so the
+ * XCLK generator is pushed to TIMER_1/CHANNEL_1 or it would kill the backlight.
+ *
+ * SD (Waveshare demo 07_sd_test): 1-bit SDMMC, clk=11 cmd=10 d0=9.
+ */
+static void camera_spike_fill(camera_config_t *c)
+{
+    *c = (camera_config_t){
+        .pin_pwdn = -1, .pin_reset = -1,
+        .pin_xclk = 38,
+        .pin_sccb_sda = -1, .pin_sccb_scl = -1, .sccb_i2c_port = I2C_NUM_0,
+        .pin_d0 = 45, .pin_d1 = 47, .pin_d2 = 48, .pin_d3 = 46,
+        .pin_d4 = 42, .pin_d5 = 40, .pin_d6 = 39, .pin_d7 = 21,
+        .pin_vsync = 17, .pin_href = 18, .pin_pclk = 41,
+        .xclk_freq_hz = 20000000,
+        .ledc_timer = LEDC_TIMER_1, .ledc_channel = LEDC_CHANNEL_1,
+        .fb_location = CAMERA_FB_IN_PSRAM,
+        .grab_mode = CAMERA_GRAB_WHEN_EMPTY,
+        .fb_count = 1,
+        .jpeg_quality = 12,
+    };
+}
+
+static void camera_spike(void)
+{
+    ESP_LOGI(TAG, "camera_spike: begin");
+    /* SCCB rides this bus; make sure it exists before esp_camera attaches. */
+    i2cbus_init(I2CBUS_MAIN);
+
+    /* Part 1: one RGB565 QVGA frame from PSRAM. */
+    camera_config_t cfg;
+    camera_spike_fill(&cfg);
+    cfg.pixel_format = PIXFORMAT_RGB565;
+    cfg.frame_size = FRAMESIZE_QVGA;
+    esp_err_t err = esp_camera_init(&cfg);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "camera_spike: esp_camera_init(RGB565) failed: %s",
+                 esp_err_to_name(err));
+        return;
+    }
+    camera_fb_t *fb = esp_camera_fb_get();
+    if (fb) {
+        ESP_LOGI(TAG, "camera_spike: RGB565 frame %ux%u len=%u fmt=%d",
+                 (unsigned)fb->width, (unsigned)fb->height,
+                 (unsigned)fb->len, (int)fb->format);
+        esp_camera_fb_return(fb);
+    } else {
+        ESP_LOGE(TAG, "camera_spike: esp_camera_fb_get(RGB565) returned NULL");
+    }
+    esp_camera_deinit();
+
+    /* Part 2: mount 1-bit SDMMC and write one JPEG. */
+    sdmmc_host_t host = SDMMC_HOST_DEFAULT();
+    host.flags = SDMMC_HOST_FLAG_1BIT;
+    host.max_freq_khz = SDMMC_FREQ_DEFAULT;
+    sdmmc_slot_config_t slot = SDMMC_SLOT_CONFIG_DEFAULT();
+    slot.clk = 11; slot.cmd = 10; slot.d0 = 9;
+    slot.width = 1;
+    slot.flags |= SDMMC_SLOT_FLAG_INTERNAL_PULLUP;
+    esp_vfs_fat_sdmmc_mount_config_t mnt = {
+        .format_if_mount_failed = false,   /* never format the user's card */
+        .max_files = 4,
+        .allocation_unit_size = 16 * 1024,
+    };
+    sdmmc_card_t *card = NULL;
+    err = esp_vfs_fat_sdmmc_mount("/sdcard", &host, &slot, &mnt, &card);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "camera_spike: SD mount failed: %s", esp_err_to_name(err));
+        return;
+    }
+    ESP_LOGI(TAG, "camera_spike: SD mounted (%lluMB)",
+             ((uint64_t)card->csd.capacity * card->csd.sector_size) >> 20);
+
+    camera_spike_fill(&cfg);
+    cfg.pixel_format = PIXFORMAT_JPEG;
+    cfg.frame_size = FRAMESIZE_SVGA;
+    err = esp_camera_init(&cfg);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "camera_spike: esp_camera_init(JPEG) failed: %s",
+                 esp_err_to_name(err));
+        esp_vfs_fat_sdcard_unmount("/sdcard", card);
+        return;
+    }
+    fb = esp_camera_fb_get();
+    if (fb) {
+        ESP_LOGI(TAG, "camera_spike: JPEG frame %ux%u len=%u",
+                 (unsigned)fb->width, (unsigned)fb->height, (unsigned)fb->len);
+        FILE *f = fopen("/sdcard/spike.jpg", "wb");
+        if (f) {
+            size_t n = fwrite(fb->buf, 1, fb->len, f);
+            fclose(f);
+            ESP_LOGI(TAG, "camera_spike: wrote /sdcard/spike.jpg (%u bytes)",
+                     (unsigned)n);
+        } else {
+            ESP_LOGE(TAG, "camera_spike: fopen /sdcard/spike.jpg failed");
+        }
+        esp_camera_fb_return(fb);
+    } else {
+        ESP_LOGE(TAG, "camera_spike: esp_camera_fb_get(JPEG) returned NULL");
+    }
+    esp_camera_deinit();
+    esp_vfs_fat_sdcard_unmount("/sdcard", card);
+    ESP_LOGI(TAG, "camera_spike: done");
+}
+#endif /* CONFIG_SCREEN_BOARD_TOUCH_LCD_35B */
+
 void app_main(void)
 {
     if (display_init() != ESP_OK) {
@@ -2018,6 +2142,8 @@ void app_main(void)
             ESP_LOGW(TAG, "battery: gauge did not answer");
         }
     }
+    /* SPIKE (task B1, throwaway): prove one camera frame + one JPEG to SD. */
+    camera_spike();
 #endif
 
     bool touch = false, big = false;

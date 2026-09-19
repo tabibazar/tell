@@ -5,3 +5,9 @@
 # envio alone, so on the other boards it is pulled but simply not linked.
 dependencies:
   espressif/esp_lcd_axs15231b: "^2"
+# esp32-camera drives envio's OV5640 on the 24-pin DVP header. It is only
+# referenced by the envio-only camera bring-up code, so on the other boards it
+# is pulled but not linked. Its SCCB layer must use the new i2c_master driver
+# (CONFIG_SCCB_HARDWARE_I2C_PORT / SCCB_*NG) to coexist with i2cbus's
+# I2CBUS_MAIN; see sdkconfig.defaults.envio.
+  espressif/esp32-camera: "^2.0.0"

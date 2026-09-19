@@ -27,3 +27,12 @@ CONFIG_SCREEN_ENV_ONLY=y
 # drifts the clock. Explicit because the cached sdkconfig keeps a stale value
 # otherwise.
 CONFIG_SCREEN_ROTATE_SECS=0
+
+# Camera (OV5640 on the 24-pin DVP header). esp32-camera's SCCB control lines
+# are GPIO8/7, which ARE I2CBUS_MAIN (i2cbus.c, I2C_NUM_0). The bring-up rides
+# that existing new-driver bus: camera_config_t.sccb_i2c_port = 0 with
+# pin_sccb_sda/scl = -1, so esp_camera calls SCCB_Use_Port (does not create or,
+# on deinit, delete our bus). That REQUIRES the new-driver SCCB backend; the
+# legacy driver/i2c backend would abort at boot against our i2c_master bus.
+# NEW is the component default but pinned here so a stale cache cannot revert it.
+CONFIG_SCCB_HARDWARE_I2C_DRIVER_NEW=y
