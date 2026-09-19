@@ -791,8 +791,21 @@ static void draw_system(canvas_t *c)
     char buf[48];
     int row = 2;
 
-    axp2101_batt_t batt;
-    bool have_batt = axp2101_battery(&batt);
+    /* The gauge changes on a multi-second scale, but this page redraws every
+       tick to keep the uptime clock moving -- so the I2C read itself is
+       throttled to about once a second and the cached sample reused for the
+       ticks in between, rather than hitting the PMIC 20x/s for numbers that
+       have not moved. */
+    static axp2101_batt_t s_batt_cache;
+    static bool s_batt_valid;
+    static int64_t s_batt_last_us;
+    int64_t now_us = esp_timer_get_time();
+    if (!s_batt_valid || now_us - s_batt_last_us > 1000000) {
+        s_batt_valid = axp2101_battery(&s_batt_cache);
+        s_batt_last_us = now_us;
+    }
+    axp2101_batt_t batt = s_batt_cache;
+    bool have_batt = s_batt_valid;
     if (have_batt) {
         const char *state = batt.charge == AXP_CHG_CHARGING ? "charging"
                            : batt.charge == AXP_CHG_DISCHARGING ? "on battery"
