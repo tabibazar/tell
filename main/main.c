@@ -9,6 +9,7 @@
 #include "maze.h"
 #include "qmi8658.h"
 #include "esp_heap_caps.h"
+#include "esp_system.h"
 #include "esp_random.h"
 #include <math.h>
 #include "particles.h"
@@ -22,6 +23,9 @@
 #include "envflash.h"
 #include "envpage.h"
 #include "envstore.h"
+#endif
+#if defined(CONFIG_SCREEN_BOARD_TOUCH_LCD_35B)
+#include "axp2101.h"
 #endif
 #include "settings.h"
 #include "shaketimer.h"
@@ -773,6 +777,62 @@ static void draw_maze(canvas_t *c, int64_t now)
     display_blit();
 }
 #endif /* HAVE_IMU */
+
+#if defined(CONFIG_SCREEN_BOARD_TOUCH_LCD_35B)
+/* System/status page: battery, power source, chip temp, free RAM, uptime and
+   clock state. envio has no microphone (no codec on the 3.5B), so nothing
+   audio-related belongs here. */
+static void draw_system(canvas_t *c)
+{
+    canvas_clear(c);
+    canvas_fill_rect(c, 0, 0, c->w, c->cell_h, PAL_TITLE_BG);
+    canvas_puts(c, 1, 0, "System", PAL_FG);
+
+    char buf[48];
+    int row = 2;
+
+    axp2101_batt_t batt;
+    bool have_batt = axp2101_battery(&batt);
+    if (have_batt) {
+        const char *state = batt.charge == AXP_CHG_CHARGING ? "charging"
+                           : batt.charge == AXP_CHG_DISCHARGING ? "on battery"
+                           : "idle";
+        uint16_t state_colour = batt.charge == AXP_CHG_CHARGING ? PAL_A1 : PAL_FG;
+        if (batt.percent >= 0)
+            snprintf(buf, sizeof buf, "Battery  %d%%  %s", batt.percent, state);
+        else
+            snprintf(buf, sizeof buf, "Battery  --  %s", state);
+        canvas_puts(c, 0, row++, buf, state_colour);
+
+        snprintf(buf, sizeof buf, "         %.2f V", batt.millivolts / 1000.0);
+        canvas_puts(c, 0, row++, buf, PAL_FG);
+
+        snprintf(buf, sizeof buf, "Power    %s", batt.vbus ? "USB in" : "on battery");
+        canvas_puts(c, 0, row++, buf, PAL_FG);
+    } else {
+        canvas_puts(c, 0, row++, "Battery  no PMIC answer", PAL_DIM);
+    }
+
+    float die = 0.0f;
+    if (tempsense_read(&die)) {
+        snprintf(buf, sizeof buf, "Chip     %.1f C", (double)die);
+        canvas_puts(c, 0, row++, buf, PAL_FG);
+    }
+
+    snprintf(buf, sizeof buf, "Free RAM %u KB", (unsigned)(esp_get_free_heap_size() / 1024));
+    canvas_puts(c, 0, row++, buf, PAL_FG);
+
+    int64_t up_s = esp_timer_get_time() / 1000000;
+    snprintf(buf, sizeof buf, "Uptime   %lldh %02lldm",
+             (long long)(up_s / 3600), (long long)((up_s / 60) % 60));
+    canvas_puts(c, 0, row++, buf, PAL_FG);
+
+    snprintf(buf, sizeof buf, "Clock    %s", s_synced ? "RTC ok" : "no time");
+    canvas_puts(c, 0, row++, buf, PAL_FG);
+
+    display_blit();
+}
+#endif /* CONFIG_SCREEN_BOARD_TOUCH_LCD_35B */
 
 /* Charts grow into place when a page appears; 0 means no animation running. */
 #define ANIM_US (600 * 1000LL)
@@ -1933,6 +1993,20 @@ void app_main(void)
         return;
     }
 
+#if defined(CONFIG_SCREEN_BOARD_TOUCH_LCD_35B)
+    /* One-time verification that the PMIC's gauge answers plausibly; not a
+       per-frame log. Safe to remove once confirmed against real hardware. */
+    {
+        axp2101_batt_t batt;
+        if (axp2101_battery(&batt)) {
+            ESP_LOGI(TAG, "battery: %d%% %dmV charge=%d vbus=%d",
+                     batt.percent, batt.millivolts, (int)batt.charge, batt.vbus);
+        } else {
+            ESP_LOGW(TAG, "battery: gauge did not answer");
+        }
+    }
+#endif
+
     bool touch = false, big = false;
 #if HAVE_BUTTONS
     /* Losing the buttons costs navigation, not the display, so carry on. */
@@ -2027,6 +2101,11 @@ void app_main(void)
        not want to be struck off with them. */
 #if HAVE_IMU
     if (s_imu) available |= PAGE_BIT(PAGE_MAZE);
+#endif
+    /* The System page needs no sensor and no touch, so it is not behind the
+       IMU guard above -- it is always available on envio. */
+#if defined(CONFIG_SCREEN_BOARD_TOUCH_LCD_35B)
+    available |= PAGE_BIT(PAGE_SYSTEM);
 #endif
 #if HAVE_PIP
     /* envio is Pip's board: the face is home, with the clock and BLE messages
@@ -2573,6 +2652,9 @@ void app_main(void)
 #endif
 #if HAVE_IMU
         if (s_pages.current == PAGE_MAZE && s_imu) draw_maze(c, now);
+#endif
+#if defined(CONFIG_SCREEN_BOARD_TOUCH_LCD_35B)
+        if (s_pages.current == PAGE_SYSTEM) draw_system(c);
 #endif
         /* Pages with ages on them redraw on their own so the ages keep counting. */
         if (pd->refresh_us > 0 && now - s_page_drawn_us > pd->refresh_us)

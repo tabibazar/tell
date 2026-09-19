@@ -17,6 +17,8 @@
 #include "driver/i2c_master.h"
 #include "esp_log.h"
 
+#include <string.h>
+
 #define AXP2101_ADDR 0x34
 
 /* Registers, from the AXP2101 datasheet. */
@@ -36,6 +38,15 @@
 #define REG_CPUSLDO_VOL 0x98  /* top 3 bits reserved, low 5 are the voltage */
 #define REG_DLDO1_VOL  0x99
 #define REG_DLDO2_VOL  0x9A
+
+/* Battery gauge and status, for axp2101_battery(). */
+#define REG_STATUS0    0x00   /* power-path status; bit5 = VBUS good */
+#define REG_STATUS1    0x01   /* charger status; bits[6:5] = charge state */
+#define REG_ADC_EN     0x30   /* ADC channel enables; bit0 = battery voltage */
+#define REG_GAUGE_EN   0x68   /* battery detection / fuel gauge enable */
+#define REG_BATT_V_H   0x34   /* battery voltage, high 6 bits */
+#define REG_BATT_V_L   0x35   /* battery voltage, low 8 bits */
+#define REG_BATT_PCT   0xA4   /* fuel gauge percent, 0-100 (0xFF = no reading) */
 
 /*
  * Voltage encodings, per the datasheet's per-rail tables:
@@ -147,6 +158,40 @@ esp_err_t axp2101_init(void)
         ESP_LOGE(TAG, "PMIC ack'd but a rail write failed; panel may stay dark");
         return ESP_FAIL;
     }
+
+    /* Battery voltage ADC and fuel gauge, for axp2101_battery(). Waveshare's
+       factory firmware may already have these on; setting the enable bits
+       again is harmless either way. Not fatal if they fail -- a board with no
+       cell wired reads "no answer" from the gauge regardless. */
+    uint8_t adc = 0;
+    if (rd(REG_ADC_EN, &adc) == ESP_OK) wr(REG_ADC_EN, adc | 0x01);
+    else wr(REG_ADC_EN, 0x01);
+    wr(REG_GAUGE_EN, 0x01);
+
     ESP_LOGI(TAG, "PMIC rails up (0x%02x)", AXP2101_ADDR);
     return ESP_OK;
+}
+
+bool axp2101_battery(axp2101_batt_t *out)
+{
+    if (out == NULL) return false;
+    memset(out, 0, sizeof *out);
+
+    uint8_t status0 = 0, status1 = 0, vh = 0, vl = 0, pct = 0;
+    if (rd(REG_STATUS0, &status0) != ESP_OK) return false;
+    if (rd(REG_STATUS1, &status1) != ESP_OK) return false;
+    if (rd(REG_BATT_V_H, &vh) != ESP_OK) return false;
+    if (rd(REG_BATT_V_L, &vl) != ESP_OK) return false;
+    if (rd(REG_BATT_PCT, &pct) != ESP_OK) return false;
+
+    out->percent = (pct <= 100) ? (int)pct : -1;
+    out->millivolts = (int)(((vh & 0x3F) << 8) | vl);
+    out->vbus = (status0 & 0x20) != 0;
+
+    uint8_t chg = (status1 >> 5) & 0x03;
+    if (chg == 0x01) out->charge = AXP_CHG_CHARGING;
+    else if (chg == 0x02) out->charge = AXP_CHG_DISCHARGING;
+    else out->charge = AXP_CHG_STANDBY;
+
+    return true;
 }

@@ -2,6 +2,7 @@
 #define AXP2101_H
 
 #include "esp_err.h"
+#include <stdbool.h>
 
 /*
  * The AXP2101 power-management chip on envio (Waveshare ESP32-S3-Touch-LCD-3.5B).
@@ -22,5 +23,21 @@
 /* Brings the PMIC's rails up over I2CBUS_MAIN. Idempotent; safe to call before
    the bus exists (it creates it). ESP_OK once the rails are enabled. */
 esp_err_t axp2101_init(void);
+
+/* Battery and power-source reading, for the System page. The AXP2101 has no
+   battery-current channel, so there is no draw/charge-rate figure here --
+   only what the gauge itself reports. */
+typedef enum { AXP_CHG_STANDBY, AXP_CHG_CHARGING, AXP_CHG_DISCHARGING } axp2101_charge_t;
+
+typedef struct {
+    int  percent;      /* 0-100, or -1 when the gauge has no reading */
+    int  millivolts;   /* battery voltage, mV */
+    axp2101_charge_t charge;
+    bool vbus;         /* external (USB) power present */
+} axp2101_batt_t;
+
+/* Reads percent, voltage, charge state and VBUS presence over I2CBUS_MAIN.
+   Returns false if the PMIC did not answer any of the registers. */
+bool axp2101_battery(axp2101_batt_t *out);
 
 #endif /* AXP2101_H */
