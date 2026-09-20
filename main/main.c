@@ -32,6 +32,8 @@
 #include "camera.h"
 #include "sdcard.h"
 #include "img_converters.h"
+#include <dirent.h>
+#include <strings.h>
 #endif
 #include "settings.h"
 #include "shaketimer.h"
@@ -989,6 +991,190 @@ static void draw_camera(canvas_t *c)
         canvas_puts_px(c, 6, 2, "camera warming up", PAL_FG);
 
     canvas_puts_px(c, 6, c->h - c->cell_h - 4, "tap to capture", PAL_A1);
+    display_blit();
+}
+
+/* PAGE_GALLERY: browse the JPEGs camera_shutter saved to /sdcard/envio.
+   Filenames only (no path), newest first. Scanned once on entering the
+   page (see the s_prev_page tracking below, alongside the camera's own),
+   not on every draw -- opendir/readdir on every frame would be wasteful
+   and there is no need to notice a photo taken by another session. */
+#define GALLERY_MAX 64
+static char s_gallery_names[GALLERY_MAX][40];
+static int s_gallery_count = 0;
+static int s_gallery_idx = 0;
+
+/* Descending by name: IMG_<timestamp>.jpg sorts newest first among the
+   normal, clock-set names. The "IMG_boot_<seq>" fallback (sd_photo_name,
+   sdcard.c) sorts ahead of all of those ('b' > '2') since it is only ever
+   used before the clock has been set -- an ordering quirk worth knowing
+   about, not a bug worth working around here. */
+static int gallery_name_cmp(const void *a, const void *b)
+{
+    return strcmp((const char *)b, (const char *)a);
+}
+
+static void gallery_scan(void)
+{
+    s_gallery_count = 0;
+    DIR *d = opendir("/sdcard/envio");
+    if (!d) return;   /* no card, or no envio/ yet -- draw_gallery says "no photos yet" */
+
+    struct dirent *e;
+    while (s_gallery_count < GALLERY_MAX && (e = readdir(d)) != NULL) {
+        size_t len = strlen(e->d_name);
+        /* FATFS_LFN may hand back an 8.3 upper-case alias if long names are
+           off, so match the extension case-insensitively. Not filtering on
+           d_type: the FAT VFS does not reliably fill it in. */
+        if (len < 4 || strcasecmp(e->d_name + len - 4, ".jpg") != 0) continue;
+        strncpy(s_gallery_names[s_gallery_count], e->d_name,
+                sizeof s_gallery_names[0] - 1);
+        s_gallery_names[s_gallery_count][sizeof s_gallery_names[0] - 1] = '\0';
+        s_gallery_count++;
+    }
+    closedir(d);
+
+    qsort(s_gallery_names, s_gallery_count, sizeof s_gallery_names[0],
+          gallery_name_cmp);
+}
+
+/* Reads the whole file into a PSRAM buffer, decodes at the largest scale
+   that still fits the panel (leaving room for the caption), blits it
+   centred, and frees both buffers. Any failure along the way draws a
+   message instead of the photo -- this must never crash the page. */
+static void gallery_draw_photo(canvas_t *c, const char *name)
+{
+    char path[320];
+    snprintf(path, sizeof path, "/sdcard/envio/%s", name);
+
+    FILE *f = fopen(path, "rb");
+    if (!f) {
+        char msg[80];
+        snprintf(msg, sizeof msg, "can't read %s", name);
+        canvas_puts_px(c, 6, 2, msg, PAL_FG);
+        return;
+    }
+    fseek(f, 0, SEEK_END);
+    long fsize = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    if (fsize <= 0) {
+        fclose(f);
+        char msg[80];
+        snprintf(msg, sizeof msg, "can't read %s", name);
+        canvas_puts_px(c, 6, 2, msg, PAL_FG);
+        return;
+    }
+
+    uint8_t *jbuf = heap_caps_malloc((size_t)fsize, MALLOC_CAP_SPIRAM);
+    if (!jbuf) {
+        fclose(f);
+        canvas_puts_px(c, 6, 2, "out of memory", PAL_FG);
+        return;
+    }
+    size_t rd = fread(jbuf, 1, (size_t)fsize, f);
+    fclose(f);
+    if (rd != (size_t)fsize) {
+        free(jbuf);
+        char msg[80];
+        snprintf(msg, sizeof msg, "can't read %s", name);
+        canvas_puts_px(c, 6, 2, msg, PAL_FG);
+        return;
+    }
+
+    /* Native dimensions first, undecoded, so the scale below is picked from
+       the real photo (HVGA from camera_capture_rgb today, but this does not
+       assume that) rather than a size hardcoded for one capture config. */
+    esp_jpeg_image_cfg_t info_cfg = {
+        .indata = jbuf,
+        .indata_size = (uint32_t)fsize,
+        .out_format = JPEG_IMAGE_FORMAT_RGB565,
+        .out_scale = JPEG_IMAGE_SCALE_0,
+    };
+    esp_jpeg_image_output_t info = {0};
+    if (esp_jpeg_get_image_info(&info_cfg, &info) != ESP_OK || info.width == 0) {
+        free(jbuf);
+        char msg[80];
+        snprintf(msg, sizeof msg, "can't decode %s", name);
+        canvas_puts_px(c, 6, 2, msg, PAL_FG);
+        return;
+    }
+
+    static const esp_jpeg_image_scale_t scales[] = {
+        JPEG_IMAGE_SCALE_0, JPEG_IMAGE_SCALE_1_2, JPEG_IMAGE_SCALE_1_4, JPEG_IMAGE_SCALE_1_8
+    };
+    static const int divs[] = { 1, 2, 4, 8 };
+    int max_w = c->w - 8;
+    int max_h = c->h - c->cell_h - 16;   /* leaves room for the caption row */
+    esp_jpeg_image_scale_t scale = JPEG_IMAGE_SCALE_1_8;
+    int div = 8;
+    for (size_t i = 0; i < sizeof divs / sizeof divs[0]; i++) {
+        if ((int)info.width / divs[i] <= max_w && (int)info.height / divs[i] <= max_h) {
+            scale = scales[i];
+            div = divs[i];
+            break;
+        }
+    }
+
+    int out_w = (int)info.width / div;
+    int out_h = (int)info.height / div;
+    size_t out_len = (size_t)out_w * (size_t)out_h * 2;
+    uint16_t *pixels = heap_caps_malloc(out_len, MALLOC_CAP_SPIRAM);
+    if (!pixels) {
+        free(jbuf);
+        canvas_puts_px(c, 6, 2, "out of memory", PAL_FG);
+        return;
+    }
+
+    esp_jpeg_image_cfg_t cfg = {
+        .indata = jbuf,
+        .indata_size = (uint32_t)fsize,
+        .outbuf = (uint8_t *)pixels,
+        .outbuf_size = (uint32_t)out_len,
+        .out_format = JPEG_IMAGE_FORMAT_RGB565,
+        .out_scale = scale,
+        .flags.swap_color_bytes = 0,
+    };
+    esp_jpeg_image_output_t out = {0};
+    esp_err_t derr = esp_jpeg_decode(&cfg, &out);
+    free(jbuf);
+    if (derr != ESP_OK) {
+        free(pixels);
+        char msg[80];
+        snprintf(msg, sizeof msg, "can't decode %s", name);
+        canvas_puts_px(c, 6, 2, msg, PAL_FG);
+        return;
+    }
+
+    /* Unlike camera_preview's raw sensor frame (big-endian on the wire, so
+       it needs the bswap16 loop there), the JPEG decoder above was asked
+       for swap_color_bytes=0 -- its own default in this same component's
+       fmt2bmp/jpg2rgb565 -- which by inspection already lands in the
+       panel's native order. No swap here; if a photo comes out colour-
+       swapped on the actual hardware, flip this flag to 1 (or add the same
+       __builtin_bswap16 loop camera_preview uses) rather than guessing
+       again. */
+    canvas_blit(c, pixels, (int)out.width, (int)out.height,
+                (c->w - (int)out.width) / 2, (c->h - c->cell_h - 8 - (int)out.height) / 2);
+    free(pixels);
+}
+
+static void draw_gallery(canvas_t *c)
+{
+    canvas_clear(c);
+
+    if (s_gallery_count == 0) {
+        canvas_puts(c, 0, 0, "no photos yet", PAL_FG);
+        display_blit();
+        return;
+    }
+    if (s_gallery_idx >= s_gallery_count) s_gallery_idx = 0;
+
+    gallery_draw_photo(c, s_gallery_names[s_gallery_idx]);
+
+    char cap[96];
+    snprintf(cap, sizeof cap, "%d/%d  %s", s_gallery_idx + 1, s_gallery_count,
+             s_gallery_names[s_gallery_idx]);
+    canvas_puts(c, 0, c->rows - 1, cap, PAL_FG);
     display_blit();
 }
 #endif /* CONFIG_SCREEN_HAVE_CAMERA */
@@ -2324,9 +2510,9 @@ void app_main(void)
        other board gets a page that draws nothing but a clear screen, the
        same trap HAVE_PIP's #else guards against below. */
 #if CONFIG_SCREEN_HAVE_CAMERA
-    available |= PAGE_BIT(PAGE_CAMERA);
+    available |= PAGE_BIT(PAGE_CAMERA) | PAGE_BIT(PAGE_GALLERY);
 #else
-    available &= ~PAGE_BIT(PAGE_CAMERA);
+    available &= ~(PAGE_BIT(PAGE_CAMERA) | PAGE_BIT(PAGE_GALLERY));
 #endif
 #if HAVE_PIP
     /* envio is Pip's board: the face is home, with the clock and BLE messages
@@ -2623,6 +2809,15 @@ void app_main(void)
                    fixed for s_shot_msg_until, just for the idle timer. */
                 s_pages.last_activity_us = esp_timer_get_time();
                 ESP_LOGI(TAG, "tap at %d,%d -> camera shutter", tx, ty);
+            } else if (s_pages.current == PAGE_GALLERY) {
+                /* Next photo -- like the shutter and the Level reset above,
+                   an in-page action, not navigation. A swipe still pages
+                   away (below). */
+                if (s_gallery_count > 0)
+                    s_gallery_idx = (s_gallery_idx + 1) % s_gallery_count;
+                s_pages.last_activity_us = now;
+                s_drawn_page = PAGE_COUNT;
+                ESP_LOGI(TAG, "tap at %d,%d -> gallery next photo", tx, ty);
 #endif
             } else if (tx < c->w / 2) {
                 /* The left half goes back, the right half forward. Buttons on
@@ -2831,6 +3026,11 @@ void app_main(void)
                 } else if (s_prev_page == PAGE_CAMERA) {
                     camera_stop();
                 }
+                if (s_pages.current == PAGE_GALLERY) {
+                    sd_mount();
+                    gallery_scan();
+                    s_gallery_idx = 0;
+                }
                 s_prev_page = s_pages.current;
             }
         }
@@ -2862,6 +3062,9 @@ void app_main(void)
                 case PAGE_TODAY:    views_today(c, &s_data); display_blit(); break;
                 case PAGE_SETTINGS: views_settings(c, &s_settings); display_blit(); break;
                 case PAGE_MENU:     views_menu(c, &s_pages, s_cycle_off, s_menu_held); display_blit(); break;
+#if CONFIG_SCREEN_HAVE_CAMERA
+                case PAGE_GALLERY:  draw_gallery(c); break;
+#endif
                 default: break;
                 }
             }

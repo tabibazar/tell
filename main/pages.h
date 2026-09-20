@@ -55,6 +55,9 @@ typedef enum {
                         cycle_off as a PAGE_BIT(page) mask in NVS, and
                         inserting a page anywhere but the end would reindex
                         every later page's bit against an old saved mask. */
+    PAGE_GALLERY,    /* envio: browse the JPEGs PAGE_CAMERA saved to the
+                        card. Kept last, right before PAGE_COUNT, for the
+                        same NVS cycle_off reason as PAGE_CAMERA above. */
     PAGE_COUNT
 } page_t;
 
