@@ -127,7 +127,22 @@ bool camera_preview(canvas_t *c)
         return false;
     }
 
-    canvas_blit(c, (const uint16_t *)fb->buf, fb->width, fb->height,
+    /*
+     * The OV5640 (via esp32-camera) writes RGB565 big-endian on the wire --
+     * byte 0 of each pixel is RRRRRGGG, byte 1 is GGGBBBBB (see to_jpg.cpp's
+     * rgb565_big_endian, which defaults true and is exactly why fmt2jpg's
+     * JPEG output colours are correct with no swap: it already accounts for
+     * this). canvas_blit is a generic blitter that expects its source
+     * already in the panel's native RGB565 order (R in bits 15..11 -- what
+     * every literal PAL_* value in palette.h is), so the swap belongs here,
+     * on this camera-specific path, and not inside canvas_blit itself.
+     * Done in place on the fb's own buffer before handing it to canvas_blit.
+     */
+    uint16_t *px = (uint16_t *)fb->buf;
+    size_t n = (size_t)fb->width * fb->height;
+    for (size_t i = 0; i < n; i++) px[i] = __builtin_bswap16(px[i]);
+
+    canvas_blit(c, px, fb->width, fb->height,
                 (c->w - (int)fb->width) / 2, (c->h - (int)fb->height) / 2);
     esp_camera_fb_return(fb);
     return true;

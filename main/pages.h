@@ -48,8 +48,13 @@ typedef enum {
     PAGE_FORECAST,   /* the multi-day weather forecast, pushed from the Mac */
     PAGE_CLIMATE,    /* temperature over humidity, stacked; the tall panel */
     PAGE_AIR,        /* air quality over CO2, stacked */
-    PAGE_SETTINGS,   /* touch-only; last, so it is out of the way */
-    PAGE_CAMERA,     /* envio's OV5640: viewfinder-when-held, tap to shoot */
+    PAGE_SETTINGS,   /* touch-only; out of the way, near the end of the tap order */
+    PAGE_CAMERA,     /* envio's OV5640: viewfinder-when-held, tap to shoot.
+                        Kept last (right before PAGE_COUNT) rather than
+                        wherever it fits topically: settings.c persists
+                        cycle_off as a PAGE_BIT(page) mask in NVS, and
+                        inserting a page anywhere but the end would reindex
+                        every later page's bit against an old saved mask. */
     PAGE_COUNT
 } page_t;
 

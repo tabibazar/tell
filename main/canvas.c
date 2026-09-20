@@ -277,23 +277,18 @@ void canvas_blit(canvas_t *c, const uint16_t *src, int sw, int sh, int dx, int d
     int y1 = dy + sh > c->h ? c->h : dy + sh;
     if (x0 >= x1 || y0 >= y1) return;
 
-    /*
-     * The OV5640 (via esp32-camera) writes RGB565 big-endian -- byte 0 of
-     * each pixel is RRRRRGGG, byte 1 is GGGBBBBB (see to_jpg.cpp's
-     * rgb565_big_endian, which defaults true and is exactly why fmt2jpg's
-     * colours come out right without any swap). Reading that byte pair as a
-     * native uint16_t on this little-endian core swaps high and low bytes
-     * relative to every literal PAL_* value in palette.h (R in bits 15..11,
-     * native order), which are what the panel actually expects. This is the
-     * only caller of canvas_blit, so the swap belongs here rather than in
-     * every pixel this function will ever be asked to draw.
-     */
+    /* A plain copy: `src` must already be in the same RGB565 byte order as
+       `c->fb` (native, R in bits 15..11 -- what every literal PAL_* value in
+       palette.h is). The camera's fb is NOT in that order on the wire (see
+       camera_preview in camera.c, which swaps it before calling here) --
+       that is deliberately this function's caller's job, not this generic
+       blitter's, so a future non-camera use of canvas_blit is not silently
+       byte-swapped for no reason. */
     int row_pixels = x1 - x0;
     for (int y = y0; y < y1; y++) {
         int sy = sy0 + (y - y0);
         const uint16_t *srow = src + (size_t)sy * sw + sx0;
         uint16_t *drow = c->fb + (size_t)y * c->w + x0;
-        for (int x = 0; x < row_pixels; x++)
-            drow[x] = __builtin_bswap16(srow[x]);
+        for (int x = 0; x < row_pixels; x++) drow[x] = srow[x];
     }
 }

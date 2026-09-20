@@ -150,16 +150,26 @@ int main(void)
         canvas_init(&g, big2_fb, 320, 480, 1);
         canvas_clear(&g);
 
-        static const uint16_t img2x2[4] = { 0x1111, 0x2222, 0x3333, 0x4444 };
+        /* 0x1234 is deliberately NOT byte-swap-symmetric (bswap16(0x1234) ==
+           0x3412): the other three values here are each two equal bytes
+           (0x11 0x11, 0x22 0x22, ...), so a canvas_blit that silently
+           byte-swapped its source would still pass a test built only from
+           those and give zero coverage of the bug. canvas_blit is a
+           generic blitter -- any byte-order conversion (the camera's
+           big-endian RGB565) is the caller's job, done before the source
+           reaches here (see camera_preview in camera.c), not something
+           this function should do for its one current caller. */
+        static const uint16_t img2x2[4] = { 0x1234, 0x2222, 0x3333, 0x4444 };
         canvas_blit(&g, img2x2, 2, 2, 10, 10);
 
-        expect("blit top-left pixel matches", g.fb[10 * 320 + 10] == 0x1111);
+        expect("blit top-left pixel matches byte-for-byte, not swapped",
+               g.fb[10 * 320 + 10] == 0x1234);
         expect("blit top-right pixel matches", g.fb[10 * 320 + 11] == 0x2222);
         expect("blit bottom-left pixel matches", g.fb[11 * 320 + 10] == 0x3333);
         expect("blit bottom-right pixel matches", g.fb[11 * 320 + 11] == 0x4444);
         expect("a pixel outside the blit is untouched",
                g.fb[9 * 320 + 9] == CANVAS_BG);
-        expect("blit painted exactly four pixels", lit_colour(&g, 0x1111) +
+        expect("blit painted exactly four pixels", lit_colour(&g, 0x1234) +
                lit_colour(&g, 0x2222) + lit_colour(&g, 0x3333) +
                lit_colour(&g, 0x4444) == 4);
     }

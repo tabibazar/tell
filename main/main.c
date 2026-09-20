@@ -908,10 +908,12 @@ static void camera_shutter(void)
     camera_fb_t *fb = NULL;
     esp_err_t err = camera_capture_rgb(&fb);
     if (err != ESP_OK) {
+        /* camera_capture_rgb already falls back to preview itself on this
+           path (fall_back_to_preview, camera.c) -- a second
+           camera_resume_preview() here would just be a redundant reinit. */
         ESP_LOGE(TAG, "camera_shutter: capture failed: %s", esp_err_to_name(err));
         snprintf(s_shot_msg, sizeof s_shot_msg, "capture failed");
         s_shot_msg_until = esp_timer_get_time() + 2000000;
-        camera_resume_preview();
         return;
     }
 
@@ -924,7 +926,17 @@ static void camera_shutter(void)
     camera_timestamp(stamp, sizeof stamp);
     int ty = tmp.h - tmp.cell_h - 4;
     /* White on a faux black outline (four offset copies behind it) so it
-       reads whether the frame behind it is bright or dark. */
+       reads whether the frame behind it is bright or dark.
+       CANVAS_FG/CANVAS_BG (0xFFFF/0x0000) are swap-symmetric -- bswap16 of
+       either is itself -- so drawing them straight into this big-endian
+       sensor buffer (see camera_preview's swap in camera.c) happens to come
+       out right without any conversion. That is a coincidence of these two
+       particular values, not a property of this code: a future coloured
+       stamp drawn here would need the same byte-swap camera_preview does
+       before this buffer reaches the screen, or fmt2jpg before it reaches
+       the JPEG (fmt2jpg itself expects the sensor's own big-endian order,
+       so a colour stamped in native/panel order would come out wrong in the
+       saved photo even though CANVAS_FG/BG do not). */
     canvas_puts_px(&tmp, 5, ty,     stamp, CANVAS_BG);
     canvas_puts_px(&tmp, 7, ty,     stamp, CANVAS_BG);
     canvas_puts_px(&tmp, 6, ty - 1, stamp, CANVAS_BG);
@@ -2598,7 +2610,10 @@ void app_main(void)
                 canvas_puts_px(c, 6, 2, "capturing...", PAL_A1);
                 display_blit();
                 camera_shutter();
-                s_pages.last_activity_us = now;
+                /* Not `now`, captured before camera_shutter's ~1-2s of
+                   blocking work -- the same class of staleness already
+                   fixed for s_shot_msg_until, just for the idle timer. */
+                s_pages.last_activity_us = esp_timer_get_time();
                 ESP_LOGI(TAG, "tap at %d,%d -> camera shutter", tx, ty);
 #endif
             } else if (tx < c->w / 2) {
