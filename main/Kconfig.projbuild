@@ -196,4 +196,15 @@ config SCREEN_HAVE_CAMERA
         include so a board without the header never pulls in esp_camera.h
         or its symbols.
 
+config SCREEN_ALTITUDE_M
+    int "Height above sea level in metres, or 0 for no correction"
+    default 179 if SCREEN_BOARD_TOUCH_LCD_35B
+    default 0
+    help
+        Corrects a BME280's station pressure to sea level (the figure
+        forecasts quote) before it is logged. envio sits in North
+        York/Willowdale, about 179 m ASL -- not the 76 m of the lakeshore.
+        0 disables the correction, which is right for a board with no
+        barometer.
+
 endmenu

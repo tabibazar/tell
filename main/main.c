@@ -1430,6 +1430,20 @@ static void draw_rtc(canvas_t *c, int64_t now)
     display_blit();
 }
 
+/* Station pressure means little away from where it was measured; forecasts
+   and every other reading in the world are sea-level adjusted (MSLP), so a
+   BME280's reading is corrected to match before it is stored or logged.
+   Not guarded by CONFIG_SCREEN_ENV_ONLY: the heartbeat log below wants it on
+   every board, not only envio's. ALT_M==0 (no fixed altitude configured)
+   leaves it alone. */
+static float env_msl(float station_hpa)
+{
+#if CONFIG_SCREEN_ALTITUDE_M > 0
+    return station_hpa / powf(1.0f - (float)CONFIG_SCREEN_ALTITUDE_M / 44330.0f, 5.255f);
+#else
+    return station_hpa;
+#endif
+}
 
 #if CONFIG_SCREEN_ENV_ONLY
 /*
@@ -1609,23 +1623,38 @@ static void env_sample(int64_t now)
     }
 
     /*
-     * Whatever this board has. The AHT21 is preferred for temperature and
-     * humidity where both it and a BME280 are present: it sits millimetres
-     * from the gas sensor, which is the microclimate the compensation cares
-     * about, while a BME280 across the board measures a different one.
+     * Whatever this board has. With both an AHT21 and a BME280 on the bus,
+     * neither one's microclimate is more right than the other's, so the
+     * logged temperature and humidity are the average of the two rather than
+     * a pick between them.
      */
     env_sample_t rec;
     memset(&rec, 0, sizeof rec);
     rec.minute = minute;
 
-    float t = 0, rh = 0;
-    bool have_th = aht21_present() && aht21_read(&t, &rh);
+    float at = 0, arh = 0;
+    bool have_aht = aht21_present() && aht21_read(&at, &arh);
 
     float bt = 0, brh = 0, hpa = 0;
-    if (bme280_read(&bt, &hpa, &brh)) {
-        rec.hpa_x10 = (uint16_t)(hpa * 10.0f);
+    bool have_bme = bme280_read(&bt, &hpa, &brh);
+    /* A BMP280 (id 0x58) is temperature+pressure only -- bme280_read hands
+       back 0.0 for its humidity, not a reading. Averaging that in would halve
+       a real AHT21 number every time both answer, so only a BME280 proper
+       (0x60/0x61) contributes to the humidity side of the average. */
+    bool have_bme_rh = have_bme && bme280_id() != 0x58;
+
+    float t = 0, rh = 0;
+    bool have_th = have_aht || have_bme;
+    if (have_aht && have_bme)    { t = (at + bt) / 2.0f; }
+    else if (have_aht)           { t = at; }
+    else if (have_bme)           { t = bt; }
+    if (have_aht && have_bme_rh) { rh = (arh + brh) / 2.0f; }
+    else if (have_aht)           { rh = arh; }
+    else if (have_bme_rh)        { rh = brh; }
+
+    if (have_bme) {
+        rec.hpa_x10 = (uint16_t)(env_msl(hpa) * 10.0f);
         rec.flags |= ENV_HAVE_HPA;
-        if (!have_th) { t = bt; rh = brh; have_th = true; }
     }
 
     /* Nothing measured the room, so there is nothing to record. A row of
@@ -2224,6 +2253,11 @@ void app_main(void)
     /* A page only for what the board can actually measure. */
     if (!s_env_gas) available &= ~PAGE_BIT(PAGE_AIR);
     if (!aht21_present() && !bme280_present()) available &= ~PAGE_BIT(PAGE_CLIMATE);
+    /* Pressure reuses PAGE_ROOM_HPA -- the short-panel single-reading page --
+       and is added back in only with a BME280 actually on the bus. It is
+       struck from the mask above like the rest of PAGE_ROOM_*, so this has to
+       OR it back rather than merely skip clearing it. */
+    if (bme280_present()) available |= PAGE_BIT(PAGE_ROOM_HPA);
 #else
     /* The forecast belongs to the weather dashboard (envio), not to lilly's
        clock/usage slideshow -- strip it here or a small non-ENV panel offers
@@ -2905,7 +2939,7 @@ void app_main(void)
             }
             if (have_air)
                 ESP_LOGI(TAG, "room %.1f C, %.0f%% RH, %.1f hPa",
-                         (double)air, (double)rh, (double)hpa);
+                         (double)air, (double)rh, (double)env_msl(hpa));
         }
     }
 }

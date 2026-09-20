@@ -28,6 +28,11 @@ CONFIG_SCREEN_ENV_ONLY=y
 # otherwise.
 CONFIG_SCREEN_ROTATE_SECS=0
 
+# North York/Willowdale is ~179 m ASL (76 m was the lakeshore, wrong). The
+# BME280's station pressure is corrected to sea level using this before it is
+# logged, so the clock tail and the pressure chart read like a forecast.
+CONFIG_SCREEN_ALTITUDE_M=179
+
 # Camera (OV5640 on the 24-pin DVP header). esp32-camera's SCCB control lines
 # are GPIO8/7, which ARE I2CBUS_MAIN (i2cbus.c, I2C_NUM_0). The bring-up rides
 # that existing new-driver bus: camera_config_t.sccb_i2c_port = 0 with
