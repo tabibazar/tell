@@ -979,6 +979,23 @@ static void camera_shutter(void)
 /* The camera page: a live viewfinder while the page is held, "tap to
    capture" underneath it, and briefly a "saved ..." confirmation over the
    preview right after a shot. */
+/* The on-screen shutter: a labelled rectangle near the bottom, so capture is a
+   deliberate button press rather than a tap anywhere (which fired while aiming). */
+static void shot_button_rect(const canvas_t *c, int *x, int *y, int *w, int *h)
+{
+    *w = 140;
+    *h = 52;
+    *x = (c->w - *w) / 2;
+    *y = c->h - *h - 10;
+}
+
+static bool in_shot_button(const canvas_t *c, int px, int py)
+{
+    int x, y, w, h;
+    shot_button_rect(c, &x, &y, &w, &h);
+    return px >= x && px < x + w && py >= y && py < y + h;
+}
+
 static void draw_camera(canvas_t *c)
 {
     canvas_clear(c);
@@ -990,7 +1007,11 @@ static void draw_camera(canvas_t *c)
     else if (!has_frame)
         canvas_puts_px(c, 6, 2, "camera warming up", PAL_FG);
 
-    canvas_puts_px(c, 6, c->h - c->cell_h - 4, "tap to capture", PAL_A1);
+    int bx, by, bw, bh;
+    shot_button_rect(c, &bx, &by, &bw, &bh);
+    canvas_fill_rect(c, bx, by, bw, bh, PAL_A1);
+    int tw = 4 * c->cell_w;   /* "SHOT" */
+    canvas_puts_px(c, bx + (bw - tw) / 2, by + (bh - c->cell_h) / 2, "SHOT", PAL_BG);
     display_blit();
 }
 
@@ -2796,19 +2817,21 @@ void app_main(void)
 #endif
 #if CONFIG_SCREEN_HAVE_CAMERA
             } else if (s_pages.current == PAGE_CAMERA) {
-                /* The shutter -- like the Level page's tap-to-reset above,
-                   this is an in-page action, not navigation. The deinit +
-                   reinit + settling + JPEG encode + SD write below takes on
-                   the order of a second, so paint something before it,
-                   or the screen just freezes on the last preview frame. */
-                canvas_puts_px(c, 6, 2, "capturing...", PAL_A1);
-                display_blit();
-                camera_shutter();
-                /* Not `now`, captured before camera_shutter's ~1-2s of
-                   blocking work -- the same class of staleness already
-                   fixed for s_shot_msg_until, just for the idle timer. */
-                s_pages.last_activity_us = esp_timer_get_time();
-                ESP_LOGI(TAG, "tap at %d,%d -> camera shutter", tx, ty);
+                /* Only the SHOT button fires the shutter now -- a tap elsewhere
+                   (while aiming) is ignored, and it is an in-page action, not
+                   navigation. The deinit + reinit + settling + JPEG encode + SD
+                   write below takes on the order of a second, so paint
+                   something before it, or the screen just freezes. */
+                if (in_shot_button(c, tx, ty)) {
+                    canvas_puts_px(c, 6, 2, "capturing...", PAL_A1);
+                    display_blit();
+                    camera_shutter();
+                    /* Not `now`, captured before camera_shutter's ~1-2s of
+                       blocking work -- the same class of staleness already
+                       fixed for s_shot_msg_until, just for the idle timer. */
+                    s_pages.last_activity_us = esp_timer_get_time();
+                    ESP_LOGI(TAG, "SHOT at %d,%d -> camera shutter", tx, ty);
+                }
             } else if (s_pages.current == PAGE_GALLERY) {
                 /* Next photo -- like the shutter and the Level reset above,
                    an in-page action, not navigation. A swipe still pages
