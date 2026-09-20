@@ -1235,17 +1235,18 @@ static bool in_gallery_del_button(const canvas_t *c, int px, int py)
     return px >= x && px < x + w && py >= y && py < y + h;
 }
 
-/* Prev/next arrows, bottom-right, for stepping through the photos. */
+/* Prev/next arrows, one on each side, vertically centred, for stepping
+   through the photos. */
 static void gallery_next_button_rect(const canvas_t *c, int *x, int *y, int *w, int *h)
 {
-    *w = 50; *h = 40;
-    *x = c->w - *w - 4; *y = c->h - *h - 6;
+    *w = 52; *h = 72;
+    *x = c->w - *w - 4; *y = (c->h - *h) / 2;
 }
 
 static void gallery_prev_button_rect(const canvas_t *c, int *x, int *y, int *w, int *h)
 {
-    *w = 50; *h = 40;
-    *x = c->w - 2 * *w - 12; *y = c->h - *h - 6;
+    *w = 52; *h = 72;
+    *x = 4; *y = (c->h - *h) / 2;
 }
 
 static bool in_rect(const canvas_t *c, int px, int py,
@@ -1302,8 +1303,8 @@ static void draw_gallery(canvas_t *c)
 
     int dx, dy, dw, dh;
     gallery_del_button_rect(c, &dx, &dy, &dw, &dh);
-    canvas_fill_rect(c, dx, dy, dw, dh, PAL_A1);
-    canvas_puts_px(c, dx + (dw - 3 * c->cell_w) / 2, dy + (dh - c->cell_h) / 2, "DEL", PAL_BG);
+    canvas_fill_rect(c, dx, dy, dw, dh, 0xF800);   /* red: delete is destructive */
+    canvas_puts_px(c, dx + (dw - 3 * c->cell_w) / 2, dy + (dh - c->cell_h) / 2, "DEL", PAL_FG);
 
     int px, py, pw, ph;
     gallery_prev_button_rect(c, &px, &py, &pw, &ph);
