@@ -49,6 +49,7 @@ typedef enum {
     PAGE_CLIMATE,    /* temperature over humidity, stacked; the tall panel */
     PAGE_AIR,        /* air quality over CO2, stacked */
     PAGE_SETTINGS,   /* touch-only; last, so it is out of the way */
+    PAGE_CAMERA,     /* envio's OV5640: viewfinder-when-held, tap to shoot */
     PAGE_COUNT
 } page_t;
 

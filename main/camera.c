@@ -73,6 +73,16 @@ static void camera_fill_capture_config(camera_config_t *c)
     c->frame_size = FRAMESIZE_SVGA;
 }
 
+/* Same capture resolution as camera_fill_capture_config, but RGB565 rather
+   than sensor-JPEG: the shutter needs raw pixels to stamp a timestamp onto
+   before encoding, which a hardware JPEG frame does not allow. */
+static void camera_fill_capture_rgb_config(camera_config_t *c)
+{
+    camera_fill_config(c);
+    c->pixel_format = PIXFORMAT_RGB565;
+    c->frame_size = FRAMESIZE_HVGA;
+}
+
 esp_err_t camera_start(void)
 {
     if (s_started) return ESP_OK;
@@ -95,6 +105,7 @@ esp_err_t camera_start(void)
     }
 
     s_started = true;
+    ESP_LOGI(TAG, "camera on");
     return ESP_OK;
 }
 
@@ -103,6 +114,7 @@ void camera_stop(void)
     if (!s_started) return;
     esp_camera_deinit();
     s_started = false;
+    ESP_LOGI(TAG, "camera off");
 }
 
 bool camera_preview(canvas_t *c)
@@ -192,6 +204,38 @@ void camera_resume_preview(void)
 {
     if (!s_started) return;
     fall_back_to_preview();
+}
+
+esp_err_t camera_capture_rgb(camera_fb_t **fb_out)
+{
+    if (fb_out == NULL) return ESP_ERR_INVALID_ARG;
+    if (!s_started) return ESP_ERR_INVALID_STATE;
+
+    /* Same deinit+reinit dance as camera_capture_jpeg -- see the comment
+       above camera_fill_config for why a runtime sensor switch will not do. */
+    esp_camera_deinit();
+    camera_config_t cfg;
+    camera_fill_capture_rgb_config(&cfg);
+    esp_err_t err = esp_camera_init(&cfg);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "camera_capture_rgb: esp_camera_init(RGB565 capture) failed: %s",
+                 esp_err_to_name(err));
+        fall_back_to_preview();
+        return err;
+    }
+
+    discard_settling_frames(3);
+    vTaskDelay(pdMS_TO_TICKS(300));
+
+    camera_fb_t *fb = esp_camera_fb_get();
+    if (fb == NULL) {
+        ESP_LOGE(TAG, "camera_capture_rgb: fb_get returned NULL");
+        fall_back_to_preview();
+        return ESP_FAIL;
+    }
+
+    *fb_out = fb;
+    return ESP_OK;
 }
 
 #endif /* CONFIG_SCREEN_HAVE_CAMERA */

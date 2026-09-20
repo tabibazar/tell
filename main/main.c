@@ -26,12 +26,12 @@
 #if defined(CONFIG_SCREEN_BOARD_TOUCH_LCD_35B)
 #include "axp2101.h"
 #include "levelbig.h"
-/* SPIKE (task B1, throwaway): camera + SD bring-up. Remove with camera_spike(). */
-#include "esp_camera.h"
-#include "esp_vfs_fat.h"
-#include "driver/sdmmc_host.h"
-#include "sdmmc_cmd.h"
 #include "i2cbus.h"
+#endif
+#if CONFIG_SCREEN_HAVE_CAMERA
+#include "camera.h"
+#include "sdcard.h"
+#include "img_converters.h"
 #endif
 #include "settings.h"
 #include "shaketimer.h"
@@ -57,6 +57,7 @@
 #include <limits.h>
 #include <math.h>
 #include <stdbool.h>
+#include <stdlib.h>
 #include <string.h>
 
 static const char *TAG = "main";
@@ -868,6 +869,117 @@ static void draw_system(canvas_t *c)
     display_blit();
 }
 #endif /* CONFIG_SCREEN_BOARD_TOUCH_LCD_35B */
+
+#if CONFIG_SCREEN_HAVE_CAMERA
+/* "2026-09-19 18:34" from the DS3231, or a plain fallback if there is no
+   clock to ask -- a photo taken before the RTC has ever been set should
+   still get a JPEG, just without a trustworthy stamp on it. */
+static void camera_timestamp(char *out, size_t n)
+{
+    ds3231_date_t date;
+    uint32_t secs;
+    if (s_rtc && ds3231_read_date(&date) && date.year >= 2000
+        && ds3231_read(&secs)) {
+        int hh = (int)(secs / 3600) % 24;
+        int mm = (int)(secs / 60) % 60;
+        snprintf(out, n, "%04d-%02d-%02d %02d:%02d",
+                 date.year, date.month, date.day, hh, mm);
+    } else {
+        snprintf(out, n, "no clock set");
+    }
+}
+
+/* The message shown over the viewfinder right after a shot -- "saved
+   envio/IMG_...jpg" or why it failed -- for a couple of seconds before the
+   live preview takes the screen back. */
+static char s_shot_msg[80] = "";
+static int64_t s_shot_msg_until = 0;
+
+/* Tap on PAGE_CAMERA: grab a raw RGB565 frame (not sensor-JPEG, so the
+   timestamp can be drawn onto the pixels first), stamp it, encode with
+   fmt2jpg, and write it to the card.
+   The "saved ..." deadline below is set from a fresh esp_timer_get_time()
+   once the work (deinit/reinit, settling frames, a software JPEG encode,
+   the SD write) is actually done -- using the tap's timestamp from before
+   all that would put the deadline in the past and the message would never
+   show. */
+static void camera_shutter(void)
+{
+    camera_fb_t *fb = NULL;
+    esp_err_t err = camera_capture_rgb(&fb);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "camera_shutter: capture failed: %s", esp_err_to_name(err));
+        snprintf(s_shot_msg, sizeof s_shot_msg, "capture failed");
+        s_shot_msg_until = esp_timer_get_time() + 2000000;
+        camera_resume_preview();
+        return;
+    }
+
+    /* Wrap the fb's own buffer as a canvas so the timestamp is baked into
+       the pixels before encoding, not drawn over the JPEG afterwards. */
+    canvas_t tmp;
+    canvas_init(&tmp, (uint16_t *)fb->buf, (int)fb->width, (int)fb->height, 1);
+
+    char stamp[32];
+    camera_timestamp(stamp, sizeof stamp);
+    int ty = tmp.h - tmp.cell_h - 4;
+    /* White on a faux black outline (four offset copies behind it) so it
+       reads whether the frame behind it is bright or dark. */
+    canvas_puts_px(&tmp, 5, ty,     stamp, CANVAS_BG);
+    canvas_puts_px(&tmp, 7, ty,     stamp, CANVAS_BG);
+    canvas_puts_px(&tmp, 6, ty - 1, stamp, CANVAS_BG);
+    canvas_puts_px(&tmp, 6, ty + 1, stamp, CANVAS_BG);
+    canvas_puts_px(&tmp, 6, ty,     stamp, CANVAS_FG);
+
+    uint8_t *jpg = NULL;
+    size_t jpg_len = 0;
+    /* fmt2jpg's quality is jpge's 1-100 (higher is better) -- unlike
+       camera_config_t.jpeg_quality, which is the sensor's inverted 0-63.
+       Reusing 12 from that other scale would give a badly blocky photo. */
+    bool ok = fmt2jpg(fb->buf, fb->len, (uint16_t)fb->width, (uint16_t)fb->height,
+                      PIXFORMAT_RGB565, 80, &jpg, &jpg_len);
+    if (ok) {
+        char name[64];
+        sd_photo_name(name, sizeof name);
+        esp_err_t werr = sd_write(name, jpg, jpg_len);
+        free(jpg);   /* fmt2jpg mallocs; ours to free either way */
+        if (werr == ESP_OK) {
+            snprintf(s_shot_msg, sizeof s_shot_msg, "saved %s", name);
+            ESP_LOGI(TAG, "camera_shutter: wrote %s (%u bytes)",
+                     name, (unsigned)jpg_len);
+        } else {
+            ESP_LOGE(TAG, "camera_shutter: sd_write failed: %s",
+                     esp_err_to_name(werr));
+            snprintf(s_shot_msg, sizeof s_shot_msg, "save failed");
+        }
+    } else {
+        ESP_LOGE(TAG, "camera_shutter: fmt2jpg failed");
+        snprintf(s_shot_msg, sizeof s_shot_msg, "encode failed");
+    }
+    s_shot_msg_until = esp_timer_get_time() + 2000000;
+
+    esp_camera_fb_return(fb);
+    camera_resume_preview();
+}
+
+/* The camera page: a live viewfinder while the page is held, "tap to
+   capture" underneath it, and briefly a "saved ..." confirmation over the
+   preview right after a shot. */
+static void draw_camera(canvas_t *c)
+{
+    canvas_clear(c);
+    bool has_frame = camera_preview(c);
+
+    int64_t now = esp_timer_get_time();
+    if (now < s_shot_msg_until)
+        canvas_puts_px(c, 6, 2, s_shot_msg, PAL_A1);
+    else if (!has_frame)
+        canvas_puts_px(c, 6, 2, "camera warming up", PAL_FG);
+
+    canvas_puts_px(c, 6, c->h - c->cell_h - 4, "tap to capture", PAL_A1);
+    display_blit();
+}
+#endif /* CONFIG_SCREEN_HAVE_CAMERA */
 
 /* Charts grow into place when a page appears; 0 means no animation running. */
 #define ANIM_US (600 * 1000LL)
@@ -2029,124 +2141,6 @@ static void draw_forecast(canvas_t *c)
 
 
 
-#if defined(CONFIG_SCREEN_BOARD_TOUCH_LCD_35B)
-/*
- * SPIKE (task B1) — THROWAWAY bring-up, not the real camera module (B2/B3).
- * Proves one OV5640 frame over the DVP header and one JPEG to microSD.
- *
- * SCCB decision: SHARED PORT. The OV5640's SCCB lines are GPIO8/7, which are
- * I2CBUS_MAIN (i2cbus.c, I2C_NUM_0) driven by the new i2c_master driver. We set
- * sccb_i2c_port=0 and pin_sccb_sda/scl=-1 so esp_camera calls SCCB_Use_Port():
- * it attaches to the existing bus (i2c_master_get_bus_handle) and, because it
- * does not own the port, esp_camera_deinit() removes only its own SCCB device
- * and leaves i2cbus's bus alive. Requires CONFIG_SCCB_HARDWARE_I2C_DRIVER_NEW.
- *
- * LEDC: the backlight owns LEDC_TIMER_0/CHANNEL_0 (display_axs15231b.c), so the
- * XCLK generator is pushed to TIMER_1/CHANNEL_1 or it would kill the backlight.
- *
- * SD (Waveshare demo 07_sd_test): 1-bit SDMMC, clk=11 cmd=10 d0=9.
- */
-static void camera_spike_fill(camera_config_t *c)
-{
-    *c = (camera_config_t){
-        .pin_pwdn = -1, .pin_reset = -1,
-        .pin_xclk = 38,
-        .pin_sccb_sda = -1, .pin_sccb_scl = -1, .sccb_i2c_port = I2C_NUM_0,
-        .pin_d0 = 45, .pin_d1 = 47, .pin_d2 = 48, .pin_d3 = 46,
-        .pin_d4 = 42, .pin_d5 = 40, .pin_d6 = 39, .pin_d7 = 21,
-        .pin_vsync = 17, .pin_href = 18, .pin_pclk = 41,
-        .xclk_freq_hz = 20000000,
-        .ledc_timer = LEDC_TIMER_1, .ledc_channel = LEDC_CHANNEL_1,
-        .fb_location = CAMERA_FB_IN_PSRAM,
-        .grab_mode = CAMERA_GRAB_WHEN_EMPTY,
-        .fb_count = 1,
-        .jpeg_quality = 12,
-    };
-}
-
-static void camera_spike(void)
-{
-    ESP_LOGI(TAG, "camera_spike: begin");
-    /* SCCB rides this bus; make sure it exists before esp_camera attaches. */
-    i2cbus_init(I2CBUS_MAIN);
-
-    /* Part 1: one RGB565 QVGA frame from PSRAM. */
-    camera_config_t cfg;
-    camera_spike_fill(&cfg);
-    cfg.pixel_format = PIXFORMAT_RGB565;
-    cfg.frame_size = FRAMESIZE_QVGA;
-    esp_err_t err = esp_camera_init(&cfg);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "camera_spike: esp_camera_init(RGB565) failed: %s",
-                 esp_err_to_name(err));
-        return;
-    }
-    camera_fb_t *fb = esp_camera_fb_get();
-    if (fb) {
-        ESP_LOGI(TAG, "camera_spike: RGB565 frame %ux%u len=%u fmt=%d",
-                 (unsigned)fb->width, (unsigned)fb->height,
-                 (unsigned)fb->len, (int)fb->format);
-        esp_camera_fb_return(fb);
-    } else {
-        ESP_LOGE(TAG, "camera_spike: esp_camera_fb_get(RGB565) returned NULL");
-    }
-    esp_camera_deinit();
-
-    /* Part 2: mount 1-bit SDMMC and write one JPEG. */
-    sdmmc_host_t host = SDMMC_HOST_DEFAULT();
-    host.flags = SDMMC_HOST_FLAG_1BIT;
-    host.max_freq_khz = SDMMC_FREQ_DEFAULT;
-    sdmmc_slot_config_t slot = SDMMC_SLOT_CONFIG_DEFAULT();
-    slot.clk = 11; slot.cmd = 10; slot.d0 = 9;
-    slot.width = 1;
-    slot.flags |= SDMMC_SLOT_FLAG_INTERNAL_PULLUP;
-    esp_vfs_fat_sdmmc_mount_config_t mnt = {
-        .format_if_mount_failed = false,   /* never format the user's card */
-        .max_files = 4,
-        .allocation_unit_size = 16 * 1024,
-    };
-    sdmmc_card_t *card = NULL;
-    err = esp_vfs_fat_sdmmc_mount("/sdcard", &host, &slot, &mnt, &card);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "camera_spike: SD mount failed: %s", esp_err_to_name(err));
-        return;
-    }
-    ESP_LOGI(TAG, "camera_spike: SD mounted (%lluMB)",
-             ((uint64_t)card->csd.capacity * card->csd.sector_size) >> 20);
-
-    camera_spike_fill(&cfg);
-    cfg.pixel_format = PIXFORMAT_JPEG;
-    cfg.frame_size = FRAMESIZE_SVGA;
-    err = esp_camera_init(&cfg);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "camera_spike: esp_camera_init(JPEG) failed: %s",
-                 esp_err_to_name(err));
-        esp_vfs_fat_sdcard_unmount("/sdcard", card);
-        return;
-    }
-    fb = esp_camera_fb_get();
-    if (fb) {
-        ESP_LOGI(TAG, "camera_spike: JPEG frame %ux%u len=%u",
-                 (unsigned)fb->width, (unsigned)fb->height, (unsigned)fb->len);
-        FILE *f = fopen("/sdcard/spike.jpg", "wb");
-        if (f) {
-            size_t n = fwrite(fb->buf, 1, fb->len, f);
-            fclose(f);
-            ESP_LOGI(TAG, "camera_spike: wrote /sdcard/spike.jpg (%u bytes)",
-                     (unsigned)n);
-        } else {
-            ESP_LOGE(TAG, "camera_spike: fopen /sdcard/spike.jpg failed");
-        }
-        esp_camera_fb_return(fb);
-    } else {
-        ESP_LOGE(TAG, "camera_spike: esp_camera_fb_get(JPEG) returned NULL");
-    }
-    esp_camera_deinit();
-    esp_vfs_fat_sdcard_unmount("/sdcard", card);
-    ESP_LOGI(TAG, "camera_spike: done");
-}
-#endif /* CONFIG_SCREEN_BOARD_TOUCH_LCD_35B */
-
 void app_main(void)
 {
     if (display_init() != ESP_OK) {
@@ -2167,8 +2161,6 @@ void app_main(void)
             ESP_LOGW(TAG, "battery: gauge did not answer");
         }
     }
-    /* SPIKE (task B1, throwaway): prove one camera frame + one JPEG to SD. */
-    camera_spike();
 #endif
 
     bool touch = false, big = false;
@@ -2270,6 +2262,17 @@ void app_main(void)
        IMU guard above -- it is always available on envio. */
 #if defined(CONFIG_SCREEN_BOARD_TOUCH_LCD_35B)
     available |= PAGE_BIT(PAGE_SYSTEM);
+#endif
+    /* The camera page only exists on the board with the OV5640. Its
+       page_def_t has needs_touch=false (a swipe reaches it, no menu tile),
+       so the generic where/needs_touch loop above adds it to every board
+       unconditionally -- it has to be struck off explicitly here or every
+       other board gets a page that draws nothing but a clear screen, the
+       same trap HAVE_PIP's #else guards against below. */
+#if CONFIG_SCREEN_HAVE_CAMERA
+    available |= PAGE_BIT(PAGE_CAMERA);
+#else
+    available &= ~PAGE_BIT(PAGE_CAMERA);
 #endif
 #if HAVE_PIP
     /* envio is Pip's board: the face is home, with the clock and BLE messages
@@ -2551,6 +2554,19 @@ void app_main(void)
                 s_drawn_page = PAGE_COUNT;
                 ESP_LOGI(TAG, "tap at %d,%d -> level reset", tx, ty);
 #endif
+#if CONFIG_SCREEN_HAVE_CAMERA
+            } else if (s_pages.current == PAGE_CAMERA) {
+                /* The shutter -- like the Level page's tap-to-reset above,
+                   this is an in-page action, not navigation. The deinit +
+                   reinit + settling + JPEG encode + SD write below takes on
+                   the order of a second, so paint something before it,
+                   or the screen just freezes on the last preview frame. */
+                canvas_puts_px(c, 6, 2, "capturing...", PAL_A1);
+                display_blit();
+                camera_shutter();
+                s_pages.last_activity_us = now;
+                ESP_LOGI(TAG, "tap at %d,%d -> camera shutter", tx, ty);
+#endif
             } else if (tx < c->w / 2) {
                 /* The left half goes back, the right half forward. Buttons on
                    the settings page were tested first, so they still win. */
@@ -2744,6 +2760,25 @@ void app_main(void)
             }
         }
 
+#if CONFIG_SCREEN_HAVE_CAMERA
+        /* The camera's own transition tracking, separate from s_drawn_page
+           below: that gets reset for reasons that are not a page change (a
+           quiet redraw, a refresh timer), and starting or stopping the
+           sensor on those would be wrong -- this only fires when
+           s_pages.current itself actually changes. */
+        {
+            static page_t s_prev_page = PAGE_COUNT;
+            if (s_pages.current != s_prev_page) {
+                if (s_pages.current == PAGE_CAMERA) {
+                    if (camera_start() == ESP_OK) sd_mount();
+                } else if (s_prev_page == PAGE_CAMERA) {
+                    camera_stop();
+                }
+                s_prev_page = s_pages.current;
+            }
+        }
+#endif
+
         const page_def_t *pd = &page_defs[s_pages.current];
         if (s_pages.current != s_drawn_page) {
             s_drawn_page = s_pages.current;
@@ -2830,6 +2865,13 @@ void app_main(void)
 #endif
 #if defined(CONFIG_SCREEN_BOARD_TOUCH_LCD_35B)
         if (s_pages.current == PAGE_SYSTEM) draw_system(c);
+#endif
+#if CONFIG_SCREEN_HAVE_CAMERA
+        /* Live, so drawn every loop like PAGE_SYSTEM/PAGE_PIP above rather
+           than through the one-shot pd->draw path -- a static viewfinder
+           frame would be pointless. Lifecycle (camera_start/stop) is above,
+           keyed off the page transition, not here. */
+        if (s_pages.current == PAGE_CAMERA) draw_camera(c);
 #endif
         /* Pages with ages on them redraw on their own so the ages keep counting. */
         if (pd->refresh_us > 0 && now - s_page_drawn_us > pd->refresh_us)

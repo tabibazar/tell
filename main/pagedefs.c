@@ -56,4 +56,5 @@ const page_def_t page_defs[PAGE_COUNT] = {
     [PAGE_CLIMATE]  = { "Climate",       0,                             NULL,           false, SEC(10),  PG_SMALL, false, true  },
     [PAGE_AIR]      = { "Air",           0,                             NULL,           false, SEC(10),  PG_SMALL, false, true  },
     [PAGE_SETTINGS] = { "Settings",      0,                             NULL,           false, 0,        PG_BIG,  true,  false },
+    [PAGE_CAMERA]   = { "Camera",        0,                             NULL,           false, 0,        PG_BOTH,  false, false },
 };

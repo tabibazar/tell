@@ -43,6 +43,14 @@ esp_err_t camera_capture_jpeg(const uint8_t **out, size_t *len,
 /* Switches the sensor back to RGB565 QVGA, for preview after a capture. */
 void camera_resume_preview(void);
 
+/* Switches the sensor to RGB565 at a capture resolution (larger than the
+   QVGA preview), discards a few frames so auto-exposure can settle, and
+   hands back the raw fb. RGB565, not JPEG, so the caller can draw onto the
+   pixels (a timestamp) before encoding. Call esp_camera_fb_return(fb) and
+   then camera_resume_preview() afterwards, exactly as with
+   camera_capture_jpeg. */
+esp_err_t camera_capture_rgb(camera_fb_t **fb_out);
+
 #endif /* CONFIG_SCREEN_HAVE_CAMERA */
 
 #endif /* CAMERA_H */
