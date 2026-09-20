@@ -83,6 +83,25 @@ static void camera_fill_capture_rgb_config(camera_config_t *c)
     c->frame_size = FRAMESIZE_HVGA;
 }
 
+/* The OV5640 powers up with heavy edge-enhancement and no auto white balance or
+   exposure, which renders as a stark "edge-detected" outline rather than a
+   photo. Set sane defaults after every esp_camera_init: no special effect,
+   auto white balance / exposure / gain on, and the sharpness/denoise turned
+   down. Called on each (re)init because these live on the sensor and are lost
+   across the deinit/reinit the capture path does. */
+static void camera_tune_sensor(void)
+{
+    sensor_t *s = esp_camera_sensor_get();
+    if (!s) return;
+    if (s->set_special_effect) s->set_special_effect(s, 0);   /* none */
+    if (s->set_whitebal)       s->set_whitebal(s, 1);
+    if (s->set_awb_gain)       s->set_awb_gain(s, 1);
+    if (s->set_exposure_ctrl)  s->set_exposure_ctrl(s, 1);
+    if (s->set_gain_ctrl)      s->set_gain_ctrl(s, 1);
+    if (s->set_sharpness)      s->set_sharpness(s, 0);         /* stop the outlines */
+    if (s->set_denoise)        s->set_denoise(s, 1);
+}
+
 esp_err_t camera_start(void)
 {
     if (s_started) return ESP_OK;
@@ -105,6 +124,7 @@ esp_err_t camera_start(void)
     }
 
     s_started = true;
+    camera_tune_sensor();
     ESP_LOGI(TAG, "camera on");
     return ESP_OK;
 }
@@ -173,6 +193,8 @@ static void fall_back_to_preview(void)
         ESP_LOGE(TAG, "fall_back_to_preview: reinit failed: %s",
                  esp_err_to_name(err));
         s_started = false;
+    } else {
+        camera_tune_sensor();
     }
 }
 
@@ -197,6 +219,7 @@ esp_err_t camera_capture_jpeg(const uint8_t **out, size_t *len,
         fall_back_to_preview();
         return err;
     }
+    camera_tune_sensor();
 
     /* Let auto-exposure settle after the reinit before keeping a frame. */
     discard_settling_frames(3);
@@ -238,6 +261,7 @@ esp_err_t camera_capture_rgb(camera_fb_t **fb_out)
         fall_back_to_preview();
         return err;
     }
+    camera_tune_sensor();
 
     discard_settling_frames(3);
     vTaskDelay(pdMS_TO_TICKS(300));
