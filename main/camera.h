@@ -51,6 +51,18 @@ void camera_resume_preview(void);
    camera_capture_jpeg. */
 esp_err_t camera_capture_rgb(camera_fb_t **fb_out);
 
+/* Sets the framesize camera_capture_rgb uses for its next capture (the
+   resolution picker on PAGE_CAMERA). Default FRAMESIZE_SVGA. Takes effect
+   on the next capture, not retroactively. If the sensor/allocator cannot
+   actually deliver the requested size, camera_capture_rgb falls back to
+   FRAMESIZE_VGA and logs it rather than failing the shot outright. */
+void camera_set_capture_size(framesize_t sz);
+
+/* The framesize the resolution picker is currently set to, for the button
+   label -- not necessarily the size of the last photo taken if a fallback
+   happened. */
+framesize_t camera_get_capture_size(void);
+
 #endif /* CONFIG_SCREEN_HAVE_CAMERA */
 
 #endif /* CAMERA_H */

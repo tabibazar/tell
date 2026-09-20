@@ -33,6 +33,8 @@
 #include "sdcard.h"
 #include "img_converters.h"
 #include <dirent.h>
+#include <errno.h>
+#include <stdio.h>
 #include <strings.h>
 #endif
 #include "settings.h"
@@ -996,16 +998,162 @@ static bool in_shot_button(const canvas_t *c, int px, int py)
     return px >= x && px < x + w && py >= y && py < y + h;
 }
 
+/* Resolution picker, top-left: VGA -> SVGA -> UXGA -> VGA. */
+static void res_button_rect(const canvas_t *c, int *x, int *y, int *w, int *h)
+{
+    (void)c;
+    *x = 4; *y = 4; *w = 96; *h = 26;
+}
+
+static bool in_res_button(const canvas_t *c, int px, int py)
+{
+    int x, y, w, h;
+    res_button_rect(c, &x, &y, &w, &h);
+    return px >= x && px < x + w && py >= y && py < y + h;
+}
+
+static const char *res_label(framesize_t sz)
+{
+    switch (sz) {
+    case FRAMESIZE_VGA:  return "RES VGA";
+    case FRAMESIZE_UXGA: return "RES UXGA";
+    default:             return "RES SVGA";   /* FRAMESIZE_SVGA, the default */
+    }
+}
+
+static void camera_cycle_resolution(void)
+{
+    switch (camera_get_capture_size()) {
+    case FRAMESIZE_VGA:  camera_set_capture_size(FRAMESIZE_SVGA); break;
+    case FRAMESIZE_SVGA: camera_set_capture_size(FRAMESIZE_UXGA); break;
+    default:              camera_set_capture_size(FRAMESIZE_VGA);  break;
+    }
+}
+
+/* Self-timer picker, top-right: off -> 3s -> 10s -> off. Driven from
+   draw_camera every frame (s_shot_deadline below) rather than blocking the
+   loop for up to 10s, so the page keeps redrawing (and the countdown keeps
+   counting) while it waits. */
+static int s_timer_mode = 0;             /* 0=off, 1=3s, 2=10s */
+static int64_t s_shot_deadline = 0;      /* 0 = no countdown running */
+
+static void timer_button_rect(const canvas_t *c, int *x, int *y, int *w, int *h)
+{
+    *w = 96; *h = 26;
+    *x = c->w - *w - 4; *y = 4;
+}
+
+static bool in_timer_button(const canvas_t *c, int px, int py)
+{
+    int x, y, w, h;
+    timer_button_rect(c, &x, &y, &w, &h);
+    return px >= x && px < x + w && py >= y && py < y + h;
+}
+
+static const char *timer_label(void)
+{
+    switch (s_timer_mode) {
+    case 1:  return "TIMER 3s";
+    case 2:  return "TIMER 10s";
+    default: return "TIMER off";
+    }
+}
+
+static void camera_cycle_timer(void)
+{
+    s_timer_mode = (s_timer_mode + 1) % 3;
+}
+
+/* Starts the shutter: immediately if the self-timer is off, or arms the
+   countdown draw_camera below counts down and fires. */
+static void camera_shoot(void)
+{
+    if (s_timer_mode == 0) {
+        camera_shutter();
+        return;
+    }
+    int secs = (s_timer_mode == 1) ? 3 : 10;
+    s_shot_deadline = esp_timer_get_time() + (int64_t)secs * 1000000;
+}
+
 static void draw_camera(canvas_t *c)
 {
     canvas_clear(c);
     bool has_frame = camera_preview(c);
 
     int64_t now = esp_timer_get_time();
+
+    /* Level overlay: a small bullseye near the top-center, over the live
+       preview, so a shot can be framed level without leaving the
+       viewfinder. Small and out of the way of the buttons below. */
+    if (s_imu) {
+        qmi8658_sample_t sample;
+        if (qmi8658_read(&sample) == ESP_OK) {
+            float gx, gy;
+            gravity_from(&sample, &gx, &gy);
+            int cx = c->w / 2, cy = 72, r = 26;
+            canvas_circle(c, cx, cy, r, PAL_DIM);
+            canvas_circle(c, cx, cy, r / 2, PAL_DIM);
+            int bx = cx + (int)(gx * r);
+            int by = cy + (int)(gy * r);
+            if (bx < cx - r) bx = cx - r;
+            if (bx > cx + r) bx = cx + r;
+            if (by < cy - r) by = cy - r;
+            if (by > cy + r) by = cy + r;
+            bool level = (gx * gx + gy * gy) < 0.02f;   /* within a few degrees */
+            canvas_disc(c, bx, by, 5, level ? PAL_A2 : PAL_A1);
+        }
+    }
+
+    /* Self-timer countdown: fires the capture itself once it reaches zero
+       rather than handing that back to the tap handler, which is exactly
+       the "drive it from draw_camera" the countdown needs to avoid
+       blocking the whole loop for up to 10s. */
+    if (s_shot_deadline != 0) {
+        int64_t remain_us = s_shot_deadline - now;
+        if (remain_us <= 0) {
+            s_shot_deadline = 0;
+            canvas_puts_px(c, 6, 34, "capturing...", PAL_A1);
+            display_blit();
+            camera_shutter();
+            return;
+        }
+        int n = (int)(remain_us / 1000000) + 1;
+        /* Clamped well inside the self-timer's own 3s/10s range -- just
+           enough for the compiler's format-truncation checker to see a
+           bounded value, since it cannot follow s_shot_deadline's actual
+           range back to this snprintf. */
+        if (n < 0) n = 0;
+        if (n > 10) n = 10;
+        char buf[8];
+        snprintf(buf, sizeof buf, "%d", n);
+        int cx = c->w / 2, cy = c->h / 2;
+        canvas_circle(c, cx, cy, 40, PAL_A1);
+        int tw = (int)strlen(buf) * c->cell_w;
+        int tx = cx - tw / 2, ty = cy - c->cell_h / 2;
+        /* Bold: the same offset-copies trick camera_shutter uses for its
+           timestamp stamp, so the digit reads over a bright or dark frame. */
+        canvas_puts_px(c, tx - 1, ty, buf, PAL_FG);
+        canvas_puts_px(c, tx + 1, ty, buf, PAL_FG);
+        canvas_puts_px(c, tx, ty - 1, buf, PAL_FG);
+        canvas_puts_px(c, tx, ty + 1, buf, PAL_FG);
+        canvas_puts_px(c, tx, ty, buf, PAL_A1);
+    }
+
     if (now < s_shot_msg_until)
-        canvas_puts_px(c, 6, 2, s_shot_msg, PAL_A1);
+        canvas_puts_px(c, 6, 34, s_shot_msg, PAL_A1);
     else if (!has_frame)
-        canvas_puts_px(c, 6, 2, "camera warming up", PAL_FG);
+        canvas_puts_px(c, 6, 34, "camera warming up", PAL_FG);
+
+    int rx, ry, rw, rh;
+    res_button_rect(c, &rx, &ry, &rw, &rh);
+    canvas_fill_rect(c, rx, ry, rw, rh, PAL_A0);
+    canvas_puts_px(c, rx + 4, ry + (rh - c->cell_h) / 2, res_label(camera_get_capture_size()), PAL_BG);
+
+    int qx, qy, qw, qh;
+    timer_button_rect(c, &qx, &qy, &qw, &qh);
+    canvas_fill_rect(c, qx, qy, qw, qh, PAL_A0);
+    canvas_puts_px(c, qx + 4, qy + (qh - c->cell_h) / 2, timer_label(), PAL_BG);
 
     int bx, by, bw, bh;
     shot_button_rect(c, &bx, &by, &bw, &bh);
@@ -1179,6 +1327,41 @@ static void gallery_draw_photo(canvas_t *c, const char *name)
     free(pixels);
 }
 
+/* DEL, bottom-left -- small enough to stay clear of the caption row and the
+   photo above it. */
+static void gallery_del_button_rect(const canvas_t *c, int *x, int *y, int *w, int *h)
+{
+    *w = 60; *h = 26;
+    *x = 4; *y = c->h - c->cell_h - *h - 6;
+}
+
+static bool in_gallery_del_button(const canvas_t *c, int px, int py)
+{
+    int x, y, w, h;
+    gallery_del_button_rect(c, &x, &y, &w, &h);
+    return px >= x && px < x + w && py >= y && py < y + h;
+}
+
+/* Removes the file under s_gallery_idx from the card and drops it from the
+   in-memory list (a shift, not a re-scan -- cheap, and gallery_scan's own
+   newest-first order is already exactly what the shift preserves). */
+static void gallery_delete_current(void)
+{
+    if (s_gallery_count == 0) return;
+    char path[320];
+    snprintf(path, sizeof path, "/sdcard/envio/%s", s_gallery_names[s_gallery_idx]);
+    if (remove(path) != 0) {
+        ESP_LOGE(TAG, "gallery_delete_current: remove %s failed: %s",
+                 path, strerror(errno));
+        return;
+    }
+    ESP_LOGI(TAG, "gallery_delete_current: removed %s", path);
+    for (int i = s_gallery_idx; i < s_gallery_count - 1; i++)
+        strncpy(s_gallery_names[i], s_gallery_names[i + 1], sizeof s_gallery_names[0]);
+    s_gallery_count--;
+    if (s_gallery_idx >= s_gallery_count) s_gallery_idx = 0;
+}
+
 static void draw_gallery(canvas_t *c)
 {
     canvas_clear(c);
@@ -1193,9 +1376,21 @@ static void draw_gallery(canvas_t *c)
     gallery_draw_photo(c, s_gallery_names[s_gallery_idx]);
 
     char cap[96];
-    snprintf(cap, sizeof cap, "%d/%d  %s", s_gallery_idx + 1, s_gallery_count,
-             s_gallery_names[s_gallery_idx]);
+    uint64_t free_b;
+    if (sd_free_bytes(&free_b)) {
+        double free_gb = (double)free_b / (1024.0 * 1024.0 * 1024.0);
+        snprintf(cap, sizeof cap, "%d/%d  %.1fGB free",
+                 s_gallery_idx + 1, s_gallery_count, free_gb);
+    } else {
+        snprintf(cap, sizeof cap, "%d/%d", s_gallery_idx + 1, s_gallery_count);
+    }
     canvas_puts(c, 0, c->rows - 1, cap, PAL_FG);
+
+    int dx, dy, dw, dh;
+    gallery_del_button_rect(c, &dx, &dy, &dw, &dh);
+    canvas_fill_rect(c, dx, dy, dw, dh, PAL_A1);
+    canvas_puts_px(c, dx + (dw - 3 * c->cell_w) / 2, dy + (dh - c->cell_h) / 2, "DEL", PAL_BG);
+
     display_blit();
 }
 #endif /* CONFIG_SCREEN_HAVE_CAMERA */
@@ -1235,6 +1430,9 @@ static page_t home_page(void)
     /* envio comes home to Pip -- her whole reason for a screen. */
     if (s_pages.available & PAGE_BIT(PAGE_PIP)) return PAGE_PIP;
     if (s_pages.available & PAGE_BIT(PAGE_PARTICLES)) return PAGE_PARTICLES;
+    /* envio is a camera app: the viewfinder is home, checked ahead of the
+       level so a board with both (hers) comes home to the camera. */
+    if (s_pages.available & PAGE_BIT(PAGE_CAMERA)) return PAGE_CAMERA;
     if (s_pages.available & PAGE_BIT(PAGE_LEVEL)) return PAGE_LEVEL;
     if (s_settings.home_now && (s_pages.available & PAGE_BIT(PAGE_NOW))) return PAGE_NOW;
     return PAGE_CLOCK;
@@ -2468,23 +2666,14 @@ void app_main(void)
     ens160_init();
     s_env_gas = ens160_present();
 
-    /* An environment logger, and nothing else: the clock and the three
-       readings. Everything else is either compiled out or struck off here. */
-    /* The dashboard: clock, forecast, and two stacked readings-pages that fill
-       the tall panel -- Climate (temperature over humidity) and Air (air
-       quality over CO2). The single-reading pages, pressure, the trend and the
-       week are struck off; they are for the short panels this one is not. */
-    available &= PAGE_BIT(PAGE_CLOCK) | PAGE_BIT(PAGE_FORECAST)
-               | PAGE_BIT(PAGE_CLIMATE) | PAGE_BIT(PAGE_AIR);
-
-    /* A page only for what the board can actually measure. */
-    if (!s_env_gas) available &= ~PAGE_BIT(PAGE_AIR);
-    if (!aht21_present() && !bme280_present()) available &= ~PAGE_BIT(PAGE_CLIMATE);
-    /* Pressure reuses PAGE_ROOM_HPA -- the short-panel single-reading page --
-       and is added back in only with a BME280 actually on the bus. It is
-       struck from the mask above like the rest of PAGE_ROOM_*, so this has to
-       OR it back rather than merely skip clearing it. */
-    if (bme280_present()) available |= PAGE_BIT(PAGE_ROOM_HPA);
+    /* envio is a camera app now (2026-09-19): Camera (home), Gallery, the
+       Level and the Clock. The weather/air/climate/system dashboard that
+       used to live here is gone from the page list -- env_sample() below
+       keeps logging the room sensors regardless, so the data is not lost,
+       just not shown. Camera/Gallery/Bubble are added back in further down,
+       after their own sensor/board guards; only the clock survives this
+       mask untouched. */
+    available &= PAGE_BIT(PAGE_CLOCK);
 #else
     /* The forecast belongs to the weather dashboard (envio), not to lilly's
        clock/usage slideshow -- strip it here or a small non-ENV panel offers
@@ -2519,11 +2708,11 @@ void app_main(void)
 #if HAVE_IMU
     if (s_imu) available |= PAGE_BIT(PAGE_BUBBLE);
 #endif
-    /* The System page needs no sensor and no touch, so it is not behind the
-       IMU guard above -- it is always available on envio. */
-#if defined(CONFIG_SCREEN_BOARD_TOUCH_LCD_35B)
-    available |= PAGE_BIT(PAGE_SYSTEM);
-#endif
+    /* The System page (uptime, battery, free RAM) was part of the old
+       weather/air dashboard and is dropped now that envio is a camera app;
+       draw_system() and CONFIG_SCREEN_BOARD_TOUCH_LCD_35B's PAGE_SYSTEM slot
+       stay in the tree (harmless, just never made available) rather than
+       being ripped out along with the pages the task asked to keep. */
     /* The camera page only exists on the board with the OV5640. Its
        page_def_t has needs_touch=false (a swipe reaches it, no menu tile),
        so the generic where/needs_touch loop above adds it to every board
@@ -2817,30 +3006,59 @@ void app_main(void)
 #endif
 #if CONFIG_SCREEN_HAVE_CAMERA
             } else if (s_pages.current == PAGE_CAMERA) {
-                /* Only the SHOT button fires the shutter now -- a tap elsewhere
-                   (while aiming) is ignored, and it is an in-page action, not
-                   navigation. The deinit + reinit + settling + JPEG encode + SD
-                   write below takes on the order of a second, so paint
-                   something before it, or the screen just freezes. */
-                if (in_shot_button(c, tx, ty)) {
-                    canvas_puts_px(c, 6, 2, "capturing...", PAL_A1);
-                    display_blit();
-                    camera_shutter();
-                    /* Not `now`, captured before camera_shutter's ~1-2s of
-                       blocking work -- the same class of staleness already
-                       fixed for s_shot_msg_until, just for the idle timer. */
+                /* RES and TIMER are in-page pickers, tested before SHOT since
+                   none of the three rects overlap. A tap anywhere else (while
+                   aiming) is ignored -- these are in-page actions, not
+                   navigation. */
+                if (in_res_button(c, tx, ty)) {
+                    camera_cycle_resolution();
+                    s_pages.last_activity_us = now;
+                    s_drawn_page = PAGE_COUNT;
+                    ESP_LOGI(TAG, "tap at %d,%d -> resolution now %s",
+                             tx, ty, res_label(camera_get_capture_size()));
+                } else if (in_timer_button(c, tx, ty)) {
+                    camera_cycle_timer();
+                    s_pages.last_activity_us = now;
+                    s_drawn_page = PAGE_COUNT;
+                    ESP_LOGI(TAG, "tap at %d,%d -> self-timer now %s",
+                             tx, ty, timer_label());
+                } else if (in_shot_button(c, tx, ty)) {
+                    /* Immediate (timer off): the deinit + reinit + settling +
+                       JPEG encode + SD write below takes on the order of a
+                       second, so paint something before it, or the screen
+                       just freezes. With the timer armed, camera_shoot only
+                       sets a deadline -- draw_camera's own countdown paints
+                       the number and fires the shutter itself, so nothing
+                       blocking happens here in that case. */
+                    if (s_timer_mode == 0) {
+                        canvas_puts_px(c, 6, 34, "capturing...", PAL_A1);
+                        display_blit();
+                    }
+                    camera_shoot();
+                    /* Not `now` when it captured immediately -- captured
+                       before camera_shutter's ~1-2s of blocking work, the
+                       same class of staleness already fixed for
+                       s_shot_msg_until, just for the idle timer. */
                     s_pages.last_activity_us = esp_timer_get_time();
-                    ESP_LOGI(TAG, "SHOT at %d,%d -> camera shutter", tx, ty);
+                    ESP_LOGI(TAG, "SHOT at %d,%d -> camera_shoot (timer %s)",
+                             tx, ty, timer_label());
                 }
             } else if (s_pages.current == PAGE_GALLERY) {
-                /* Next photo -- like the shutter and the Level reset above,
-                   an in-page action, not navigation. A swipe still pages
-                   away (below). */
-                if (s_gallery_count > 0)
-                    s_gallery_idx = (s_gallery_idx + 1) % s_gallery_count;
-                s_pages.last_activity_us = now;
-                s_drawn_page = PAGE_COUNT;
-                ESP_LOGI(TAG, "tap at %d,%d -> gallery next photo", tx, ty);
+                /* DEL removes the current photo and advances; a tap anywhere
+                   else is "next photo", like before. Both are in-page
+                   actions -- swipes still page away, below. */
+                if (s_gallery_count > 0 && in_gallery_del_button(c, tx, ty)) {
+                    gallery_delete_current();
+                    s_pages.last_activity_us = now;
+                    s_drawn_page = PAGE_COUNT;
+                    ESP_LOGI(TAG, "tap at %d,%d -> gallery delete", tx, ty);
+                } else {
+                    if (s_gallery_count > 0)
+                        s_gallery_idx = (s_gallery_idx + 1) % s_gallery_count;
+                    s_pages.last_activity_us = now;
+                    s_drawn_page = PAGE_COUNT;
+                    ESP_LOGI(TAG, "tap at %d,%d -> gallery next photo", tx, ty);
+                }
 #endif
             } else if (tx < c->w / 2) {
                 /* The left half goes back, the right half forward. Buttons on

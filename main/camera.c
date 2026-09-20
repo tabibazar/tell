@@ -73,14 +73,33 @@ static void camera_fill_capture_config(camera_config_t *c)
     c->frame_size = FRAMESIZE_SVGA;
 }
 
+/* The resolution picker on PAGE_CAMERA -- SVGA (800x600) by default, cycled
+   through VGA/SVGA/UXGA. UXGA's RGB565 framebuffer is 1600*1200*2 = 3.84MB,
+   which fits the 8MB PSRAM but is worth remembering when capture allocation
+   is investigated later. */
+static framesize_t s_capture_size = FRAMESIZE_SVGA;
+
+void camera_set_capture_size(framesize_t sz)
+{
+    s_capture_size = sz;
+}
+
+framesize_t camera_get_capture_size(void)
+{
+    return s_capture_size;
+}
+
 /* Same capture resolution as camera_fill_capture_config, but RGB565 rather
    than sensor-JPEG: the shutter needs raw pixels to stamp a timestamp onto
-   before encoding, which a hardware JPEG frame does not allow. */
-static void camera_fill_capture_rgb_config(camera_config_t *c)
+   before encoding, which a hardware JPEG frame does not allow. `sz` lets
+   camera_capture_rgb retry at a smaller size after an allocation failure
+   without disturbing s_capture_size (the picker's own idea of what is
+   selected). */
+static void camera_fill_capture_rgb_config(camera_config_t *c, framesize_t sz)
 {
     camera_fill_config(c);
     c->pixel_format = PIXFORMAT_RGB565;
-    c->frame_size = FRAMESIZE_HVGA;
+    c->frame_size = sz;
 }
 
 /* The OV5640 powers up with heavy edge-enhancement and no auto white balance or
@@ -253,8 +272,19 @@ esp_err_t camera_capture_rgb(camera_fb_t **fb_out)
        above camera_fill_config for why a runtime sensor switch will not do. */
     esp_camera_deinit();
     camera_config_t cfg;
-    camera_fill_capture_rgb_config(&cfg);
+    camera_fill_capture_rgb_config(&cfg, s_capture_size);
     esp_err_t err = esp_camera_init(&cfg);
+    if (err != ESP_OK && s_capture_size != FRAMESIZE_VGA) {
+        /* The picker's chosen size (SVGA/UXGA) could not be allocated --
+           most likely PSRAM pressure at UXGA's 3.84MB RGB565 buffer. Fall
+           back to the smallest option rather than failing the shot; the
+           picker itself (s_capture_size) is left alone so it goes back to
+           trying the requested size next time. */
+        ESP_LOGW(TAG, "camera_capture_rgb: init at framesize %d failed (%s), "
+                 "falling back to VGA", (int)s_capture_size, esp_err_to_name(err));
+        camera_fill_capture_rgb_config(&cfg, FRAMESIZE_VGA);
+        err = esp_camera_init(&cfg);
+    }
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "camera_capture_rgb: esp_camera_init(RGB565 capture) failed: %s",
                  esp_err_to_name(err));

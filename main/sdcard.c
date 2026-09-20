@@ -125,3 +125,16 @@ void sd_photo_name(char *out, size_t n)
 
     snprintf(out, n, "envio/IMG_boot_%u.jpg", (unsigned)(s_boot_seq++));
 }
+
+bool sd_free_bytes(uint64_t *out_free)
+{
+    if (!s_mounted || !out_free) return false;
+    uint64_t total = 0, free_b = 0;
+    esp_err_t err = esp_vfs_fat_info("/sdcard", &total, &free_b);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "sd_free_bytes: esp_vfs_fat_info failed: %s", esp_err_to_name(err));
+        return false;
+    }
+    *out_free = free_b;
+    return true;
+}

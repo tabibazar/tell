@@ -2,6 +2,7 @@
 #define SDCARD_H
 
 #include "esp_err.h"
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -26,5 +27,10 @@ esp_err_t sd_write(const char *path, const uint8_t *data, size_t len);
    "envio/IMG_boot_<seq>.jpg" with a process-lifetime incrementing <seq>, so
    photos taken before the clock is set still get distinct names. */
 void sd_photo_name(char *out, size_t n);
+
+/* Free space on the card, in bytes, via esp_vfs_fat_info. Returns false
+   (leaving *out_free untouched) if the card is not mounted or the FATFS
+   query fails -- the caller (the gallery caption) just omits the figure. */
+bool sd_free_bytes(uint64_t *out_free);
 
 #endif /* SDCARD_H */
