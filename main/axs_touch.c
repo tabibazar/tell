@@ -16,6 +16,7 @@
 
 #include "driver/i2c_master.h"
 #include "esp_log.h"
+#include "esp_timer.h"
 
 #include <stdlib.h>
 
@@ -39,6 +40,8 @@ static int  s_raw_x, s_raw_y;
 static int  s_pending_swipe;    /* -1 left, +1 right, 0 none */
 static bool s_pending_tap;
 static int  s_tap_x, s_tap_y;
+static int64_t s_start_us;      /* boot grace: the AXS15231B reports a phantom
+                                   touch right after power-up */
 
 esp_err_t touch_init(void)
 {
@@ -55,6 +58,7 @@ esp_err_t touch_init(void)
     if (i2c_master_bus_add_device(i2cbus_handle(I2CBUS_MAIN), &dev, &s_dev) != ESP_OK)
         return ESP_ERR_NOT_FOUND;
     s_present = true;
+    s_start_us = esp_timer_get_time();
     ESP_LOGI(TAG, "AXS15231B touch at 0x%02x", ADDR);
     return ESP_OK;
 }
@@ -76,6 +80,10 @@ static bool read_point(int *rx, int *ry)
 /* Reads the controller and advances the gesture. touch_tapped drives it. */
 static void poll(void)
 {
+    /* Swallow the phantom touch the AXS15231B emits just after power-up, which
+       otherwise reads as a swipe and lands on the last page (Camera). */
+    if (esp_timer_get_time() - s_start_us < 1500000) { s_down = false; return; }
+
     int rx, ry;
     bool down = s_present && read_point(&rx, &ry);
     if (down) {
