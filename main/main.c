@@ -1235,6 +1235,27 @@ static bool in_gallery_del_button(const canvas_t *c, int px, int py)
     return px >= x && px < x + w && py >= y && py < y + h;
 }
 
+/* Prev/next arrows, bottom-right, for stepping through the photos. */
+static void gallery_next_button_rect(const canvas_t *c, int *x, int *y, int *w, int *h)
+{
+    *w = 50; *h = 40;
+    *x = c->w - *w - 4; *y = c->h - *h - 6;
+}
+
+static void gallery_prev_button_rect(const canvas_t *c, int *x, int *y, int *w, int *h)
+{
+    *w = 50; *h = 40;
+    *x = c->w - 2 * *w - 12; *y = c->h - *h - 6;
+}
+
+static bool in_rect(const canvas_t *c, int px, int py,
+                    void (*rect)(const canvas_t *, int *, int *, int *, int *))
+{
+    int x, y, w, h;
+    rect(c, &x, &y, &w, &h);
+    return px >= x && px < x + w && py >= y && py < y + h;
+}
+
 /* Removes the file under s_gallery_idx from the card and drops it from the
    in-memory list (a shift, not a re-scan -- cheap, and gallery_scan's own
    newest-first order is already exactly what the shift preserves). */
@@ -1283,6 +1304,15 @@ static void draw_gallery(canvas_t *c)
     gallery_del_button_rect(c, &dx, &dy, &dw, &dh);
     canvas_fill_rect(c, dx, dy, dw, dh, PAL_A1);
     canvas_puts_px(c, dx + (dw - 3 * c->cell_w) / 2, dy + (dh - c->cell_h) / 2, "DEL", PAL_BG);
+
+    int px, py, pw, ph;
+    gallery_prev_button_rect(c, &px, &py, &pw, &ph);
+    canvas_fill_rect(c, px, py, pw, ph, PAL_A0);
+    canvas_puts_px(c, px + (pw - c->cell_w) / 2, py + (ph - c->cell_h) / 2, "<", PAL_BG);
+    int nx, ny, nw, nh;
+    gallery_next_button_rect(c, &nx, &ny, &nw, &nh);
+    canvas_fill_rect(c, nx, ny, nw, nh, PAL_A0);
+    canvas_puts_px(c, nx + (nw - c->cell_w) / 2, ny + (nh - c->cell_h) / 2, ">", PAL_BG);
 
     display_blit();
 }
@@ -2919,22 +2949,30 @@ void app_main(void)
                 page_t p = tx < c->w / 2 ? pages_back(&s_pages, now)
                                          : pages_advance(&s_pages, now);
                 ESP_LOGI(TAG, "camera tap -> page %d", (int)p);
+            } else if (s_pages.current == PAGE_GALLERY
+                       && s_gallery_count > 0 && in_gallery_del_button(c, tx, ty)) {
+                gallery_delete_current();
+                s_pages.last_activity_us = now;
+                s_drawn_page = PAGE_COUNT;
+                ESP_LOGI(TAG, "gallery delete");
+            } else if (s_pages.current == PAGE_GALLERY
+                       && s_gallery_count > 0 && in_rect(c, tx, ty, gallery_prev_button_rect)) {
+                s_gallery_idx = (s_gallery_idx - 1 + s_gallery_count) % s_gallery_count;
+                s_pages.last_activity_us = now;
+                s_drawn_page = PAGE_COUNT;
+                ESP_LOGI(TAG, "gallery prev");
+            } else if (s_pages.current == PAGE_GALLERY
+                       && s_gallery_count > 0 && in_rect(c, tx, ty, gallery_next_button_rect)) {
+                s_gallery_idx = (s_gallery_idx + 1) % s_gallery_count;
+                s_pages.last_activity_us = now;
+                s_drawn_page = PAGE_COUNT;
+                ESP_LOGI(TAG, "gallery next");
             } else if (s_pages.current == PAGE_GALLERY) {
-                /* DEL removes the current photo and advances; a tap anywhere
-                   else is "next photo", like before. Both are in-page
-                   actions -- swipes still page away, below. */
-                if (s_gallery_count > 0 && in_gallery_del_button(c, tx, ty)) {
-                    gallery_delete_current();
-                    s_pages.last_activity_us = now;
-                    s_drawn_page = PAGE_COUNT;
-                    ESP_LOGI(TAG, "tap at %d,%d -> gallery delete", tx, ty);
-                } else {
-                    if (s_gallery_count > 0)
-                        s_gallery_idx = (s_gallery_idx + 1) % s_gallery_count;
-                    s_pages.last_activity_us = now;
-                    s_drawn_page = PAGE_COUNT;
-                    ESP_LOGI(TAG, "tap at %d,%d -> gallery next photo", tx, ty);
-                }
+                /* A tap off the buttons pages out, so the Gallery is not a
+                   trap if a swipe does not register. */
+                page_t p = tx < c->w / 2 ? pages_back(&s_pages, now)
+                                         : pages_advance(&s_pages, now);
+                ESP_LOGI(TAG, "gallery tap -> page %d", (int)p);
 #endif
             } else if (tx < c->w / 2) {
                 /* The left half goes back, the right half forward. Buttons on
