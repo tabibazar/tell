@@ -77,7 +77,7 @@ static void camera_fill_capture_config(camera_config_t *c)
    through VGA/SVGA/UXGA. UXGA's RGB565 framebuffer is 1600*1200*2 = 3.84MB,
    which fits the 8MB PSRAM but is worth remembering when capture allocation
    is investigated later. */
-static framesize_t s_capture_size = FRAMESIZE_SVGA;
+static framesize_t s_capture_size = FRAMESIZE_VGA;
 
 void camera_set_capture_size(framesize_t sz)
 {

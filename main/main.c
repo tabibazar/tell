@@ -1030,51 +1030,6 @@ static void camera_cycle_resolution(void)
     }
 }
 
-/* Self-timer picker, top-right: off -> 3s -> 10s -> off. Driven from
-   draw_camera every frame (s_shot_deadline below) rather than blocking the
-   loop for up to 10s, so the page keeps redrawing (and the countdown keeps
-   counting) while it waits. */
-static int s_timer_mode = 0;             /* 0=off, 1=3s, 2=10s */
-static int64_t s_shot_deadline = 0;      /* 0 = no countdown running */
-
-static void timer_button_rect(const canvas_t *c, int *x, int *y, int *w, int *h)
-{
-    *w = 96; *h = 26;
-    *x = c->w - *w - 4; *y = 4;
-}
-
-static bool in_timer_button(const canvas_t *c, int px, int py)
-{
-    int x, y, w, h;
-    timer_button_rect(c, &x, &y, &w, &h);
-    return px >= x && px < x + w && py >= y && py < y + h;
-}
-
-static const char *timer_label(void)
-{
-    switch (s_timer_mode) {
-    case 1:  return "TIMER 3s";
-    case 2:  return "TIMER 10s";
-    default: return "TIMER off";
-    }
-}
-
-static void camera_cycle_timer(void)
-{
-    s_timer_mode = (s_timer_mode + 1) % 3;
-}
-
-/* Starts the shutter: immediately if the self-timer is off, or arms the
-   countdown draw_camera below counts down and fires. */
-static void camera_shoot(void)
-{
-    if (s_timer_mode == 0) {
-        camera_shutter();
-        return;
-    }
-    int secs = (s_timer_mode == 1) ? 3 : 10;
-    s_shot_deadline = esp_timer_get_time() + (int64_t)secs * 1000000;
-}
 
 static void draw_camera(canvas_t *c)
 {
@@ -1082,63 +1037,6 @@ static void draw_camera(canvas_t *c)
     bool has_frame = camera_preview(c);
 
     int64_t now = esp_timer_get_time();
-
-    /* Level overlay: a small bullseye near the top-center, over the live
-       preview, so a shot can be framed level without leaving the
-       viewfinder. Small and out of the way of the buttons below. */
-    if (s_imu) {
-        qmi8658_sample_t sample;
-        if (qmi8658_read(&sample) == ESP_OK) {
-            float gx, gy;
-            gravity_from(&sample, &gx, &gy);
-            int cx = c->w / 2, cy = 72, r = 26;
-            canvas_circle(c, cx, cy, r, PAL_DIM);
-            canvas_circle(c, cx, cy, r / 2, PAL_DIM);
-            int bx = cx + (int)(gx * r);
-            int by = cy + (int)(gy * r);
-            if (bx < cx - r) bx = cx - r;
-            if (bx > cx + r) bx = cx + r;
-            if (by < cy - r) by = cy - r;
-            if (by > cy + r) by = cy + r;
-            bool level = (gx * gx + gy * gy) < 0.02f;   /* within a few degrees */
-            canvas_disc(c, bx, by, 5, level ? PAL_A2 : PAL_A1);
-        }
-    }
-
-    /* Self-timer countdown: fires the capture itself once it reaches zero
-       rather than handing that back to the tap handler, which is exactly
-       the "drive it from draw_camera" the countdown needs to avoid
-       blocking the whole loop for up to 10s. */
-    if (s_shot_deadline != 0) {
-        int64_t remain_us = s_shot_deadline - now;
-        if (remain_us <= 0) {
-            s_shot_deadline = 0;
-            canvas_puts_px(c, 6, 34, "capturing...", PAL_A1);
-            display_blit();
-            camera_shutter();
-            return;
-        }
-        int n = (int)(remain_us / 1000000) + 1;
-        /* Clamped well inside the self-timer's own 3s/10s range -- just
-           enough for the compiler's format-truncation checker to see a
-           bounded value, since it cannot follow s_shot_deadline's actual
-           range back to this snprintf. */
-        if (n < 0) n = 0;
-        if (n > 10) n = 10;
-        char buf[8];
-        snprintf(buf, sizeof buf, "%d", n);
-        int cx = c->w / 2, cy = c->h / 2;
-        canvas_circle(c, cx, cy, 40, PAL_A1);
-        int tw = (int)strlen(buf) * c->cell_w;
-        int tx = cx - tw / 2, ty = cy - c->cell_h / 2;
-        /* Bold: the same offset-copies trick camera_shutter uses for its
-           timestamp stamp, so the digit reads over a bright or dark frame. */
-        canvas_puts_px(c, tx - 1, ty, buf, PAL_FG);
-        canvas_puts_px(c, tx + 1, ty, buf, PAL_FG);
-        canvas_puts_px(c, tx, ty - 1, buf, PAL_FG);
-        canvas_puts_px(c, tx, ty + 1, buf, PAL_FG);
-        canvas_puts_px(c, tx, ty, buf, PAL_A1);
-    }
 
     if (now < s_shot_msg_until)
         canvas_puts_px(c, 6, 34, s_shot_msg, PAL_A1);
@@ -1149,11 +1047,6 @@ static void draw_camera(canvas_t *c)
     res_button_rect(c, &rx, &ry, &rw, &rh);
     canvas_fill_rect(c, rx, ry, rw, rh, PAL_A0);
     canvas_puts_px(c, rx + 4, ry + (rh - c->cell_h) / 2, res_label(camera_get_capture_size()), PAL_BG);
-
-    int qx, qy, qw, qh;
-    timer_button_rect(c, &qx, &qy, &qw, &qh);
-    canvas_fill_rect(c, qx, qy, qw, qh, PAL_A0);
-    canvas_puts_px(c, qx + 4, qy + (qh - c->cell_h) / 2, timer_label(), PAL_BG);
 
     int bx, by, bw, bh;
     shot_button_rect(c, &bx, &by, &bw, &bh);
@@ -3005,44 +2898,27 @@ void app_main(void)
                 ESP_LOGI(TAG, "tap at %d,%d -> level reset", tx, ty);
 #endif
 #if CONFIG_SCREEN_HAVE_CAMERA
+            } else if (s_pages.current == PAGE_CAMERA && in_res_button(c, tx, ty)) {
+                camera_cycle_resolution();
+                s_pages.last_activity_us = now;
+                s_drawn_page = PAGE_COUNT;
+                ESP_LOGI(TAG, "tap -> resolution now %s",
+                         res_label(camera_get_capture_size()));
+            } else if (s_pages.current == PAGE_CAMERA && in_shot_button(c, tx, ty)) {
+                /* The deinit + reinit + settling + JPEG encode + SD write takes
+                   on the order of a second, so paint something before it or the
+                   screen just freezes on the last preview frame. */
+                canvas_puts_px(c, 6, 34, "capturing...", PAL_A1);
+                display_blit();
+                camera_shutter();
+                s_pages.last_activity_us = esp_timer_get_time();
+                ESP_LOGI(TAG, "SHOT at %d,%d", tx, ty);
             } else if (s_pages.current == PAGE_CAMERA) {
-                /* RES and TIMER are in-page pickers, tested before SHOT since
-                   none of the three rects overlap. A tap anywhere else (while
-                   aiming) is ignored -- these are in-page actions, not
-                   navigation. */
-                if (in_res_button(c, tx, ty)) {
-                    camera_cycle_resolution();
-                    s_pages.last_activity_us = now;
-                    s_drawn_page = PAGE_COUNT;
-                    ESP_LOGI(TAG, "tap at %d,%d -> resolution now %s",
-                             tx, ty, res_label(camera_get_capture_size()));
-                } else if (in_timer_button(c, tx, ty)) {
-                    camera_cycle_timer();
-                    s_pages.last_activity_us = now;
-                    s_drawn_page = PAGE_COUNT;
-                    ESP_LOGI(TAG, "tap at %d,%d -> self-timer now %s",
-                             tx, ty, timer_label());
-                } else if (in_shot_button(c, tx, ty)) {
-                    /* Immediate (timer off): the deinit + reinit + settling +
-                       JPEG encode + SD write below takes on the order of a
-                       second, so paint something before it, or the screen
-                       just freezes. With the timer armed, camera_shoot only
-                       sets a deadline -- draw_camera's own countdown paints
-                       the number and fires the shutter itself, so nothing
-                       blocking happens here in that case. */
-                    if (s_timer_mode == 0) {
-                        canvas_puts_px(c, 6, 34, "capturing...", PAL_A1);
-                        display_blit();
-                    }
-                    camera_shoot();
-                    /* Not `now` when it captured immediately -- captured
-                       before camera_shutter's ~1-2s of blocking work, the
-                       same class of staleness already fixed for
-                       s_shot_msg_until, just for the idle timer. */
-                    s_pages.last_activity_us = esp_timer_get_time();
-                    ESP_LOGI(TAG, "SHOT at %d,%d -> camera_shoot (timer %s)",
-                             tx, ty, timer_label());
-                }
+                /* Any tap off the buttons navigates, so Gallery/Level/Clock are
+                   reachable even when a swipe does not register. */
+                page_t p = tx < c->w / 2 ? pages_back(&s_pages, now)
+                                         : pages_advance(&s_pages, now);
+                ESP_LOGI(TAG, "camera tap -> page %d", (int)p);
             } else if (s_pages.current == PAGE_GALLERY) {
                 /* DEL removes the current photo and advances; a tap anywhere
                    else is "next photo", like before. Both are in-page
