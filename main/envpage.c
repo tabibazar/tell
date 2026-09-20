@@ -302,9 +302,15 @@ static void env2_panel(canvas_t *c, int r0, int r1, const envpage_t *p)
     canvas_fill_rect(c, 0, r0 * c->cell_h, c->w, c->cell_h, PAL_TITLE_BG);
     if (p->title) canvas_puts(c, 0, r0, p->title, PAL_FG);
     if (p->value) {
+        /* Right-aligned, but never on top of the title: a wide reading (a
+           4-digit ppm, say) would otherwise back into "CO2e" and both would
+           render as a smear. Clamp the start to one column past the title and
+           let canvas_puts clip the tail at the panel edge instead. */
+        int tlen = p->title ? (int)strlen(p->title) : 0;
         int len = (int)strlen(p->value);
         int col = c->cols - len;
-        canvas_puts(c, col < 0 ? 0 : col, r0, p->value, PAL_FG);
+        if (col < tlen + 1) col = tlen + 1;
+        canvas_puts(c, col, r0, p->value, PAL_FG);
     }
     const int left = ENVPAGE_GUTTER * c->cell_w;
     const int top = (r0 + 1) * c->cell_h + 1;
