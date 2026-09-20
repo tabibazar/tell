@@ -48,3 +48,6 @@ CONFIG_SCCB_HARDWARE_I2C_DRIVER_NEW=y
 # Heap-allocated LFN buffers, not stack, to avoid growing every FATFS call's
 # stack frame.
 CONFIG_FATFS_LFN_HEAP=y
+
+# BMP280 absolute bias: read 5.1 hPa low vs a phone (1013.9 vs 1019), so trim +5.1.
+CONFIG_SCREEN_PRESSURE_CAL_X10=51

@@ -207,4 +207,14 @@ config SCREEN_ALTITUDE_M
         0 disables the correction, which is right for a board with no
         barometer.
 
+config SCREEN_PRESSURE_CAL_X10
+    int "Fixed pressure trim in tenths of a hPa (calibration)"
+    default 51 if SCREEN_BOARD_TOUCH_LCD_35B
+    default 0
+    help
+        Added to the sea-level pressure after the altitude correction, to
+        cancel the barometer's absolute bias against a trusted reference. In
+        tenths of a hPa: 51 = +5.1 hPa. envio's BMP280 read 5.1 hPa below a
+        phone's sea-level pressure (1013.9 vs 1019), so it is trimmed up.
+
 endmenu

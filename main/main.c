@@ -1451,10 +1451,14 @@ static void draw_rtc(canvas_t *c, int64_t now)
 static float env_msl(float station_hpa)
 {
 #if CONFIG_SCREEN_ALTITUDE_M > 0
-    return station_hpa / powf(1.0f - (float)CONFIG_SCREEN_ALTITUDE_M / 44330.0f, 5.255f);
+    float msl = station_hpa / powf(1.0f - (float)CONFIG_SCREEN_ALTITUDE_M / 44330.0f, 5.255f);
 #else
-    return station_hpa;
+    float msl = station_hpa;
 #endif
+    /* A fixed trim (tenths of a hPa) to match a trusted reference: the BMP280
+       carries a few hPa of absolute bias, so even at the right altitude the MSLP
+       sits a little off. Calibrated once against a phone's sea-level reading. */
+    return msl + (float)CONFIG_SCREEN_PRESSURE_CAL_X10 / 10.0f;
 }
 
 #if CONFIG_SCREEN_ENV_ONLY
@@ -1466,7 +1470,7 @@ static float env_msl(float station_hpa)
  * known, which on this board is at boot from the DS3231: a reading stamped
  * with time-since-power-on cannot be placed in a log that outlives the power.
  */
-#define ENV_EVERY_MIN   1
+#define ENV_EVERY_MIN   5   /* one reading every 5 minutes */
 #define ENV_DAY_MIN     (24 * 60)
 #define ENV_MONTH_MIN   (30 * 24 * 60)
 
@@ -1674,7 +1678,11 @@ static void env_sample(int64_t now)
     if (!have_th) return;
     rec.temp_c100 = (int16_t)(t * 100.0f);
     rec.rh_c100 = (uint16_t)(rh * 100.0f);
-    rec.flags |= ENV_HAVE_TEMP | ENV_HAVE_RH;
+    rec.flags |= ENV_HAVE_TEMP;
+    /* Only claim humidity when a humidity sensor actually answered: a BMP280
+       (no RH) would otherwise chart a fabricated 0%. envio always has the AHT21,
+       so this only guards a hypothetical humidity-less board. */
+    if (have_aht || have_bme_rh) rec.flags |= ENV_HAVE_RH;
 
     if (ens160_present()) {
         /*
