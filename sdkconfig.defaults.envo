@@ -30,3 +30,7 @@ CONFIG_SCREEN_ALTITUDE_M=0
 # Long filenames for FATFS: the SD CSV log is named envo/YYYY-MM-DD.csv, whose
 # 10-character base name is not an 8.3 short name. Heap-allocated LFN buffers.
 CONFIG_FATFS_LFN_HEAP=y
+
+# Low: at 100% the panel and board run hot to the touch, and the heat reaches
+# the soldered sensors.
+CONFIG_SCREEN_BRIGHTNESS=20

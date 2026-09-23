@@ -3,9 +3,12 @@
  * (the same bus as the sensor array). A different chip from envio's AXS15231B,
  * with its own register read -- so it is its own driver, not axs_touch.c.
  *
- * Polling only: the chip answers over I2C from power-up, so this never touches
- * its RST/INT lines, whose GPIOs (47/48) the vendor sources disagree about.
- * touch_swipe/touch_tapped drive the read; no interrupt is wired.
+ * The chip ACKs its address from power-up but, as first written (no reset,
+ * one repeated-start read), NACKed every data read. Two changes together fixed
+ * it, both as Waveshare's own code does: RST (GPIO47) pulsed at init, and the
+ * register write and read as two transactions. Which of the two is actually
+ * needed was not isolated. Polling only: INT (GPIO48) is not wired up.
+ * touch_swipe/touch_tapped drive the read.
  *
  * The controller reports in the panel's native 172x320 portrait frame. The
  * display is driven landscape (swap_xy + mirror), so raw x/y are swapped into
@@ -20,15 +23,18 @@
 
 #include "i2cbus.h"
 
+#include "driver/gpio.h"
 #include "driver/i2c_master.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 
 #include <stdio.h>
 #include <stdlib.h>
-#include <string.h>
 
 #define ADDR      0x63
+#define PIN_RST   47        /* Waveshare BSP: TP_RST 47, TP_INT 48 */
 #define CANVAS_W  320
 #define CANVAS_H  172
 
@@ -52,6 +58,14 @@ static int64_t s_start_us;      /* boot grace against a power-up phantom touch *
 
 esp_err_t touch_init(void)
 {
+    /* Reset first, as Waveshare's init does. */
+    gpio_config_t rst = { .pin_bit_mask = 1ULL << PIN_RST, .mode = GPIO_MODE_OUTPUT };
+    gpio_config(&rst);
+    gpio_set_level(PIN_RST, 0);
+    vTaskDelay(pdMS_TO_TICKS(20));
+    gpio_set_level(PIN_RST, 1);
+    vTaskDelay(pdMS_TO_TICKS(200));
+
     if (i2cbus_init(I2CBUS_MAIN) != ESP_OK) return ESP_ERR_NOT_FOUND;
     if (!i2cbus_probe(I2CBUS_MAIN, ADDR)) {
         ESP_LOGW(TAG, "no AXS5106L touch at 0x%02x", ADDR);
@@ -75,7 +89,10 @@ static bool read_point(int *rx, int *ry)
 {
     uint8_t reg = 0x01;
     uint8_t d[14] = { 0 };
-    if (i2c_master_transmit_receive(s_dev, &reg, 1, d, sizeof d, 50) != ESP_OK)
+    /* Two transactions with a stop between, as Waveshare's read does. */
+    esp_err_t err = i2c_master_transmit(s_dev, &reg, 1, 50);
+    if (err == ESP_OK) err = i2c_master_receive(s_dev, d, sizeof d, 50);
+    if (err != ESP_OK)
         return false;
     uint8_t points = d[1] & 0x0F;
     if (points == 0 || points > 2) return false;   /* no valid touch */

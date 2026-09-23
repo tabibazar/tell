@@ -19,9 +19,9 @@
 #define PAL_BG       0x0000  /* black */
 #define PAL_FG       0xFFFF  /* white */
 
-#if defined(CONFIG_SCREEN_BOARD_TOUCH_LCD_35B)
+#if defined(CONFIG_SCREEN_BOARD_TOUCH_LCD_35B) || defined(CONFIG_SCREEN_BOARD_TOUCH_LCD_147)
 /*
- * envio wears blue, amber and white, and nothing else -- a two-hue scheme,
+ * envio (and envo, whose bluish green under white text did not read) wears blue, amber and white, and nothing else -- a two-hue scheme,
  * not the six-accent chart palette, because she shows the weather and the
  * room, not the colour-coded usage charts. The two readings on a stacked page
  * take one hue each, so they stay apart at a glance.
@@ -51,7 +51,7 @@
  * default: at full saturation the orange and the vermillion move closer
  * together for a deuteranope, and the charts lean on that pair.
  */
-#if defined(CONFIG_SCREEN_BOARD_TOUCH_LCD_35B)
+#if defined(CONFIG_SCREEN_BOARD_TOUCH_LCD_35B) || defined(CONFIG_SCREEN_BOARD_TOUCH_LCD_147)
 /* Blue and amber, alternating, so a stacked pair reads as two. */
 #define PAL_A0       0x04BF  /* blue   (0,150,255) */
 #define PAL_A1       0xFD40  /* amber  (255,168,0) */
