@@ -2130,6 +2130,9 @@ static void env_sdlog(int64_t now)
         n += snprintf(line + n, sizeof line - n, ",\n");
 
     esp_err_t err = sd_append(path, line, (size_t)n);
+    /* The same line on the serial log, so a Mac on the cable can watch the
+       room without pulling the card. Tagged so it greps cleanly. */
+    ESP_LOGI(TAG, "envcsv %.*s", n > 0 ? n - 1 : 0, line);
     static bool announced = false;
     if (!announced) {
         announced = true;
