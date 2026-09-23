@@ -9,20 +9,33 @@
 # on. The spirit level is the Feather's alone; the buttons are lilly's. lilly
 # has no sensor of any kind, so she carries none of it and neither does the
 # CrowPanel.
-# The IMU and the pages that need one went with the boards that had one; the
-# drivers stay in the tree for whatever turns up next, excluded here rather
-# than deleted. envio has a QMI8658 soldered on, so the sand could come back to
-# her -- but not in this first cut, which brings the panel up and no more.
-# Three boards now, three panel buses: the CrowPanel's RGB, lilly's i80, and
-# envio's AXS15231B over QSPI. Each has its own display_*.c and only one is
-# compiled. envio also carries axp2101.c, the PMIC that powers her panel rail;
-# the others have no such chip, so it is excluded from their builds.
+# The IMU and the pages that need one go to the boards that have a sensor. wave
+# is back -- a Waveshare 1.47B with a QMI8658 soldered on -- so she carries the
+# IMU driver again and the things it feeds: the sand, the spirit level and the
+# shake timer. The drivers a board does not want stay in the tree, excluded here
+# rather than deleted.
+# Four boards now, four panel situations: the CrowPanel's RGB, lilly's i80,
+# wave's ST7789 over SPI (display_st7789.c, back with her), and envio's
+# AXS15231B over QSPI. Each has its own display_*.c and only one is compiled.
+# envio also carries axp2101.c, the PMIC that powers her panel rail; the others
+# have no such chip, so it is excluded from their builds.
 # envio keeps the IMU (qmi8658) and the shake detector (in shaketimer.c) for
-# Pip, her desk familiar (pip.c), but not the sand or the level. The other
-# boards have no sensor and carry none of it, Pip included.
+# Pip, her desk familiar (pip.c), but not the sand or the level. lilly and the
+# CrowPanel have no sensor and carry none of it, Pip included.
 if(CONFIG_SCREEN_BOARD_CROWPANEL_7)
-    set(BOARD_EXCLUDES "display_i80.c" "display_axs15231b.c" "axp2101.c"
+    set(BOARD_EXCLUDES "display_st7789.c" "display_i80.c" "display_axs15231b.c" "axp2101.c"
                        "qmi8658.c" "level.c" "levelbig.c" "particles.c" "shaketimer.c"
+                       "pip.c" "axs_touch.c" "sdcard.c" "camera.c")
+elseif(CONFIG_SCREEN_BOARD_WAVESHARE_147B)
+    # wave is back: a Waveshare ESP32-S3-LCD-1.47B with an ST7789 over SPI and
+    # a QMI8658 soldered on, so she compiles display_st7789.c and the sensor
+    # things -- the sand (particles.c), the spirit level (level.c, the small
+    # rendering, not envio's levelbig.c) and the shake timer. This unit has no
+    # environment sensor wired, so she is not ENV_ONLY and carries none of the
+    # weather/air pages. No touch (gt911.c stays as the harmless default, as on
+    # lilly), no PMIC, no card slot, no camera, no Pip.
+    set(BOARD_EXCLUDES "display_rgb.c" "display_i80.c" "display_axs15231b.c"
+                       "axp2101.c" "levelbig.c"
                        "pip.c" "axs_touch.c" "sdcard.c" "camera.c")
 elseif(CONFIG_SCREEN_BOARD_TOUCH_LCD_35B)
     # An environment + weather display: her own QSPI panel and PMIC, the
@@ -33,11 +46,11 @@ elseif(CONFIG_SCREEN_BOARD_TOUCH_LCD_35B)
     # hers. sdcard.c is hers alone too: she is the only board with a card
     # slot. camera.c is hers too: the OV5640 rides her DVP header, which no
     # other board has.
-    set(BOARD_EXCLUDES "display_rgb.c" "display_i80.c"
+    set(BOARD_EXCLUDES "display_st7789.c" "display_rgb.c" "display_i80.c"
                        "particles.c" "shaketimer.c"
                        "pip.c" "gt911.c")
 else()
-    set(BOARD_EXCLUDES "display_rgb.c" "display_axs15231b.c" "axp2101.c"
+    set(BOARD_EXCLUDES "display_st7789.c" "display_rgb.c" "display_axs15231b.c" "axp2101.c"
                        "qmi8658.c" "level.c" "levelbig.c" "particles.c" "shaketimer.c"
                        "pip.c" "axs_touch.c" "sdcard.c" "camera.c")
 endif()

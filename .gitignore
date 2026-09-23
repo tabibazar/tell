@@ -3,6 +3,7 @@ build-crowpanel/
 build-crow/
 build-big/
 build-lilly/
+build-wave/
 build-envio/
 build/
 
@@ -42,7 +43,9 @@ sdkconfig.crow
 sdkconfig.big
 sdkconfig.crowpanel.old
 sdkconfig.lilly
+sdkconfig.wave
 sdkconfig.lilly.old
+sdkconfig.wave.old
 sdkconfig.envio
 sdkconfig.envio.old
 sdkconfig.old

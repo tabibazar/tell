@@ -1,0 +1,19 @@
+CONFIG_SCREEN_BOARD_WAVESHARE_147B=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions-wave.csv"
+
+# 16 MB, so the base file's 4 MB setting must be undone.
+CONFIG_ESPTOOLPY_FLASHSIZE_4MB=n
+CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+
+# Native USB-Serial-JTAG like the Feather and lilly, so the console settings
+# in sdkconfig.defaults are already right and nothing is overridden here.
+
+# No PSRAM. The framebuffer is 320*172*2 = 107 KB and fits internal DMA
+# memory; the 8 MB of octal stays off because nothing in this build needs it.
+# The WiFi variant does, and turns it on -- see sdkconfig.defaults.wave-wifi.
+
+# Fifteen per cent. A desk ornament does not need a lit panel at full, and the
+# backlight is the largest steady draw on the board -- the die sat at about
+# 60 C with it wide open, and near 51 C at ten. Raised from ten on 2026-09-12
+# because ten was legible but dim in daylight.
+CONFIG_SCREEN_BRIGHTNESS=15

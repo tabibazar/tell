@@ -1,0 +1,9 @@
+# Waveshare ESP32-S3-LCD-1.47B: 16 MB flash, no recovery bootloader to
+# preserve, so a plain single-app layout like lilly's and the CrowPanel's.
+# This unit has no environment sensors wired, so there is no envlog ring: it
+# runs the IMU things (the sand, the spirit level) and a clock, nothing that
+# writes readings to flash.
+# Name,     Type, SubType,  Offset,   Size,  Flags
+nvs,        data, nvs,      0x9000,   24K,
+phy_init,   data, phy,      0xf000,   4K,
+factory,    app,  factory,  0x10000,  4M,

@@ -168,12 +168,15 @@ static bool claude_busy(const ud_view_t *v, int64_t now)
  * need goes with them. CMakeLists drops the same files, so a reference left
  * behind here shows up as a link error rather than as dead code.
  */
-/* No other board here uses its IMU any more. envio has her QMI8658 back too,
-   but only for the bubble level -- the room-and-weather pages still read the gas
-   sensor on her I2C bus, not the accelerometer, and she is not a games board
-   for Pip, the sand or the level. The IMU driver and Pip stay in the tree,
+/* Two boards read the IMU. wave is back -- a QMI8658 soldered at GPIO48/47 --
+   and she is a games board: the sand and the spirit level, as she was before
+   she left. envio has her QMI8658 too, but only for the level -- the
+   room-and-weather pages read the gas sensor on her I2C bus, not the
+   accelerometer, and she is not a games board for Pip or the sand. lilly and
+   the CrowPanel have no sensor; the IMU driver and Pip stay in the tree,
    excluded by CMakeLists on the boards that do not want them. */
-#if defined(CONFIG_SCREEN_BOARD_TOUCH_LCD_35B)
+#if defined(CONFIG_SCREEN_BOARD_TOUCH_LCD_35B) \
+ || defined(CONFIG_SCREEN_BOARD_WAVESHARE_147B)
 #define HAVE_IMU 1
 #else
 #define HAVE_IMU 0
