@@ -148,7 +148,8 @@ static bool claude_busy(const ud_view_t *v, int64_t now)
  * same board until envo arrived, and the code said "CrowPanel" where it meant
  * "has touch".
  */
-#if defined(CONFIG_SCREEN_BOARD_CROWPANEL_7) || defined(CONFIG_SCREEN_BOARD_TOUCH_LCD_35B)
+#if defined(CONFIG_SCREEN_BOARD_CROWPANEL_7) || defined(CONFIG_SCREEN_BOARD_TOUCH_LCD_35B) \
+    || defined(CONFIG_SCREEN_BOARD_TOUCH_LCD_147)
 #define HAVE_TOUCH 1
 #else
 #define HAVE_TOUCH 0
@@ -1970,6 +1971,22 @@ static bool env_read_averaged(env_sample_t *rec)
        (0x60/0x61) contributes to the humidity side of the average. */
     bool have_bme_rh = have_bme && bme280_id() != 0x58;
 
+    /* Say which sensors fed this reading whenever that changes (and once at
+       boot), so the log shows whether temperature and humidity really are
+       the average of two parts or have fallen back to one. */
+    {
+        static int s_last_src = -1;
+        int src = (have_aht ? 1 : 0) | (have_bme ? 2 : 0) | (have_bme_rh ? 4 : 0);
+        if (src != s_last_src) {
+            s_last_src = src;
+            ESP_LOGI(TAG, "env sources: temp %s, rh %s",
+                     have_aht && have_bme ? "AHT21+BME avg"
+                         : have_aht ? "AHT21 only" : have_bme ? "BME only" : "none",
+                     have_aht && have_bme_rh ? "AHT21+BME avg"
+                         : have_aht ? "AHT21 only" : have_bme_rh ? "BME only" : "none");
+        }
+    }
+
     float t = 0, rh = 0;
     bool have_th = have_aht || have_bme;
     if (have_aht && have_bme)    { t = (at + bt) / 2.0f; }
@@ -2671,6 +2688,7 @@ void app_main(void)
     ens160_init();
     s_env_gas = ens160_present();
 
+#if defined(CONFIG_SCREEN_BOARD_TOUCH_LCD_35B)
     /* envio is a camera app now (2026-09-19): Camera (home), Gallery, the
        Level and the Clock. The weather/air/climate/system dashboard that
        used to live here is gone from the page list -- env_sample() below
@@ -2679,6 +2697,24 @@ void app_main(void)
        after their own sensor/board guards; only the clock survives this
        mask untouched. */
     available &= PAGE_BIT(PAGE_CLOCK);
+#else
+    /* envo, and any other short-panel logger: the clock and a page per thing
+       the board can measure, charted from the flash log. This is the NiceMCU
+       envo's mask (061acd7^) brought back -- the clock-only mask above is
+       envio's camera app and must not strip an env logger's pages. */
+    available &= PAGE_BIT(PAGE_CLOCK)
+               | PAGE_BIT(PAGE_ROOM_TEMP) | PAGE_BIT(PAGE_ROOM_RH)
+               | PAGE_BIT(PAGE_ROOM_HPA)
+               | PAGE_BIT(PAGE_ROOM_VOC) | PAGE_BIT(PAGE_ROOM_CO2)
+               | PAGE_BIT(PAGE_TREND) | PAGE_BIT(PAGE_WEEK);
+    /* Offering a pressure chart on a board with no barometer is offering an
+       empty room. */
+    if (!bme280_present()) available &= ~PAGE_BIT(PAGE_ROOM_HPA);
+    if (!s_env_gas) available &= ~(PAGE_BIT(PAGE_ROOM_VOC) | PAGE_BIT(PAGE_ROOM_CO2));
+    /* No menu is offered here, so no MENU tab to paint over the title: a
+       swipe pages, and a tap pages by halves (left back, right forward). */
+    vw_set_menu_tab(false);
+#endif
 #else
     /* The forecast belongs to the weather dashboard (envio), not to lilly's
        clock/usage slideshow -- strip it here or a small non-ENV panel offers

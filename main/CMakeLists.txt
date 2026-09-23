@@ -25,17 +25,17 @@
 if(CONFIG_SCREEN_BOARD_CROWPANEL_7)
     set(BOARD_EXCLUDES "display_st7789.c" "display_jd9853.c" "display_i80.c" "display_axs15231b.c" "axp2101.c"
                        "qmi8658.c" "level.c" "levelbig.c" "particles.c" "shaketimer.c"
-                       "pip.c" "axs_touch.c" "sdcard.c" "camera.c")
+                       "pip.c" "axs_touch.c" "axs5106l_touch.c" "sdcard.c" "camera.c")
 elseif(CONFIG_SCREEN_BOARD_TOUCH_LCD_147)
     # envo: a Waveshare ESP32-S3-Touch-LCD-1.47 with a JD9853 over SPI
     # (display_jd9853.c + the vendored esp_lcd_jd9853 component) and an
     # environment sensor array soldered to its I2C header. An ENV_ONLY logger
     # with NO IMU, so it carries none of the sensor toys. It DOES have a microSD
     # slot, so sdcard.c stays -- the 30 s CSV log lives there. No PMIC, no
-    # camera, no AXS15231B/RGB/i80/ST7789 panel. gt911.c stays as the harmless
-    # default touch, as on wave and lilly, until an AXS5106L driver is wired.
+    # camera, no AXS15231B/RGB/i80/ST7789 panel. Touch is the AXS5106L at 0x63
+    # (axs5106l_touch.c), so gt911.c is excluded here -- both define touch_*.
     set(BOARD_EXCLUDES "display_st7789.c" "display_rgb.c" "display_i80.c" "display_axs15231b.c"
-                       "axp2101.c" "axs_touch.c" "camera.c"
+                       "axp2101.c" "axs_touch.c" "gt911.c" "camera.c"
                        "qmi8658.c" "level.c" "levelbig.c" "particles.c" "shaketimer.c" "pip.c")
 elseif(CONFIG_SCREEN_BOARD_WAVESHARE_147B)
     # wave is back: a Waveshare ESP32-S3-LCD-1.47B with an ST7789 over SPI and
@@ -47,7 +47,7 @@ elseif(CONFIG_SCREEN_BOARD_WAVESHARE_147B)
     # lilly), no PMIC, no card slot, no camera, no Pip.
     set(BOARD_EXCLUDES "display_rgb.c" "display_jd9853.c" "display_i80.c" "display_axs15231b.c"
                        "axp2101.c" "levelbig.c"
-                       "pip.c" "axs_touch.c" "sdcard.c" "camera.c")
+                       "pip.c" "axs_touch.c" "axs5106l_touch.c" "sdcard.c" "camera.c")
 elseif(CONFIG_SCREEN_BOARD_TOUCH_LCD_35B)
     # An environment + weather display: her own QSPI panel and PMIC, the
     # AXS15231B touch for swipes, and the soldered QMI8658 for the Level
@@ -59,11 +59,11 @@ elseif(CONFIG_SCREEN_BOARD_TOUCH_LCD_35B)
     # other board has.
     set(BOARD_EXCLUDES "display_st7789.c" "display_jd9853.c" "display_rgb.c" "display_i80.c"
                        "particles.c" "shaketimer.c"
-                       "pip.c" "gt911.c")
+                       "pip.c" "gt911.c" "axs5106l_touch.c")
 else()
     set(BOARD_EXCLUDES "display_st7789.c" "display_jd9853.c" "display_rgb.c" "display_axs15231b.c" "axp2101.c"
                        "qmi8658.c" "level.c" "levelbig.c" "particles.c" "shaketimer.c"
-                       "pip.c" "axs_touch.c" "sdcard.c" "camera.c")
+                       "pip.c" "axs_touch.c" "axs5106l_touch.c" "sdcard.c" "camera.c")
 endif()
 
 # One touch driver per board -- both define the same touch_* interface, so

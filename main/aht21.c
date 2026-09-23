@@ -103,7 +103,9 @@ bool aht21_read(float *celsius, float *humidity)
     /* The CRC covers the status and both readings. A sensor that answers with
        the right number of wrong bytes is exactly what a CRC is for. */
     if (aht21_crc(d, 6) != d[6]) {
-        ESP_LOGW(TAG, "bad CRC; reading discarded");
+        ESP_LOGW(TAG, "bad CRC; reading discarded "
+                 "(%02x %02x %02x %02x %02x %02x crc %02x want %02x)",
+                 d[0], d[1], d[2], d[3], d[4], d[5], d[6], aht21_crc(d, 6));
         return false;
     }
     aht21_convert(d, celsius, humidity);
