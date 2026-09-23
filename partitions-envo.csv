@@ -1,0 +1,11 @@
+# Waveshare ESP32-S3-Touch-LCD-1.47 (envo): 16 MB flash, native USB. A plain
+# single-app layout with a 2 MB envlog ring for the flash environment log --
+# the same layout envio used. envlog is a raw partition, not a filesystem: a
+# ring of 4 KB sectors main/envstore.c writes. (The 30-second CSV log is a
+# separate thing entirely: it lives on the microSD, not here.)
+# Name,     Type, SubType,  Offset,   Size,  Flags
+nvs,        data, nvs,      0x9000,   24K,
+phy_init,   data, phy,      0xf000,   4K,
+factory,    app,  factory,  0x10000,  4M,
+# 2 MB of envlog: at one reading a minute and ~16 bytes a reading, ~90 days.
+envlog,     data, 0x40,     0x410000, 2M,

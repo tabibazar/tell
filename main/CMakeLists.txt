@@ -23,9 +23,20 @@
 # Pip, her desk familiar (pip.c), but not the sand or the level. lilly and the
 # CrowPanel have no sensor and carry none of it, Pip included.
 if(CONFIG_SCREEN_BOARD_CROWPANEL_7)
-    set(BOARD_EXCLUDES "display_st7789.c" "display_i80.c" "display_axs15231b.c" "axp2101.c"
+    set(BOARD_EXCLUDES "display_st7789.c" "display_jd9853.c" "display_i80.c" "display_axs15231b.c" "axp2101.c"
                        "qmi8658.c" "level.c" "levelbig.c" "particles.c" "shaketimer.c"
                        "pip.c" "axs_touch.c" "sdcard.c" "camera.c")
+elseif(CONFIG_SCREEN_BOARD_TOUCH_LCD_147)
+    # envo: a Waveshare ESP32-S3-Touch-LCD-1.47 with a JD9853 over SPI
+    # (display_jd9853.c + the vendored esp_lcd_jd9853 component) and an
+    # environment sensor array soldered to its I2C header. An ENV_ONLY logger
+    # with NO IMU, so it carries none of the sensor toys. It DOES have a microSD
+    # slot, so sdcard.c stays -- the 30 s CSV log lives there. No PMIC, no
+    # camera, no AXS15231B/RGB/i80/ST7789 panel. gt911.c stays as the harmless
+    # default touch, as on wave and lilly, until an AXS5106L driver is wired.
+    set(BOARD_EXCLUDES "display_st7789.c" "display_rgb.c" "display_i80.c" "display_axs15231b.c"
+                       "axp2101.c" "axs_touch.c" "camera.c"
+                       "qmi8658.c" "level.c" "levelbig.c" "particles.c" "shaketimer.c" "pip.c")
 elseif(CONFIG_SCREEN_BOARD_WAVESHARE_147B)
     # wave is back: a Waveshare ESP32-S3-LCD-1.47B with an ST7789 over SPI and
     # a QMI8658 soldered on, so she compiles display_st7789.c and the sensor
@@ -34,7 +45,7 @@ elseif(CONFIG_SCREEN_BOARD_WAVESHARE_147B)
     # environment sensor wired, so she is not ENV_ONLY and carries none of the
     # weather/air pages. No touch (gt911.c stays as the harmless default, as on
     # lilly), no PMIC, no card slot, no camera, no Pip.
-    set(BOARD_EXCLUDES "display_rgb.c" "display_i80.c" "display_axs15231b.c"
+    set(BOARD_EXCLUDES "display_rgb.c" "display_jd9853.c" "display_i80.c" "display_axs15231b.c"
                        "axp2101.c" "levelbig.c"
                        "pip.c" "axs_touch.c" "sdcard.c" "camera.c")
 elseif(CONFIG_SCREEN_BOARD_TOUCH_LCD_35B)
@@ -46,11 +57,11 @@ elseif(CONFIG_SCREEN_BOARD_TOUCH_LCD_35B)
     # hers. sdcard.c is hers alone too: she is the only board with a card
     # slot. camera.c is hers too: the OV5640 rides her DVP header, which no
     # other board has.
-    set(BOARD_EXCLUDES "display_st7789.c" "display_rgb.c" "display_i80.c"
+    set(BOARD_EXCLUDES "display_st7789.c" "display_jd9853.c" "display_rgb.c" "display_i80.c"
                        "particles.c" "shaketimer.c"
                        "pip.c" "gt911.c")
 else()
-    set(BOARD_EXCLUDES "display_st7789.c" "display_rgb.c" "display_axs15231b.c" "axp2101.c"
+    set(BOARD_EXCLUDES "display_st7789.c" "display_jd9853.c" "display_rgb.c" "display_axs15231b.c" "axp2101.c"
                        "qmi8658.c" "level.c" "levelbig.c" "particles.c" "shaketimer.c"
                        "pip.c" "axs_touch.c" "sdcard.c" "camera.c")
 endif()
@@ -86,4 +97,4 @@ idf_component_register(
     SRC_DIRS "."
     EXCLUDE_SRCS ${BOARD_EXCLUDES}
     INCLUDE_DIRS "."
-    REQUIRES esp_lcd driver esp_driver_ledc esp_driver_i2c esp_driver_spi esp_driver_tsens esp_timer bt nvs_flash esp_event fatfs esp_driver_sdmmc sdmmc)
+    REQUIRES esp_lcd esp_lcd_jd9853 driver esp_driver_ledc esp_driver_i2c esp_driver_spi esp_driver_tsens esp_timer bt nvs_flash esp_event fatfs esp_driver_sdmmc sdmmc)

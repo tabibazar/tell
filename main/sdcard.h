@@ -22,6 +22,15 @@ esp_err_t sd_mount(void);
    Mounts the card first if it is not already mounted. */
 esp_err_t sd_write(const char *path, const uint8_t *data, size_t len);
 
+/* Appends `data` (len bytes) to `path` (relative to /sdcard), creating the
+   file and any parent directory if absent. Mounts the card first. Used by
+   envo's 30 s environment CSV log. */
+esp_err_t sd_append(const char *path, const char *data, size_t len);
+
+/* True if `path` (relative to /sdcard) exists and the card is mounted. Lets a
+   caller write a CSV header row only when it is creating the file. */
+bool sd_exists(const char *path);
+
 /* Formats "envio/IMG_YYYYMMDD_HHMMSS.jpg" from the DS3231, if the chip is
    present and its calendar holds a real year. Otherwise falls back to
    "envio/IMG_boot_<seq>.jpg" with a process-lifetime incrementing <seq>, so

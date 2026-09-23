@@ -60,3 +60,6 @@ host_tests/test_ens160
 host_tests/test_pip
 host_tests/test_maze
 host_tests/test_bubblelevel
+build-envo/
+sdkconfig.envo
+sdkconfig.envo.old

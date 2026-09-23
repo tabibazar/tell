@@ -24,6 +24,20 @@ config SCREEN_BOARD_WAVESHARE_147B
 config SCREEN_BOARD_TOUCH_LCD_35B
     bool "Waveshare ESP32-S3-Touch-LCD-3.5B (AXS15231B 320x480, QSPI)"
 
+config SCREEN_BOARD_TOUCH_LCD_147
+    bool "Waveshare ESP32-S3-Touch-LCD-1.47 (JD9853 172x320, SPI, env sensors)"
+    help
+        envo. The JD9853 variant of the 1.47" board (wave is the 1.47B, an
+        ST7789). Same 172x320 glass, a different controller over SPI --
+        display_jd9853.c and the vendored esp_lcd_jd9853 component. An
+        environment logger: an RTC, a BME280 and an ENS160+AHT21 soldered to
+        the board's I2C header (GPIO42/41), read into the env pages and logged
+        both to flash and, every 30 s, to the microSD card.
+
+        NOT the plain ESP32-S3-LCD-1.47, which is an ST7789 on different pins
+        with a WS2812 on GPIO38 (our SCLK here) -- if the panel stays dark and
+        nothing answers on GPIO42/41, that is the board you have.
+
 endchoice
 
 config SCREEN_DEVICE_NAME
@@ -32,6 +46,7 @@ config SCREEN_DEVICE_NAME
     default "lilly" if SCREEN_BOARD_TDISPLAY_S3
     default "wave" if SCREEN_BOARD_WAVESHARE_147B
     default "envio" if SCREEN_BOARD_TOUCH_LCD_35B
+    default "envo" if SCREEN_BOARD_TOUCH_LCD_147
     default "small"
     help
         The name this board advertises. Give each board on your desk a
@@ -43,6 +58,7 @@ config SCREEN_I2C_SDA
     default 18 if SCREEN_BOARD_TDISPLAY_S3
     default 48 if SCREEN_BOARD_WAVESHARE_147B
     default 8 if SCREEN_BOARD_TOUCH_LCD_35B
+    default 42 if SCREEN_BOARD_TOUCH_LCD_147
     default 42
     help
         The CrowPanel wires its GT911 touch controller to GPIO19/20. The
@@ -61,6 +77,7 @@ config SCREEN_I2C_SCL
     default 17 if SCREEN_BOARD_TDISPLAY_S3
     default 47 if SCREEN_BOARD_WAVESHARE_147B
     default 7 if SCREEN_BOARD_TOUCH_LCD_35B
+    default 41 if SCREEN_BOARD_TOUCH_LCD_147
     default 41
 
 config SCREEN_BRIGHTNESS
@@ -76,6 +93,7 @@ config SCREEN_BUTTON_A
     default 0 if SCREEN_BOARD_TDISPLAY_S3
     default 0 if SCREEN_BOARD_WAVESHARE_147B
     default 0 if SCREEN_BOARD_TOUCH_LCD_35B
+    default 0 if SCREEN_BOARD_TOUCH_LCD_147
     default -1
     help
         GPIO0 is the BOOT button on both of these boards. It is a strapping

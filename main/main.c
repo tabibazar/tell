@@ -37,6 +37,10 @@
 #include <stdio.h>
 #include <strings.h>
 #endif
+#if CONFIG_SCREEN_BOARD_TOUCH_LCD_147
+/* envo logs a reading to the microSD every 30 s as well as to flash. */
+#include "sdcard.h"
+#endif
 #include "settings.h"
 #include "shaketimer.h"
 #include "pip.h"
@@ -1942,6 +1946,74 @@ static void env_demo_fill(uint32_t now_minute)
 }
 #endif
 
+/*
+ * Reads every environment sensor on the bus and folds the two that overlap
+ * into an average, filling `rec` (all but its timestamp, which the caller
+ * sets). Returns false when nothing measured the room.
+ *
+ * With both an AHT21 and a BME280 on the bus neither one's microclimate is
+ * more right than the other's, so temperature -- and humidity, when the BME is
+ * a real humidity part -- is the mean of the two rather than a pick between
+ * them. Shared by the once-a-minute flash sampler and envo's 30-second SD log
+ * so the two never disagree: both fold the same reading the same way.
+ */
+static bool env_read_averaged(env_sample_t *rec)
+{
+    float at = 0, arh = 0;
+    bool have_aht = aht21_present() && aht21_read(&at, &arh);
+
+    float bt = 0, brh = 0, hpa = 0;
+    bool have_bme = bme280_read(&bt, &hpa, &brh);
+    /* A BMP280 (id 0x58) is temperature+pressure only -- bme280_read hands
+       back 0.0 for its humidity, not a reading. Averaging that in would halve
+       a real AHT21 number every time both answer, so only a BME280 proper
+       (0x60/0x61) contributes to the humidity side of the average. */
+    bool have_bme_rh = have_bme && bme280_id() != 0x58;
+
+    float t = 0, rh = 0;
+    bool have_th = have_aht || have_bme;
+    if (have_aht && have_bme)    { t = (at + bt) / 2.0f; }
+    else if (have_aht)           { t = at; }
+    else if (have_bme)           { t = bt; }
+    if (have_aht && have_bme_rh) { rh = (arh + brh) / 2.0f; }
+    else if (have_aht)           { rh = arh; }
+    else if (have_bme_rh)        { rh = brh; }
+
+    if (have_bme) {
+        rec->hpa_x10 = (uint16_t)(env_msl(hpa) * 10.0f);
+        rec->flags |= ENV_HAVE_HPA;
+    }
+
+    if (!have_th) return false;
+    rec->temp_c100 = (int16_t)(t * 100.0f);
+    rec->rh_c100 = (uint16_t)(rh * 100.0f);
+    rec->flags |= ENV_HAVE_TEMP;
+    /* Only claim humidity when a humidity sensor actually answered: a BMP280
+       (no RH) would otherwise chart a fabricated 0%. */
+    if (have_aht || have_bme_rh) rec->flags |= ENV_HAVE_RH;
+
+    if (ens160_present()) {
+        /*
+         * Tell it the air it is sitting in before asking what is in the air:
+         * without compensation a MOX sensor's readings wander with the
+         * weather. Then take the reading and keep the chip's own opinion of
+         * how much it is worth.
+         */
+        ens160_compensate(t, rh);
+
+        uint16_t eco2, tvoc;
+        uint8_t aqi;
+        ens160_validity_t validity;
+        if (ens160_read(&eco2, &tvoc, &aqi, &validity)) {
+            rec->tvoc_ppb = tvoc;
+            rec->eco2_ppm = eco2;
+            rec->aqi = aqi;
+            rec->flags |= ENV_HAVE_GAS | ENV_GAS_FLAGS(validity);
+        }
+    }
+    return true;
+}
+
 static void env_sample(int64_t now)
 {
     if (!s_env_ready) return;
@@ -1970,71 +2042,13 @@ static void env_sample(int64_t now)
                      -since);
     }
 
-    /*
-     * Whatever this board has. With both an AHT21 and a BME280 on the bus,
-     * neither one's microclimate is more right than the other's, so the
-     * logged temperature and humidity are the average of the two rather than
-     * a pick between them.
-     */
     env_sample_t rec;
     memset(&rec, 0, sizeof rec);
     rec.minute = minute;
 
-    float at = 0, arh = 0;
-    bool have_aht = aht21_present() && aht21_read(&at, &arh);
-
-    float bt = 0, brh = 0, hpa = 0;
-    bool have_bme = bme280_read(&bt, &hpa, &brh);
-    /* A BMP280 (id 0x58) is temperature+pressure only -- bme280_read hands
-       back 0.0 for its humidity, not a reading. Averaging that in would halve
-       a real AHT21 number every time both answer, so only a BME280 proper
-       (0x60/0x61) contributes to the humidity side of the average. */
-    bool have_bme_rh = have_bme && bme280_id() != 0x58;
-
-    float t = 0, rh = 0;
-    bool have_th = have_aht || have_bme;
-    if (have_aht && have_bme)    { t = (at + bt) / 2.0f; }
-    else if (have_aht)           { t = at; }
-    else if (have_bme)           { t = bt; }
-    if (have_aht && have_bme_rh) { rh = (arh + brh) / 2.0f; }
-    else if (have_aht)           { rh = arh; }
-    else if (have_bme_rh)        { rh = brh; }
-
-    if (have_bme) {
-        rec.hpa_x10 = (uint16_t)(env_msl(hpa) * 10.0f);
-        rec.flags |= ENV_HAVE_HPA;
-    }
-
     /* Nothing measured the room, so there is nothing to record. A row of
        zeros would chart as a real reading of zero. */
-    if (!have_th) return;
-    rec.temp_c100 = (int16_t)(t * 100.0f);
-    rec.rh_c100 = (uint16_t)(rh * 100.0f);
-    rec.flags |= ENV_HAVE_TEMP;
-    /* Only claim humidity when a humidity sensor actually answered: a BMP280
-       (no RH) would otherwise chart a fabricated 0%. envio always has the AHT21,
-       so this only guards a hypothetical humidity-less board. */
-    if (have_aht || have_bme_rh) rec.flags |= ENV_HAVE_RH;
-
-    if (ens160_present()) {
-        /*
-         * Tell it the air it is sitting in before asking what is in the air:
-         * without compensation a MOX sensor's readings wander with the
-         * weather. Then take the reading and keep the chip's own opinion of
-         * how much it is worth.
-         */
-        ens160_compensate(t, rh);
-
-        uint16_t eco2, tvoc;
-        uint8_t aqi;
-        ens160_validity_t validity;
-        if (ens160_read(&eco2, &tvoc, &aqi, &validity)) {
-            rec.tvoc_ppb = tvoc;
-            rec.eco2_ppm = eco2;
-            rec.aqi = aqi;
-            rec.flags |= ENV_HAVE_GAS | ENV_GAS_FLAGS(validity);
-        }
-    }
+    if (!env_read_averaged(&rec)) return;
 
     if (envstore_add(&s_env, &rec)) {
         s_env_last_min = minute;
@@ -2043,6 +2057,70 @@ static void env_sample(int64_t now)
         s_env_now_ok = true;
     }
 }
+
+#if CONFIG_SCREEN_BOARD_TOUCH_LCD_147
+/*
+ * envo's long-term log: one CSV line every 30 s to the microSD, in a file per
+ * day (envo/YYYY-MM-DD.csv). Independent of the flash ring above -- a different
+ * cadence on a different medium -- but it logs the SAME averaged reading that
+ * env_read_averaged() produces, so the card and the on-screen charts agree to
+ * the digit. Runs only once the DS3231 has a real date, so every line carries
+ * a true wall-clock timestamp. Three months at 30 s is ~260k lines, ~13 MB --
+ * nothing on a card, so no pruning.
+ */
+static void env_sdlog(int64_t now)
+{
+    static int64_t last_us = 0;
+    if (last_us != 0 && now - last_us < 30LL * 1000 * 1000) return;
+
+    ds3231_date_t date;
+    uint32_t sod;
+    if (!ds3231_read_date(&date) || date.year < 2000 || !ds3231_read(&sod))
+        return;                       /* no trustworthy clock yet; try again */
+    last_us = now;                    /* attempt at most once per 30 s */
+
+    env_sample_t rec;
+    memset(&rec, 0, sizeof rec);
+    if (!env_read_averaged(&rec)) return;
+
+    char path[48];
+    snprintf(path, sizeof path, "envo/%04d-%02d-%02d.csv",
+             date.year, date.month, date.day);
+
+    if (!sd_exists(path)) {
+        static const char hdr[] =
+            "timestamp,temp_c,rh_pct,pressure_hpa,tvoc_ppb,eco2_ppm\n";
+        sd_append(path, hdr, sizeof hdr - 1);
+    }
+
+    int hh = (int)(sod / 3600) % 24, mm = (int)(sod / 60) % 60, ss = (int)(sod % 60);
+    char line[128];
+    int n = snprintf(line, sizeof line, "%04d-%02d-%02dT%02d:%02d:%02d,",
+                     date.year, date.month, date.day, hh, mm, ss);
+    n += snprintf(line + n, sizeof line - n, "%.2f,", rec.temp_c100 / 100.0f);
+    if (rec.flags & ENV_HAVE_RH)
+        n += snprintf(line + n, sizeof line - n, "%.2f,", rec.rh_c100 / 100.0f);
+    else
+        n += snprintf(line + n, sizeof line - n, ",");
+    if (rec.flags & ENV_HAVE_HPA)
+        n += snprintf(line + n, sizeof line - n, "%.1f,", rec.hpa_x10 / 10.0f);
+    else
+        n += snprintf(line + n, sizeof line - n, ",");
+    if (rec.flags & ENV_HAVE_GAS)
+        n += snprintf(line + n, sizeof line - n, "%u,%u\n",
+                      (unsigned)rec.tvoc_ppb, (unsigned)rec.eco2_ppm);
+    else
+        n += snprintf(line + n, sizeof line - n, ",\n");
+
+    esp_err_t err = sd_append(path, line, (size_t)n);
+    static bool announced = false;
+    if (!announced) {
+        announced = true;
+        ESP_LOGI(TAG, "SD env log -> /sdcard/%s (%s)", path,
+                 err == ESP_OK ? "written" : esp_err_to_name(err));
+    }
+}
+#endif /* CONFIG_SCREEN_BOARD_TOUCH_LCD_147 */
 
 /* Folding the log into the charts. One walk fills all six: reading the
    partition six times to draw three pages would be six times the flash
@@ -3068,6 +3146,9 @@ void app_main(void)
         drift_sample(now);
 #if CONFIG_SCREEN_ENV_ONLY
         env_sample(now);
+#endif
+#if CONFIG_SCREEN_BOARD_TOUCH_LCD_147
+        env_sdlog(now);
 #endif
 
         if (now - s_busy_check_us > BUSY_CHECK_US) {
