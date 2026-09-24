@@ -8,6 +8,7 @@
 #include "particles.h"
 #include "qmi8658.h"
 #include "esp_heap_caps.h"
+#include "esp_pm.h"
 #include "esp_system.h"
 #include "esp_random.h"
 #include <math.h>
@@ -2622,6 +2623,18 @@ static void draw_forecast(canvas_t *c)
 
 void app_main(void)
 {
+#if CONFIG_SCREEN_BOARD_TOUCH_LCD_147 && CONFIG_PM_ENABLE
+    /* envo sat at 160 MHz spinning the idle task and ran hot to the touch.
+       Let it idle at 80 MHz: the APB clock stays 80 MHz there, so SPI, I2C,
+       LEDC and the SD card see no change. No light sleep -- it would drop
+       the USB serial console. */
+    {
+        esp_pm_config_t pm = { .max_freq_mhz = 160, .min_freq_mhz = 80,
+                               .light_sleep_enable = false };
+        esp_err_t e = esp_pm_configure(&pm);
+        ESP_LOGI(TAG, "power: 80-160 MHz (%s)", esp_err_to_name(e));
+    }
+#endif
     if (display_init() != ESP_OK) {
         /* A panel that failed to start cannot report its own failure. */
         ESP_LOGE(TAG, "display init failed; halting");
@@ -3246,6 +3259,11 @@ void app_main(void)
             s_cycle_last = now;
             /* Start the slideshow by moving on, so it is visibly a saver. */
             if (s_saver && s_settings.saver_cycle) pages_step(&s_pages, cycle_skip());
+#if CONFIG_SCREEN_BOARD_TOUCH_LCD_147
+            /* envo rides on a battery and logs whether anyone looks or not:
+               the saver is dark, and a tap brings the panel back. */
+            display_set_brightness(s_saver ? 0 : CONFIG_SCREEN_BRIGHTNESS);
+#endif
         }
         if (s_saver && !s_settings.saver_cycle) {
             uint32_t secs = timecalc_advance(s_base_secs,
