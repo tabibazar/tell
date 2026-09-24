@@ -169,6 +169,19 @@ void display_set_brightness(int percent)
     ESP_LOGI(TAG, "backlight %d%%", percent);
 }
 
+void display_sleep(bool asleep)
+{
+    if (asleep) {
+        display_set_brightness(0);
+        esp_lcd_panel_disp_on_off(s_panel, false);
+        esp_lcd_panel_disp_sleep(s_panel, true);
+    } else {
+        esp_lcd_panel_disp_sleep(s_panel, false);
+        esp_lcd_panel_disp_on_off(s_panel, true);
+        display_set_brightness(CONFIG_SCREEN_BRIGHTNESS);
+    }
+}
+
 canvas_t *display_canvas(void) { return &s_canvas; }
 
 #if LCD_SWAP_COLOR_BYTES

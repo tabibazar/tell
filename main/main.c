@@ -9,6 +9,10 @@
 #include "qmi8658.h"
 #include "esp_heap_caps.h"
 #include "esp_pm.h"
+#include "nvs_flash.h"
+#include "driver/gpio.h"
+#include "esp_sleep.h"
+#include "driver/usb_serial_jtag.h"
 #include "esp_system.h"
 #include "esp_random.h"
 #include <math.h>
@@ -1337,6 +1341,9 @@ static int64_t s_anim_start = 0;
    so no pixel stays lit. Position is derived from the minute, so it is
    stable within one. */
 static bool s_saver = false;
+/* Until this time a tap, swipe or press only wakes, as during the saver:
+   the touch that woke envo from field sleep must not also turn the page. */
+static int64_t s_wake_grace_us;
 static int s_saver_minute = -1;
 static int s_saver_x, s_saver_y;
 static int64_t s_cycle_last = 0;
@@ -2086,16 +2093,19 @@ static void env_sample(int64_t now)
  * a true wall-clock timestamp. Three months at 30 s is ~260k lines, ~13 MB --
  * nothing on a card, so no pruning.
  */
+#define SDLOG_EVERY_US (30LL * 1000 * 1000)
+static int64_t s_sdlog_last_us;   /* when env_sdlog last tried; field_nap aims at the next */
+
 static void env_sdlog(int64_t now)
 {
-    static int64_t last_us = 0;
-    if (last_us != 0 && now - last_us < 30LL * 1000 * 1000) return;
+    int64_t last_us = s_sdlog_last_us;
+    if (last_us != 0 && now - last_us < SDLOG_EVERY_US) return;
 
     ds3231_date_t date;
     uint32_t sod;
     if (!ds3231_read_date(&date) || date.year < 2000 || !ds3231_read(&sod))
         return;                       /* no trustworthy clock yet; try again */
-    last_us = now;                    /* attempt at most once per 30 s */
+    s_sdlog_last_us = now;            /* attempt at most once per 30 s */
 
     env_sample_t rec;
     memset(&rec, 0, sizeof rec);
@@ -2107,7 +2117,7 @@ static void env_sdlog(int64_t now)
 
     if (!sd_exists(path)) {
         static const char hdr[] =
-            "timestamp,temp_c,rh_pct,pressure_hpa,tvoc_ppb,eco2_ppm\n";
+            "timestamp,temp_c,rh_pct,pressure_hpa,tvoc_ppb,eco2_ppm,die_c\n";
         sd_append(path, hdr, sizeof hdr - 1);
     }
 
@@ -2125,10 +2135,16 @@ static void env_sdlog(int64_t now)
     else
         n += snprintf(line + n, sizeof line - n, ",");
     if (rec.flags & ENV_HAVE_GAS)
-        n += snprintf(line + n, sizeof line - n, "%u,%u\n",
+        n += snprintf(line + n, sizeof line - n, "%u,%u,",
                       (unsigned)rec.tvoc_ppb, (unsigned)rec.eco2_ppm);
     else
-        n += snprintf(line + n, sizeof line - n, ",\n");
+        n += snprintf(line + n, sizeof line - n, ",,");
+    /* The chip's own temperature: the field log's proof that it ran cool. */
+    float die;
+    if (tempsense_read(&die))
+        n += snprintf(line + n, sizeof line - n, "%.1f\n", die);
+    else
+        n += snprintf(line + n, sizeof line - n, "\n");
 
     esp_err_t err = sd_append(path, line, (size_t)n);
     /* The same line on the serial log, so a Mac on the cable can watch the
@@ -2140,6 +2156,35 @@ static void env_sdlog(int64_t now)
         ESP_LOGI(TAG, "SD env log -> /sdcard/%s (%s)", path,
                  err == ESP_OK ? "written" : esp_err_to_name(err));
     }
+}
+
+/*
+ * envo's field sleep: while the saver is up and no USB host is listening,
+ * light-sleep until the next 30 s log slot, a tap (the touch chip pulls INT,
+ * GPIO48, low) or the button (GPIO0, low). RAM survives, so the loop simply
+ * carries on after it. True if a person woke it rather than the timer.
+ *
+ * Not with a host on the cable: a sleeping chip drops USB, which would take
+ * the serial console and esptool with it. A power bank sends no USB frames,
+ * so in the field this sleeps.
+ */
+static bool field_nap(void)
+{
+    static bool armed;
+    if (!armed) {
+        armed = true;
+        gpio_config_t g = { .pin_bit_mask = 1ULL << 48, .mode = GPIO_MODE_INPUT,
+                            .pull_up_en = GPIO_PULLUP_ENABLE };
+        gpio_config(&g);
+        gpio_wakeup_enable(48, GPIO_INTR_LOW_LEVEL);
+        gpio_wakeup_enable(0, GPIO_INTR_LOW_LEVEL);
+        esp_sleep_enable_gpio_wakeup();
+    }
+    int64_t due = s_sdlog_last_us + SDLOG_EVERY_US - esp_timer_get_time();
+    if (due <= 0) return false;       /* a sample is owed; let the loop take it */
+    esp_sleep_enable_timer_wakeup((uint64_t)due);
+    esp_light_sleep_start();
+    return esp_sleep_get_wakeup_cause() == ESP_SLEEP_WAKEUP_GPIO;
 }
 #endif /* CONFIG_SCREEN_BOARD_TOUCH_LCD_147 */
 
@@ -2827,12 +2872,27 @@ void app_main(void)
 
     canvas_t *c = display_canvas();
 
+#if CONFIG_SCREEN_BOARD_TOUCH_LCD_147
+    /* envo logs in the field with no Mac: the DS3231 is its only clock, and a
+       radio would both hold the chip awake (no light sleep with BLE up) and
+       warm the sensors. So no BLE -- but NVS still has to come up, which on
+       the other boards ble_uart_start does. */
+    {
+        esp_err_t e = nvs_flash_init();
+        if (e == ESP_ERR_NVS_NO_FREE_PAGES || e == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+            nvs_flash_erase();
+            nvs_flash_init();
+        }
+        (void)on_message;
+    }
+#else
     if (ble_uart_start(on_message, on_time) != ESP_OK) {
         ESP_LOGE(TAG, "ble start failed");
         canvas_text(c, "BLE FAILED");
         display_blit();
         return;
     }
+#endif
     /* After BLE, which is where NVS gets initialised. */
     settings_load(&s_settings);
 #if CONFIG_SCREEN_ENV_ONLY
@@ -2844,6 +2904,10 @@ void app_main(void)
      * thing that changes the page.
      */
     s_settings.saver_cycle = false;
+#endif
+#if CONFIG_SCREEN_BOARD_TOUCH_LCD_147
+    /* envo: dark (and, off the Mac, asleep) after five idle minutes. */
+    s_settings.saver_min = 5;
 #endif
     apply_settings();
     /* The zone the Mac last reported, so UTC shows from the RTC's time before
@@ -2938,6 +3002,16 @@ void app_main(void)
             period_us = 33000;      /* 30 fps so the eyes move smoothly */
 #endif
         int64_t rest_ms = (period_us - (esp_timer_get_time() - last_wake)) / 1000;
+#if CONFIG_SCREEN_BOARD_TOUCH_LCD_147
+        if (s_saver && !usb_serial_jtag_is_connected()) {
+            if (field_nap()) {
+                int64_t t = esp_timer_get_time();
+                s_pages.last_activity_us = t;
+                s_wake_grace_us = t + 1000000;
+                ESP_LOGI(TAG, "woken by hand");
+            }
+        } else
+#endif
         vTaskDelay(rest_ms > 1 ? pdMS_TO_TICKS(rest_ms) : 1);
 
         int64_t now = esp_timer_get_time();
@@ -3014,7 +3088,7 @@ void app_main(void)
             int tx, ty, row, choice;
             page_t target;
             touch_point(&tx, &ty);
-            if (s_saver) {
+            if (s_saver || now < s_wake_grace_us) {
                 /* The first tap dismisses the saver rather than also changing
                    the page, which would be a surprise. */
                 s_pages.last_activity_us = now;
@@ -3129,7 +3203,7 @@ void app_main(void)
         if (touch) {
             int swipe = touch_swipe();
             if (swipe != 0) {
-                if (s_saver) {
+                if (s_saver || now < s_wake_grace_us) {
                     s_pages.last_activity_us = now;
                 } else {
                     page_t p = swipe > 0 ? pages_advance(&s_pages, now)
@@ -3178,7 +3252,7 @@ void app_main(void)
         }
 #endif
         if (press != BUTTON_NONE) {
-            if (s_saver) {
+            if (s_saver || now < s_wake_grace_us) {
                 /* As with a tap, the first press only wakes: changing the page
                    as well would lose whatever was on screen before the saver. */
                 s_pages.last_activity_us = now;
@@ -3260,11 +3334,14 @@ void app_main(void)
             /* Start the slideshow by moving on, so it is visibly a saver. */
             if (s_saver && s_settings.saver_cycle) pages_step(&s_pages, cycle_skip());
 #if CONFIG_SCREEN_BOARD_TOUCH_LCD_147
-            /* envo rides on a battery and logs whether anyone looks or not:
-               the saver is dark, and a tap brings the panel back. */
-            display_set_brightness(s_saver ? 0 : CONFIG_SCREEN_BRIGHTNESS);
+            /* envo logs whether anyone looks or not: the saver is a dark,
+               sleeping panel, and a tap brings it back. */
+            display_sleep(s_saver);
 #endif
         }
+#if CONFIG_SCREEN_BOARD_TOUCH_LCD_147
+        if (s_saver) continue;          /* the panel is asleep; draw nothing */
+#endif
         if (s_saver && !s_settings.saver_cycle) {
             uint32_t secs = timecalc_advance(s_base_secs,
                                              (uint64_t)(now - s_base_us));

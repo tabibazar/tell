@@ -61,10 +61,6 @@ echo "flashing $BIN to $PORT${FULL:+ (full)}"
   "$HOME/esp/esp-idf/components/esptool_py/esptool/esptool.py" \
   --chip esp32s3 --port "$PORT" --after hard_reset write_flash $ARGS
 
-echo "flashed; waiting for the board to advertise"
-sleep 6
-DEVICE="${DEVICE:-envo}"
-# envo has a DS3231 wired to its I2C header, so once its battery is in it keeps
-# time across resets. Push the clock anyway to set/correct it from the Mac.
-./tools/push-clock.sh "$DEVICE" || true
+# No clock push: envo runs without BLE and trusts its DS3231 (see the field
+# sleep spec, docs/superpowers/specs/2026-09-23-envo-field-sleep-design.md).
 echo "done"

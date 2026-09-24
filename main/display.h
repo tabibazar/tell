@@ -1,6 +1,8 @@
 #ifndef DISPLAY_H
 #define DISPLAY_H
 
+#include <stdbool.h>
+
 #include "canvas.h"
 #include "esp_err.h"
 
@@ -23,6 +25,14 @@ void display_show_big(const char *text);
  * Boards whose backlight this project does not drive ignore it.
  */
 void display_set_brightness(int percent);
+
+/*
+ * Dark and asleep (true), or awake at CONFIG_SCREEN_BRIGHTNESS (false): the
+ * backlight off and the panel in its own sleep mode, for a board that sleeps
+ * between log samples. Only the JD9853 driver (envo) defines it; callers guard
+ * on the board.
+ */
+void display_sleep(bool asleep);
 
 /* The backend's canvas, so callers can draw views into it. */
 canvas_t *display_canvas(void);

@@ -97,4 +97,4 @@ idf_component_register(
     SRC_DIRS "."
     EXCLUDE_SRCS ${BOARD_EXCLUDES}
     INCLUDE_DIRS "."
-    REQUIRES esp_lcd esp_lcd_jd9853 driver esp_driver_ledc esp_driver_i2c esp_driver_spi esp_driver_tsens esp_timer bt nvs_flash esp_event fatfs esp_driver_sdmmc sdmmc)
+    REQUIRES esp_lcd esp_lcd_jd9853 driver esp_driver_ledc esp_driver_i2c esp_driver_spi esp_driver_tsens esp_timer bt nvs_flash esp_event fatfs esp_driver_sdmmc sdmmc esp_driver_usb_serial_jtag esp_driver_gpio)
