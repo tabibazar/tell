@@ -2767,7 +2767,11 @@ void app_main(void)
                | PAGE_BIT(PAGE_ROOM_TEMP) | PAGE_BIT(PAGE_ROOM_RH)
                | PAGE_BIT(PAGE_ROOM_HPA)
                | PAGE_BIT(PAGE_ROOM_VOC) | PAGE_BIT(PAGE_ROOM_CO2)
-               | PAGE_BIT(PAGE_TREND) | PAGE_BIT(PAGE_WEEK);
+               | PAGE_BIT(PAGE_TREND) | PAGE_BIT(PAGE_WEEK)
+               /* The chip's own temperature against the DS3231's (nearly the
+                  room), so the field sleep's cooling shows on the glass; the
+                  SD log carries the same die temperature as die_c. */
+               | PAGE_BIT(PAGE_TEMPS);
     /* Offering a pressure chart on a board with no barometer is offering an
        empty room. */
     if (!bme280_present()) available &= ~PAGE_BIT(PAGE_ROOM_HPA);
