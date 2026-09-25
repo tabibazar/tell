@@ -62,7 +62,7 @@ the factory demo and xiaozhi).
 
 ## Measurement (`main/soundlevel.c`, pure, host-tested)
 
-- **Input:** the mean of MIC1 and MIC2 at 16 kHz.
+- **Input:** MIC1 and MIC2 at 16 kHz, each A-weighted on its own, with their energies averaged. They are not averaged sample by sample: the capsules are 34.5 mm apart, and a sample mean comb-filters sound arriving along the mic axis (-10 dB at 4 kHz), as the review measured.
 - **A-weighting:** the IEC 61672 filter as cascaded biquads, designed for fs = 16 kHz. Its response is tested within the standard's class-2 tolerance up to 6.3 kHz.
 - **Levels:**
   - **LAF:** the fast level, the RMS over 125 ms blocks.
