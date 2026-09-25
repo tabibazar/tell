@@ -2790,61 +2790,49 @@ static void draw_forecast(canvas_t *c)
 #include "moonphase.h"
 #include "watch.h"
 
-/* The dial photographs, raw RGB565 240x280 (assets/watch/, NASA). */
-extern const uint8_t s_earth_bin[] asm("_binary_earth_bin_start");
-extern const uint8_t s_moon_bin[]  asm("_binary_moon_bin_start");
-extern const uint8_t s_space_bin[] asm("_binary_space_bin_start");
+/* The moon page's moon: NASA's full-Moon photograph, raw RGB565 240x280
+   (assets/watch/moon.bin). The dial itself is the navy sunburst -- the photo
+   dials were tried and taken off at Reza's request on 2026-09-25. */
+extern const uint8_t s_moon_bin[] asm("_binary_moon_bin_start");
 
-#define WATCH_PHOTOS    4                 /* earth, moon, space, the sunburst */
 #define WATCH_IDLE_US   (30LL * 1000 * 1000)
 #define WATCH_RAISE_G   0.35f             /* change in g that counts as picked up */
 
 static face_t  s_face;
-static int     s_photo;                   /* index into WATCH_PHOTOS */
 static bool    s_watch_dark;
 static int     s_watch_batt = -1;
 static int64_t s_watch_batt_us;
 static int     s_watch_last_secs = -1;
 static int     s_moon_drawn_min = -1;
 
-static const uint16_t *watch_photo(int i)
+static const uint16_t *watch_moon_texture(void)
 {
-    const uint8_t *p = i == 0 ? s_earth_bin : i == 1 ? s_moon_bin
-                     : i == 2 ? s_space_bin : NULL;
-    if (p == NULL) return NULL;
+    const uint8_t *p = s_moon_bin;
     /* The face reads it as uint16_t. EMBED_FILES does not promise an even
        address (it happens to give one today), and an odd one would fault, so
-       such a photo is copied once into PSRAM rather than read in place. */
+       then it is copied once into PSRAM rather than read in place. */
     if (((uintptr_t)p & 1) == 0) return (const uint16_t *)p;
-    static uint16_t *copy[3];
-    if (copy[i] == NULL) {
-        size_t n = (size_t)FACE_PHOTO_W * FACE_PHOTO_H * sizeof(uint16_t);
-        copy[i] = heap_caps_malloc(n, MALLOC_CAP_SPIRAM);
-        if (copy[i] == NULL) return NULL;
-        memcpy(copy[i], p, n);
-        ESP_LOGI(TAG, "photo %d at an odd address; copied to PSRAM", i);
-    }
-    return copy[i];
+    size_t n = (size_t)FACE_PHOTO_W * FACE_PHOTO_H * sizeof(uint16_t);
+    uint16_t *copy = heap_caps_malloc(n, MALLOC_CAP_SPIRAM);
+    if (copy == NULL) return NULL;
+    memcpy(copy, p, n);
+    ESP_LOGI(TAG, "moon texture at an odd address; copied to PSRAM");
+    return copy;
 }
 
 static void watch_face_init(int w, int h)
 {
     uint16_t *bg = heap_caps_malloc((size_t)w * h * sizeof(uint16_t), MALLOC_CAP_SPIRAM);
     if (bg == NULL) ESP_LOGW(TAG, "no PSRAM for the dial cache; drawing it whole");
-    face_init(&s_face, bg, w, h);
-    face_set_photo(&s_face, watch_photo(s_photo));
-    face_set_moon_texture(watch_photo(1));
+    face_init(&s_face, bg, w, h);          /* no photo: the sunburst dial */
+    face_set_moon_texture(watch_moon_texture());
 }
 
-/* A tap on the face turns to the next photograph. True when it was used. */
+/* A tap on the face only wakes it (handled before this); it does not page
+   away from the watch. True when it was the face that was tapped. */
 static bool watch_face_tap(void)
 {
-    if (s_pages.current != PAGE_FACE) return false;
-    s_photo = (s_photo + 1) % WATCH_PHOTOS;
-    face_set_photo(&s_face, watch_photo(s_photo));
-    s_drawn_second = -1;
-    ESP_LOGI(TAG, "face: photo %d", s_photo);
-    return true;
+    return s_pages.current == PAGE_FACE;
 }
 
 static void watch_fill_state(face_state_t *st, uint32_t secs)

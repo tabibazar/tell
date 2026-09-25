@@ -111,10 +111,11 @@ if(NOT CONFIG_SCREEN_BOARD_TOUCH_LCD_169)
     list(APPEND BOARD_EXCLUDES "face.c" "vector.c" "vfont.c" "moonphase.c" "watch.c" "pcf85063.c")
 endif()
 
-# watch's dial photographs (NASA, public domain -- see assets/watch/CREDITS.md),
-# raw RGB565 240x280, flash-mapped rather than copied into RAM.
+# watch's moon-page moon (NASA, public domain -- see assets/watch/CREDITS.md),
+# raw RGB565 240x280, flash-mapped rather than copied into RAM. The Earth and
+# Carina photos stay in assets/ but are no longer on the dial.
 if(CONFIG_SCREEN_BOARD_TOUCH_LCD_169)
-    set(BOARD_EMBEDS "../assets/watch/earth.bin" "../assets/watch/moon.bin" "../assets/watch/space.bin")
+    set(BOARD_EMBEDS "../assets/watch/moon.bin")
 else()
     set(BOARD_EMBEDS "")
 endif()
