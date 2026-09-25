@@ -5,16 +5,17 @@
 #include <stdint.h>
 
 /*
- * watch's own hardware: the Waveshare ESP32-S3-Touch-LCD-1.69 (V2.1) power
+ * watch's own hardware: the Waveshare ESP32-S3-LCD-1.69 V2 (no touch) power
  * latch, its function button, its battery gauge and its buzzer line. Nothing
- * here draws; main.c asks and decides.
+ * here draws; main.c asks and decides. The non-touch V2 and the Touch V2.1
+ * share this pinout; the first revision of either does not.
  *
  * Only compiled into the watch build (CMakeLists excludes it elsewhere).
  */
 
 typedef enum {
     WATCH_REV_UNKNOWN = 0,
-    WATCH_REV_V21,       /* model name printed on the PCB; SYS_EN on GPIO41 */
+    WATCH_REV_V21,       /* V2 (LCD) / V2.1 (Touch): SYS_EN on GPIO41 */
     WATCH_REV_OLD,       /* the first run; SYS_EN on GPIO35, an octal-PSRAM line */
 } watch_rev_t;
 

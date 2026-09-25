@@ -1,6 +1,7 @@
 /*
- * watch's power, button and battery, from Waveshare's ESP32-S3-Touch-LCD-1.69
- * V2.1 schematic (and the old revision's, to tell the two apart safely).
+ * watch's power, button and battery, from Waveshare's ESP32-S3-LCD-1.69 V2
+ * schematic -- the unit is the non-touch board; the Touch V2.1 is wired the
+ * same here -- and the first revision's, to tell the two apart safely.
  *
  * The power latch. The battery reaches the board through a P-FET that is off
  * until something pulls its gate down: the function button while it is held,
@@ -71,7 +72,9 @@ watch_rev_t watch_power_init(void)
         gpio_set_level(PIN_SYS_EN, 1);
         gpio_set_level(PIN_BUZZ, 0);
         /* Held through a software reset or a panic too, so a crash on
-           battery restarts rather than switching the watch off. */
+           battery restarts rather than switching the watch off. NOT through
+           deep sleep: on the S3 that also needs gpio_deep_sleep_hold_en(),
+           or SYS_EN drops the moment the chip sleeps and the watch dies. */
         gpio_hold_en(PIN_SYS_EN);
         gpio_hold_en(PIN_BUZZ);
         ESP_LOGI(TAG, "V2.1 (GPIO42 low, GPIO40 %s): power latched", l40 ? "high" : "low, key held");
