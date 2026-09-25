@@ -13,3 +13,4 @@ small	68:ee:8f:da:62:28	Adafruit Feather ESP32-S3 TFT (given away 2026-09-11)
 envo	28:84:85:88:1c:3c	Waveshare ESP32-S3-LCD-1.47 JD9853, 172x320 SPI + env sensor array
 envio	a4:cb:8f:d7:70:3c	Waveshare ESP32-S3-Touch-LCD-3.5B, 320x480 AXS15231B QSPI + touch
 watch	80:45:6b:35:11:d4	Waveshare ESP32-S3-LCD-1.69 (no touch), 240x280 ST7789V2 SPI + QMI8658 + PCF85063
+speaker	28:84:85:56:f6:b0	ESP32-S3 N16R8 voice board: JD9853 LCD, ES8311 speaker + ES7210 4-mic, camera port (xiaozhi factory fw)
