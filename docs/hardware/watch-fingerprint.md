@@ -82,3 +82,10 @@ built        Jun 12 2023 16:32:29
 idf version  v4.4.5
 elf sha256   8ec00d27f1ee804d9302f4156db1c054ecda2d9bd091ad6a8aa506f47da60676
 ```
+
+## Factory backup
+
+Full 16 MB flash read 2026-09-24, before our firmware was ever written:
+`firmware-backup/watch/watch-factory-16MB.bin` (git-ignored),
+sha256 `239e183418c165d5bfcfc6c95d3739197b16a0fc8d2a679c730ae2a8377d8a8f`.
+Restore with `esptool.py --chip esp32s3 --port PORT write_flash 0 firmware-backup/watch/watch-factory-16MB.bin`.
