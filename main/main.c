@@ -2778,9 +2778,217 @@ static void draw_forecast(canvas_t *c)
 
 
 
+#if CONFIG_SCREEN_BOARD_TOUCH_LCD_169
+/*
+ * watch: the grand-complication face (face.c), the moon page, and the parts
+ * of her that are hardware (watch.c). The face redraws once a second; the
+ * panel goes dark after WATCH_IDLE_US untouched and comes back on a touch, a
+ * button, or the watch being picked up -- which the IMU sees as a change in
+ * the direction of gravity.
+ */
+#include "face.h"
+#include "moonphase.h"
+#include "watch.h"
+
+/* The dial photographs, raw RGB565 240x280 (assets/watch/, NASA). */
+extern const uint8_t s_earth_bin[] asm("_binary_earth_bin_start");
+extern const uint8_t s_moon_bin[]  asm("_binary_moon_bin_start");
+extern const uint8_t s_space_bin[] asm("_binary_space_bin_start");
+
+#define WATCH_PHOTOS    4                 /* earth, moon, space, the sunburst */
+#define WATCH_IDLE_US   (30LL * 1000 * 1000)
+#define WATCH_RAISE_G   0.35f             /* change in g that counts as picked up */
+
+static face_t  s_face;
+static int     s_photo;                   /* index into WATCH_PHOTOS */
+static bool    s_watch_dark;
+static int     s_watch_batt = -1;
+static int64_t s_watch_batt_us;
+static int     s_watch_last_secs = -1;
+static int     s_moon_drawn_min = -1;
+
+static const uint16_t *watch_photo(int i)
+{
+    const uint8_t *p = i == 0 ? s_earth_bin : i == 1 ? s_moon_bin
+                     : i == 2 ? s_space_bin : NULL;
+    if (p == NULL) return NULL;
+    /* The face reads it as uint16_t. EMBED_FILES does not promise an even
+       address (it happens to give one today), and an odd one would fault, so
+       such a photo is copied once into PSRAM rather than read in place. */
+    if (((uintptr_t)p & 1) == 0) return (const uint16_t *)p;
+    static uint16_t *copy[3];
+    if (copy[i] == NULL) {
+        size_t n = (size_t)FACE_PHOTO_W * FACE_PHOTO_H * sizeof(uint16_t);
+        copy[i] = heap_caps_malloc(n, MALLOC_CAP_SPIRAM);
+        if (copy[i] == NULL) return NULL;
+        memcpy(copy[i], p, n);
+        ESP_LOGI(TAG, "photo %d at an odd address; copied to PSRAM", i);
+    }
+    return copy[i];
+}
+
+static void watch_face_init(int w, int h)
+{
+    uint16_t *bg = heap_caps_malloc((size_t)w * h * sizeof(uint16_t), MALLOC_CAP_SPIRAM);
+    if (bg == NULL) ESP_LOGW(TAG, "no PSRAM for the dial cache; drawing it whole");
+    face_init(&s_face, bg, w, h);
+    face_set_photo(&s_face, watch_photo(s_photo));
+    face_set_moon_texture(watch_photo(1));
+}
+
+/* A tap on the face turns to the next photograph. True when it was used. */
+static bool watch_face_tap(void)
+{
+    if (s_pages.current != PAGE_FACE) return false;
+    s_photo = (s_photo + 1) % WATCH_PHOTOS;
+    face_set_photo(&s_face, watch_photo(s_photo));
+    s_drawn_second = -1;
+    ESP_LOGI(TAG, "face: photo %d", s_photo);
+    return true;
+}
+
+static void watch_fill_state(face_state_t *st, uint32_t secs)
+{
+    memset(st, 0, sizeof *st);
+    st->hour = (int)(secs / 3600) % 24;
+    st->minute = (int)(secs / 60) % 60;
+    st->second = (int)(secs % 60);
+    st->year = s_data.date_year;
+    st->month = s_data.date_month;
+    st->day = s_data.date_day;
+    /* The RTC's weekday is 1-7 from Monday; the face's is 0-6 from Sunday. */
+    st->weekday = s_data.date_wday % 7;
+    int32_t utc_off = s_data.have_utc ? s_data.utc_offset_min * 60 : 0;
+    st->utc_offset = utc_off;
+    if (st->year > 0) {
+        int64_t unix_utc = (int64_t)timecalc_days(st->year, st->month, st->day) * 86400
+                         + (int64_t)secs - utc_off;
+        moonphase_t m;
+        moonphase_compute(unix_utc, &m);
+        st->moon_phase = m.phase;
+        st->moon_age_days = m.age_days;
+        st->next_new = m.next_new;
+        st->next_full = m.next_full;
+    }
+    st->battery_pct = s_watch_batt;
+    st->charging = false;
+}
+
+static void watch_draw(canvas_t *c, int64_t now)
+{
+    if (!s_synced) return;
+    uint32_t secs = timecalc_advance(s_base_secs, (uint64_t)(now - s_base_us));
+    /* Midnight: the calendar comes from the clock chip, so ask it again. */
+    if (s_watch_last_secs >= 0 && (int)secs < s_watch_last_secs) rtc_refresh_date();
+    s_watch_last_secs = (int)secs;
+    if (s_watch_batt_us == 0 || now - s_watch_batt_us > 30LL * 1000 * 1000) {
+        s_watch_batt_us = now;
+        s_watch_batt = watch_battery_pct();
+    }
+    face_state_t st;
+    if (s_pages.current == PAGE_FACE) {
+        if ((int)secs == s_drawn_second) return;
+        s_drawn_second = (int)secs;
+        watch_fill_state(&st, secs);
+        face_draw(&s_face, c, &st);
+        display_blit();
+    } else if (s_pages.current == PAGE_MOON) {
+        int min = (int)(secs / 60);
+        if (min == s_moon_drawn_min && s_drawn_second >= 0) return;
+        s_moon_drawn_min = min;
+        s_drawn_second = (int)secs;
+        watch_fill_state(&st, secs);
+        face_draw_moon_page(c, &st);
+        display_blit();
+    }
+}
+
+/* Dark after WATCH_IDLE_US untouched (the sand, which is being played with,
+   excepted); back on any activity. While dark, the IMU is sampled ten times
+   a second for the watch being picked up. */
+static void watch_idle(int64_t now)
+{
+    if (s_watch_dark && s_imu) {
+        static int64_t last_us;
+        static float px, py, pz;
+        static bool have;
+        if (now - last_us >= 100000) {
+            last_us = now;
+            qmi8658_sample_t a;
+            if (qmi8658_read(&a) == ESP_OK) {
+                float d = fabsf(a.ax - px) + fabsf(a.ay - py) + fabsf(a.az - pz);
+                if (have && d > WATCH_RAISE_G) {
+                    s_pages.last_activity_us = now;
+                    s_wake_grace_us = now + 700000;
+                    ESP_LOGI(TAG, "raised (%.2f g): wake", (double)d);
+                }
+                px = a.ax; py = a.ay; pz = a.az; have = true;
+            }
+        }
+    }
+    bool dark = s_pages.current != PAGE_PARTICLES
+             && now - s_pages.last_activity_us > WATCH_IDLE_US;
+    if (dark == s_watch_dark) return;
+    s_watch_dark = dark;
+    display_sleep(dark);
+    if (!dark) { s_drawn_page = PAGE_COUNT; s_drawn_second = -1; s_moon_drawn_min = -1; }
+    ESP_LOGI(TAG, "watch %s", dark ? "dark" : "awake");
+}
+
+/* The function button: a press flips face and sand, a long hold switches the
+   watch off (on USB, where it cannot, it only goes dark). */
+static void watch_function_key(int64_t now)
+{
+    watch_key_t k = watch_key_poll(now);
+    if (k == WATCH_KEY_NONE) return;
+    if (s_watch_dark || now < s_wake_grace_us) {
+        s_pages.last_activity_us = now;
+        s_wake_grace_us = now + 700000;
+        return;
+    }
+    s_pages.last_activity_us = now;
+    if (k == WATCH_KEY_SHORT) {
+        page_t to = s_pages.current == PAGE_PARTICLES ? PAGE_FACE : PAGE_PARTICLES;
+        if (s_pages.available & PAGE_BIT(to)) pages_show(&s_pages, to, now);
+        ESP_LOGI(TAG, "function key -> page %d", (int)s_pages.current);
+    } else {
+        ESP_LOGI(TAG, "function key held: power off");
+        display_sleep(true);
+        watch_power_off();                     /* returns only on USB */
+        pages_show(&s_pages, PAGE_FACE, now);
+        s_pages.last_activity_us = now - WATCH_IDLE_US - 1;
+        s_watch_dark = true;                   /* already dark; stay so */
+    }
+}
+
+/* BOOT: the moon page from the face and back; a fresh pile in the sand. */
+static void watch_boot_key(canvas_t *c, int64_t now)
+{
+    s_pages.last_activity_us = now;
+    if (s_pages.current == PAGE_FACE) pages_show(&s_pages, PAGE_MOON, now);
+    else if (s_pages.current == PAGE_MOON) pages_show(&s_pages, PAGE_FACE, now);
+#if HAVE_PARTICLES
+    else if (s_pages.current == PAGE_PARTICLES)
+        particles_init(&s_particles, particles_for(c->w, c->h), c->w, c->h, esp_random());
+#endif
+    (void)c;
+    ESP_LOGI(TAG, "BOOT -> page %d", (int)s_pages.current);
+}
+#define WATCH_ASLEEP()   (s_watch_dark)
+#define WATCH_FACE_TAP() watch_face_tap()
+#else
+#define WATCH_ASLEEP()   0
+#define WATCH_FACE_TAP() 0
+#endif
+
 void app_main(void)
 {
-#if CONFIG_SCREEN_BOARD_TOUCH_LCD_147 && CONFIG_PM_ENABLE
+#if CONFIG_SCREEN_BOARD_TOUCH_LCD_169
+    /* First, before anything that takes time: on battery only the finger on
+       the button keeps the board up until the latch is set. */
+    watch_power_init();
+#endif
+#if (CONFIG_SCREEN_BOARD_TOUCH_LCD_147 || CONFIG_SCREEN_BOARD_TOUCH_LCD_169) && CONFIG_PM_ENABLE
     /* envo sat at 160 MHz spinning the idle task and ran hot to the touch.
        Let it idle at 80 MHz: the APB clock stays 80 MHz there, so SPI, I2C,
        LEDC and the SD card see no change. No light sleep -- it would drop
@@ -2997,6 +3205,9 @@ void app_main(void)
     settings_defaults(&s_settings);
 
     canvas_t *c = display_canvas();
+#if CONFIG_SCREEN_BOARD_TOUCH_LCD_169
+    watch_face_init(c->w, c->h);
+#endif
 
 #if CONFIG_SCREEN_BOARD_TOUCH_LCD_147
     /* envo logs in the field with no Mac: the DS3231 is its only clock, and a
@@ -3034,6 +3245,10 @@ void app_main(void)
 #if CONFIG_SCREEN_BOARD_TOUCH_LCD_147
     /* envo: dark (and, off the Mac, asleep) after five idle minutes. */
     s_settings.saver_min = 5;
+#endif
+#if CONFIG_SCREEN_BOARD_TOUCH_LCD_169
+    /* watch goes dark on her own after 30 s (watch_idle); no saver. */
+    s_settings.saver_min = 0;
 #endif
     apply_settings();
     /* The zone the Mac last reported, so UTC shows from the RTC's time before
@@ -3142,6 +3357,10 @@ void app_main(void)
 
         int64_t now = esp_timer_get_time();
         last_wake = now;
+#if CONFIG_SCREEN_BOARD_TOUCH_LCD_169
+        watch_function_key(now);
+        watch_idle(now);
+#endif
 
         if (s_zone_dirty) {
             /* Written from here rather than the BLE task, like the RTC. */
@@ -3214,11 +3433,13 @@ void app_main(void)
             int tx, ty, row, choice;
             page_t target;
             touch_point(&tx, &ty);
-            if (s_saver || now < s_wake_grace_us) {
+            if (s_saver || now < s_wake_grace_us || WATCH_ASLEEP()) {
                 /* The first tap dismisses the saver rather than also changing
                    the page, which would be a surprise. */
                 s_pages.last_activity_us = now;
                 ESP_LOGI(TAG, "tap at %d,%d -> wake", tx, ty);
+            } else if (WATCH_FACE_TAP()) {
+                s_pages.last_activity_us = now;
             } else if ((s_pages.available & PAGE_BIT(PAGE_MENU))
                        && s_pages.current != PAGE_MENU && vw_menu_tab_hit(c, tx, ty)) {
                 pages_show(&s_pages, PAGE_MENU, now);
@@ -3329,7 +3550,7 @@ void app_main(void)
         if (touch) {
             int swipe = touch_swipe();
             if (swipe != 0) {
-                if (s_saver || now < s_wake_grace_us) {
+                if (s_saver || now < s_wake_grace_us || WATCH_ASLEEP()) {
                     s_pages.last_activity_us = now;
                 } else {
                     page_t p = swipe > 0 ? pages_advance(&s_pages, now)
@@ -3377,8 +3598,14 @@ void app_main(void)
             }
         }
 #endif
+#if CONFIG_SCREEN_BOARD_TOUCH_LCD_169
+        if (press != BUTTON_NONE && !(s_saver || now < s_wake_grace_us || WATCH_ASLEEP())) {
+            watch_boot_key(c, now);
+            press = BUTTON_NONE;
+        }
+#endif
         if (press != BUTTON_NONE) {
-            if (s_saver || now < s_wake_grace_us) {
+            if (s_saver || now < s_wake_grace_us || WATCH_ASLEEP()) {
                 /* As with a tap, the first press only wakes: changing the page
                    as well would lose whatever was on screen before the saver. */
                 s_pages.last_activity_us = now;
@@ -3597,6 +3824,9 @@ void app_main(void)
         if (s_pages.current == PAGE_CLOCK) draw_clock(c, now);
         if (s_pages.current == PAGE_FORECAST) draw_forecast(c);
         if (s_pages.current == PAGE_RTC) draw_rtc(c, now);
+#if CONFIG_SCREEN_BOARD_TOUCH_LCD_169
+        if (!s_watch_dark) watch_draw(c, now);
+#endif
         if (s_pages.current == PAGE_TEMPS) {
             templog_draw(&s_templog, c);
             display_blit();

@@ -30,21 +30,30 @@
    radius, so every grain close enough to matter is in one of the nine cells
    around this one.
 
-   The grid is sized for the largest panel that runs this, lilly's 320x170:
-   320/10+1 by 170/10+1, which also covers the Feather's 240x135. It must
-   never be smaller than the panel it is given,
-   because particles_init clamps rather than growing, and a clamped grid folds
-   the far columns together so grains there stop separating. A panel wider
-   than 320 therefore needs these raised, not just a bigger n. */
+   A panel needs w/10+1 by h/10+1 cells, and the grid must never be smaller
+   than that, because particles_init clamps rather than growing, and a clamped
+   grid folds the far columns together so grains there stop separating. The
+   widest panels are 320 across -- wave's, and lilly's, which the host tests
+   still pour on -- at 33 columns; the tallest is watch's 240x280 portrait, at
+   29 rows. The Feather's 240x135 fits inside both. It was 33x18 until watch,
+   and 280 rows on that folded everything below y = 170, the lowest 110 px of
+   the bottle, into a single row of cells.
+
+   Not raised to envio's 320x480 (49 rows): she does not pour -- main.c and
+   her CMakeLists both leave the sand out -- and each extra row costs 33 cells
+   of 12 bytes. At 33x29 a particles_t is 38512 bytes; at 33x49 it would be
+   46432. That matters on wave, which has no PSRAM, so her s_particles and
+   her framebuffer share internal DRAM. A taller panel therefore still needs
+   these raised, not just a bigger n. */
 #define PARTICLES_CELL 10
 #define PARTICLES_GRID_W 33
-#define PARTICLES_GRID_H 18
+#define PARTICLES_GRID_H 29
 #define PARTICLES_CELLS (PARTICLES_GRID_W * PARTICLES_GRID_H)
 
 typedef struct {
     float x, y;        /* panel pixels */
     float vx, vy;      /* pixels per second */
-    float ox, oy;      /* where it was when the frame began */
+    float ox, oy;      /* where it was when the step began */
     uint16_t colour;
 } particle_t;
 
@@ -73,8 +82,37 @@ int particles_for(int w, int h);
 void particles_init(particles_t *s, int n, int w, int h, uint32_t seed);
 
 /* Advances by `dt` seconds under gravity (gx, gy) in pixels per second
-   squared, in panel coordinates: +x right, +y down. */
+   squared, in panel coordinates: +x right, +y down. Every grain ends inside
+   [0,w) x [0,h), far enough from the right and bottom walls that the block
+   drawn for it is whole.
+
+   Call it once a frame with the frame's real dt; it cuts the frame into
+   particles_substeps() steps itself. It has to: support climbs from the
+   floor about one layer per separation pass, so a deep pile under strong
+   gravity in long steps keeps compressing and never settles -- it shimmers.
+   Taken as one step at 30 fps, watch at 1200 shimmered at 75 px/s with
+   grains jumping 24 px a frame, and so did lilly and wave on their sides or
+   tipped corner-down at their 1134 and 1147. Capping gravity would have had
+   to go below about 560, since watch tipped corner-down shimmers in one
+   step at 700, and the sand would pour like syrup. Cutting the step settles
+   it at full strength, and costs a second solve only when the pile is
+   driven hard. */
 void particles_step(particles_t *s, float gx, float gy, float dt);
+
+/* How many steps particles_step cuts a frame of `dt` into under (gx, gy):
+   the fewest, up to three, that keep each step's sink |g| dt^2 under 0.4 px.
+   At 30 fps that is one step lying flat, two at 1200, three at 1867 or
+   below 27 fps. Each is a whole solve, so this is the sand's cost per frame;
+   exposed so the tests pin it and so the caller can log it. */
+int particles_substeps(float gx, float gy, float dt);
+
+/* The most gravity the caller should drive the pile at, in px/s^2. main.c
+   scales gravity per panel row, 6.67 a row, which is 1867 on watch's 280.
+   The solver settles that too in three steps, but only down to 25 fps:
+   tipped corner-down at 20 fps it would want four. 1200 keeps her to two
+   steps at 30 fps, settles tipped any way down to 20, and still falls her
+   full height in about 0.7 s against 0.55. */
+#define PARTICLES_GRAVITY_MAX 1200.0f
 
 /* Adds a tangential nudge about the centre, for the gyroscope's twist. */
 void particles_swirl(particles_t *s, float rate);

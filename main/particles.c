@@ -7,18 +7,42 @@
    density grid, anything above about 0.1 fed the corrections back as velocity
    and the body hummed instead of settling. */
 #define DRAG 0.60f
-/* How strongly a grain is pulled toward the mean velocity of its cell. This
-   is what makes it a liquid rather than a cloud: neighbours travel together,
-   so the body slumps and levels instead of every grain going its own way. */
+/* How strongly a grain is pulled toward the mean velocity of its cell, per
+   frame. This is what makes it a liquid rather than a cloud: neighbours
+   travel together, so the body slumps and levels instead of every grain
+   going its own way. It is applied once per step, so a frame taken in k
+   steps uses the per-step share that compounds to the same 0.25 --
+   1 - 0.75^(1/k) -- or the liquid would thicken as the board tilts and the
+   step count rises. One entry per step count, up to SUBSTEPS_MAX. */
 #define VISCOSITY 0.25f
-/* How many times the overlaps are resolved per frame. One pass cannot settle
+static const float viscosity_per_step[] = { VISCOSITY, 0.1340f, 0.0914f };
+
+/* How far gravity may sink a grain into the pile in one step, in pixels:
+   |g| * dt^2, since velocity is re-derived from where the grain ended up.
+   Support climbs from the floor about one layer per separation pass, so
+   while it climbs, every grain above keeps sinking; past about 0.6 px a
+   step the deepest pile here never catches up and shimmers for ever. That
+   pile is watch tipped corner-down -- 395 grains wedged into a 240x280
+   corner, about twenty layers along gravity -- which settles at 0.63 px a
+   step and shimmers at 0.79. lilly and wave on their sides, or tipped, are
+   the same failure at their own 1134 and 1147 in one step a frame. 0.4
+   leaves a third in hand. */
+#define SINK_MAX 0.4f
+/* The most steps one call may take. A long stall is clamped by the caller,
+   not caught up here: 0.2 s at 1200 would want twelve, and solving twelve
+   times makes the next frame late too. Three settles everything the panels
+   here ask for down to 20 fps. */
+#define SUBSTEPS_MAX 3
+_Static_assert(sizeof viscosity_per_step / sizeof viscosity_per_step[0] == SUBSTEPS_MAX,
+               "one viscosity per step count");
+/* How many times the overlaps are resolved per step. One pass cannot settle
    a stack: separating the grain at the bottom crowds the one above it, which
-   would otherwise not be dealt with until next frame. */
+   would otherwise not be dealt with until the next step. */
 #define RELAX_PASSES 3
 /* Each pass removes this share of an overlap. Below one, so a grain wedged
    between two others does not ping between them. */
 #define STIFFNESS 0.9f
-/* A per-frame nudge, in pixels per second. Barely anything: enough that the
+/* A per-step nudge, in pixels per second. Barely anything: enough that the
    surface never becomes a frozen straight line, not enough to stop the body
    settling. */
 #define JITTER 0.3f
@@ -162,7 +186,7 @@ static void separate(particles_t *s)
     }
 }
 
-void particles_step(particles_t *s, float gx, float gy, float dt)
+static void step_once(particles_t *s, float gx, float gy, float dt, float viscosity)
 {
     /* Drag as a per-second multiplier applied linearly over dt. At the frame
        rates this runs at, dt is small enough that the approximation is
@@ -170,8 +194,16 @@ void particles_step(particles_t *s, float gx, float gy, float dt)
     float damp = 1.0f - (1.0f - DRAG) * dt;
     if (damp < 0.0f) damp = 0.0f;
 
-    float maxx = (float)s->w;
-    float maxy = (float)s->h;
+    /* The walls are where a grain's block still fits, not the panel's edge.
+       Each grain is drawn as a block from its position down and to the
+       right, so the floor used to be h itself, and a grain resting there was
+       drawn entirely below the last row -- the whole bottom layer of a
+       settled pile, about a fifth of the grains, was clipped away, and on
+       lilly and wave the sand stood on a dark strip five rows deep with
+       4 of 320 pixels lit. Stopping a block short of the far walls keeps
+       every grain whole and on the panel, and the pile on the floor. */
+    float maxx = s->w > GRAIN_SIZE ? (float)(s->w - GRAIN_SIZE) : 0.0f;
+    float maxy = s->h > GRAIN_SIZE ? (float)(s->h - GRAIN_SIZE) : 0.0f;
     float inv_dt = dt > 0.0f ? 1.0f / dt : 0.0f;
 
     /* Predict where each grain would go on its own. */
@@ -186,8 +218,8 @@ void particles_step(particles_t *s, float gx, float gy, float dt)
         p->vx += gx * dt;
         p->vy += gy * dt;
         /* Travel with the neighbours, not through them. */
-        p->vx += (s->vgx[k] - p->vx) * VISCOSITY;
-        p->vy += (s->vgy[k] - p->vy) * VISCOSITY;
+        p->vx += (s->vgx[k] - p->vx) * viscosity;
+        p->vy += (s->vgy[k] - p->vy) * viscosity;
         p->vx = p->vx * damp + frand(s, -JITTER, JITTER);
         p->vy = p->vy * damp + frand(s, -JITTER, JITTER);
 
@@ -218,6 +250,30 @@ void particles_step(particles_t *s, float gx, float gy, float dt)
         p->vx = (p->x - p->ox) * inv_dt;
         p->vy = (p->y - p->oy) * inv_dt;
     }
+}
+
+int particles_substeps(float gx, float gy, float dt)
+{
+    /* The smallest k with |g| (dt/k)^2 <= SINK_MAX, compared squared so
+       there is no square root: the file has none, and needs no libm. */
+    float g2 = gx * gx + gy * gy;
+    int k = 1;
+    while (k < SUBSTEPS_MAX) {
+        float h = dt / (float)k;
+        if (g2 * (h * h) * (h * h) <= SINK_MAX * SINK_MAX) break;
+        k++;
+    }
+    return k;
+}
+
+void particles_step(particles_t *s, float gx, float gy, float dt)
+{
+    /* The caller hands over a whole frame, whatever its length; the pile
+       only comes to rest if no single step sinks it too far, so the frame
+       is cut up here rather than trusted to arrive short enough. */
+    int k = particles_substeps(gx, gy, dt);
+    for (int i = 0; i < k; i++)
+        step_once(s, gx, gy, dt / (float)k, viscosity_per_step[k - 1]);
 }
 
 void particles_swirl(particles_t *s, float rate)

@@ -1,5 +1,5 @@
 /*
- * The two boards whose ST7789 hangs off SPI. Same transport, same panel
+ * The boards whose ST7789 hangs off SPI. Same transport, same panel
  * driver, different wiring and different glass -- so the constants are per
  * board and everything below them is shared. The CrowPanel (RGB) and lilly
  * (i80) are genuinely different buses and have their own files.
@@ -24,7 +24,37 @@
 #include <string.h>
 
 
-#ifdef CONFIG_SCREEN_BOARD_WAVESHARE_147B
+#ifdef CONFIG_SCREEN_BOARD_TOUCH_LCD_169
+/*
+ * watch: Waveshare ESP32-S3-Touch-LCD-1.69, an ST7789V2 driven UPRIGHT -- the
+ * only board here that is. 240x280 in a 240x320 controller, so the 280 rows
+ * sit 20 down. Pins from Waveshare's V2.1 schematic, the same on the old
+ * revision (only the buzzer, RTC INT and power-latch pins moved between them).
+ */
+#define PIN_TFT_CS     5
+#define PIN_TFT_DC     4
+#define PIN_TFT_RST    8
+#define PIN_TFT_BL    15
+#define PIN_SCK        6
+#define PIN_MOSI       7
+#define LCD_W 240
+#define LCD_H 280
+#define LCD_PCLK_HZ (80 * 1000 * 1000)
+#define LCD_SWAP_XY false
+#define LCD_GAP_X 0
+#define LCD_GAP_Y 20
+/* The canvas is little-endian RGB565 and esp_lcd sends it as it lies in
+   memory, LSB first. The ST7789 can be told to take it that way (RAMCTRL's
+   endian bit, which IDF's driver sets for LCD_RGB_DATA_ENDIAN_LITTLE), which
+   costs nothing -- unlike swapping the frame in place and back each blit.
+   If watch's colours ever come out cycled (red as blue, white still white),
+   this is the line. */
+#define LCD_DATA_LITTLE_ENDIAN 1
+#define LCD_MIRROR_X false
+#define LCD_MIRROR_Y false
+#undef PIN_TFT_POWER
+
+#elif defined(CONFIG_SCREEN_BOARD_WAVESHARE_147B)
 /* Waveshare ESP32-S3-LCD-1.47B, from their own Display_ST7789.h. */
 #define PIN_TFT_CS    42
 #define PIN_TFT_DC    41
@@ -140,6 +170,13 @@
 #ifndef LCD_SWAP_COLOR_BYTES
 #define LCD_SWAP_COLOR_BYTES 0
 #endif
+/* Every board but watch stands its panel on its side. */
+#ifndef LCD_DATA_LITTLE_ENDIAN
+#define LCD_DATA_LITTLE_ENDIAN 0
+#endif
+#ifndef LCD_SWAP_XY
+#define LCD_SWAP_XY true
+#endif
 #define LCD_HOST SPI2_HOST
 static const char *TAG = "display";
 static esp_lcd_panel_handle_t s_panel;
@@ -205,6 +242,9 @@ esp_err_t display_init(void)
     esp_lcd_panel_dev_config_t panel_cfg = {
         .reset_gpio_num = PIN_TFT_RST,
         .rgb_ele_order = LCD_RGB_ELEMENT_ORDER_RGB,
+#if LCD_DATA_LITTLE_ENDIAN
+        .data_endian = LCD_RGB_DATA_ENDIAN_LITTLE,
+#endif
         .bits_per_pixel = 16,
     };
     ESP_ERROR_CHECK(esp_lcd_new_panel_st7789(io_handle, &panel_cfg, &s_panel));
@@ -212,7 +252,7 @@ esp_err_t display_init(void)
     ESP_ERROR_CHECK(esp_lcd_panel_reset(s_panel));
     ESP_ERROR_CHECK(esp_lcd_panel_init(s_panel));
     ESP_ERROR_CHECK(esp_lcd_panel_invert_color(s_panel, true));
-    ESP_ERROR_CHECK(esp_lcd_panel_swap_xy(s_panel, true));
+    ESP_ERROR_CHECK(esp_lcd_panel_swap_xy(s_panel, LCD_SWAP_XY));
     ESP_ERROR_CHECK(esp_lcd_panel_mirror(s_panel, LCD_MIRROR_X, LCD_MIRROR_Y));
     ESP_ERROR_CHECK(esp_lcd_panel_set_gap(s_panel, LCD_GAP_X, LCD_GAP_Y));
 
@@ -317,6 +357,19 @@ void display_set_brightness(int percent)
     if (ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0, duty) != ESP_OK) return;
     ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0);
     ESP_LOGI(TAG, "backlight %d%%", percent);
+}
+
+void display_sleep(bool asleep)
+{
+    if (asleep) {
+        display_set_brightness(0);
+        esp_lcd_panel_disp_on_off(s_panel, false);
+        esp_lcd_panel_disp_sleep(s_panel, true);
+    } else {
+        esp_lcd_panel_disp_sleep(s_panel, false);
+        esp_lcd_panel_disp_on_off(s_panel, true);
+        display_set_brightness(CONFIG_SCREEN_BRIGHTNESS);
+    }
 }
 
 canvas_t *display_canvas(void) { return &s_canvas; }

@@ -38,6 +38,15 @@ config SCREEN_BOARD_TOUCH_LCD_147
         with a WS2812 on GPIO38 (our SCLK here) -- if the panel stays dark and
         nothing answers on GPIO42/41, that is the board you have.
 
+config SCREEN_BOARD_TOUCH_LCD_169
+    bool "Waveshare ESP32-S3-Touch-LCD-1.69 (ST7789V2 240x280, SPI, portrait)"
+    help
+        watch. A small portrait panel with a CST816D touch controller, a
+        QMI8658 IMU, a PCF85063 clock and a LiPo charger whose power latch
+        (SYS_EN) the firmware must hold high or the board switches itself off
+        on battery. Runs a grand-complication analog face and the sand. See
+        docs/superpowers/specs/2026-09-24-watch-grand-complication-design.md.
+
 endchoice
 
 config SCREEN_DEVICE_NAME
@@ -47,6 +56,7 @@ config SCREEN_DEVICE_NAME
     default "wave" if SCREEN_BOARD_WAVESHARE_147B
     default "envio" if SCREEN_BOARD_TOUCH_LCD_35B
     default "envo" if SCREEN_BOARD_TOUCH_LCD_147
+    default "watch" if SCREEN_BOARD_TOUCH_LCD_169
     default "small"
     help
         The name this board advertises. Give each board on your desk a
@@ -59,6 +69,7 @@ config SCREEN_I2C_SDA
     default 48 if SCREEN_BOARD_WAVESHARE_147B
     default 8 if SCREEN_BOARD_TOUCH_LCD_35B
     default 42 if SCREEN_BOARD_TOUCH_LCD_147
+    default 11 if SCREEN_BOARD_TOUCH_LCD_169
     default 42
     help
         The CrowPanel wires its GT911 touch controller to GPIO19/20. The
@@ -78,6 +89,7 @@ config SCREEN_I2C_SCL
     default 47 if SCREEN_BOARD_WAVESHARE_147B
     default 7 if SCREEN_BOARD_TOUCH_LCD_35B
     default 41 if SCREEN_BOARD_TOUCH_LCD_147
+    default 10 if SCREEN_BOARD_TOUCH_LCD_169
     default 41
 
 config SCREEN_BRIGHTNESS
@@ -94,6 +106,7 @@ config SCREEN_BUTTON_A
     default 0 if SCREEN_BOARD_WAVESHARE_147B
     default 0 if SCREEN_BOARD_TOUCH_LCD_35B
     default 0 if SCREEN_BOARD_TOUCH_LCD_147
+    default 0 if SCREEN_BOARD_TOUCH_LCD_169
     default -1
     help
         GPIO0 is the BOOT button on both of these boards. It is a strapping

@@ -29,8 +29,8 @@ void display_set_brightness(int percent);
 /*
  * Dark and asleep (true), or awake at CONFIG_SCREEN_BRIGHTNESS (false): the
  * backlight off and the panel in its own sleep mode, for a board that sleeps
- * between log samples. Only the JD9853 driver (envo) defines it; callers guard
- * on the board.
+ * between log samples or a watch face gone idle. Defined by the JD9853 (envo)
+ * and SPI ST7789 (watch, wave) drivers; callers guard on the board.
  */
 void display_sleep(bool asleep);
 

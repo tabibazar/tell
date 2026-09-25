@@ -1,0 +1,7 @@
+# Waveshare ESP32-S3-Touch-LCD-1.69 (watch): 16 MB flash, no recovery
+# bootloader to preserve, no readings logged to flash -- a plain single-app
+# layout like wave's.
+# Name,     Type, SubType,  Offset,   Size,  Flags
+nvs,        data, nvs,      0x9000,   24K,
+phy_init,   data, phy,      0xf000,   4K,
+factory,    app,  factory,  0x10000,  4M,

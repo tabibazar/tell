@@ -63,3 +63,12 @@ host_tests/test_bubblelevel
 build-envo/
 sdkconfig.envo
 sdkconfig.envo.old
+build-watch/
+sdkconfig.watch
+sdkconfig.watch.old
+host_tests/test_vector
+host_tests/test_moonphase
+host_tests/test_pcf85063
+host_tests/test_face
+# Face renders are produced by test_face for eyeballing; regenerate, don't keep.
+host_tests/renders/
