@@ -1,0 +1,33 @@
+CONFIG_SCREEN_BOARD_AUDIO_S3=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions-speaker.csv"
+
+# 16 MB flash (N16R8), so the base file's 4 MB setting must be undone.
+CONFIG_ESPTOOLPY_FLASHSIZE_4MB=n
+CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+
+# Native USB-Serial-JTAG, so the console settings in sdkconfig.defaults are
+# already right and nothing is overridden here. (That is also why EXIO6 must
+# never go low: it hands GPIO19/20 to the camera and USB goes with them.)
+
+# ESP32-S3R8: 8 MB octal PSRAM on GPIO33-37. Nothing here needs it -- there is
+# no framebuffer -- but it is fitted, and enabling it is what keeps anything
+# from treating those pins as free.
+CONFIG_SPIRAM=y
+CONFIG_SPIRAM_MODE_OCT=y
+
+# No pages, so nothing to rotate. main.c's page UI never runs on this board.
+CONFIG_SCREEN_ROTATE_SECS=0
+
+# Long filenames for FATFS: the per-day detail log is speaker/YYYY-MM-DD.csv,
+# whose 10-character base name is not an 8.3 short name. As on envo.
+CONFIG_FATFS_LFN_HEAP=y
+
+# esp_codec_dev's I2C on the new i2c_master driver, sharing i2cbus's bus. It
+# is already the default on IDF 5.3 and later; it is said here because the
+# legacy driver this would switch to aborts at boot beside the new one.
+CONFIG_CODEC_I2C_BACKWARD_COMPATIBLE=n
+
+# speaker_app_main() runs the whole bring-up on the main task -- the codecs,
+# NimBLE's init, float-formatting log lines -- and then returns, which frees
+# this stack. So a roomier one costs nothing once the board is up.
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192

@@ -50,6 +50,10 @@
 #include "envstate.h"
 #include "envui.h"
 #endif
+#if CONFIG_SCREEN_BOARD_AUDIO_S3
+/* speaker has no screen and runs her own app; see the top of app_main. */
+#include "speaker_app.h"
+#endif
 #include "settings.h"
 #include "shaketimer.h"
 #include "pip.h"
@@ -3542,6 +3546,10 @@ static void watch_boot_key(canvas_t *c, int64_t now)
 
 void app_main(void)
 {
+#if CONFIG_SCREEN_BOARD_AUDIO_S3
+    speaker_app_main();
+    return;
+#endif
 #if CONFIG_SCREEN_BOARD_TOUCH_LCD_169
     /* First, before anything that takes time: on battery only the finger on
        the button keeps the board up until the latch is set. */

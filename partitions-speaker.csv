@@ -1,0 +1,8 @@
+# Waveshare ESP32-S3-AUDIO-Board (speaker): 16 MB flash, no recovery
+# bootloader to preserve (the factory xiaozhi image is backed up, see
+# docs/hardware), and nothing logged to flash -- the noise log goes to the
+# microSD. A plain single-app layout like watch's.
+# Name,     Type, SubType,  Offset,   Size,  Flags
+nvs,        data, nvs,      0x9000,   24K,
+phy_init,   data, phy,      0xf000,   4K,
+factory,    app,  factory,  0x10000,  4M,

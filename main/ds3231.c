@@ -98,15 +98,16 @@ bool ds3231_unpack(const uint8_t regs[7], uint32_t *secs, ds3231_date_t *date)
 }
 
 /*
- * The chip itself, on every board but watch. watch carries a PCF85063 instead,
- * and pcf85063.c answers to these same names there so main.c does not change;
- * only the pure helpers above are shared. Every .c in main/ is compiled on
- * every board, so the choice is made here and in pcf85063.c, not in CMake.
+ * The chip itself, on every board but watch and speaker. Those two carry a
+ * PCF85063 instead, and pcf85063.c answers to these same names there so
+ * neither main.c nor speaker_app.c changes; only the pure helpers above are
+ * shared. The choice is made here and in pcf85063.c as well as in CMake, so
+ * the two files can never both define the chip's names.
  */
 #ifdef ESP_PLATFORM
 #include "sdkconfig.h"
 #endif
-#if defined(ESP_PLATFORM) && !CONFIG_SCREEN_BOARD_TOUCH_LCD_169
+#if defined(ESP_PLATFORM) && !(CONFIG_SCREEN_BOARD_TOUCH_LCD_169 || CONFIG_SCREEN_BOARD_AUDIO_S3)
 #include "i2cbus.h"
 #include "esp_log.h"
 
