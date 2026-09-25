@@ -4,7 +4,7 @@ CFLAGS = -std=c11 -Wall -Wextra -Werror -g -I../main
 VIEW_SRCS = $(wildcard ../main/view_*.c)
 UD_SRCS = ../main/usagedata.c $(wildcard ../main/ud_*.c)
 
-all: test_textwrap test_font test_font_clock test_timecalc test_canvas test_usagedata test_pages test_views test_drift test_envstore test_envpage test_ens160 test_settings test_ds3231 test_level test_levelbig test_particles test_pip test_maze test_bubblelevel test_vector test_moonphase test_pcf85063 test_face test_envstate test_envui
+all: test_textwrap test_font test_font_clock test_timecalc test_canvas test_usagedata test_pages test_views test_drift test_envstore test_envpage test_ens160 test_settings test_ds3231 test_level test_levelbig test_particles test_pip test_maze test_bubblelevel test_vector test_moonphase test_pcf85063 test_face test_envstate test_envui test_soundlevel test_ring
 
 test_textwrap: test_textwrap.c ../main/textwrap.c
 	cc $(CFLAGS) -o $@ $^
@@ -89,8 +89,16 @@ ENVUI_ENVSTATE = $(wildcard ../main/envstate.c)
 test_envui: test_envui.c ../main/envui.c ../main/vector.c ../main/vfont.c ../main/canvas.c ../main/textwrap.c $(ENVUI_ENVSTATE)
 	$(CC) $(CFLAGS) $(if $(ENVUI_ENVSTATE),,-DENVUI_LIMITS_STUB) -o $@ $^ -lm
 
+# speaker's noise monitor: the sound level meter and the ring's colours. Both
+# pure; the meter's A-weighting and the ring's gamma need libm.
+test_soundlevel: test_soundlevel.c ../main/soundlevel.c
+	$(CC) $(CFLAGS) -o $@ $^ -lm
+
+test_ring: test_ring.c ../main/ring.c
+	$(CC) $(CFLAGS) -o $@ $^ -lm
+
 clean:
-	rm -f test_vector test_moonphase test_pcf85063 test_face test_ens160 test_envpage test_envstate test_envui test_envstore test_drift test_textwrap test_font test_font_clock test_timecalc test_canvas test_usagedata test_pages test_views test_settings test_ds3231 test_level test_levelbig test_particles test_pip test_maze
+	rm -f test_soundlevel test_ring test_vector test_moonphase test_pcf85063 test_face test_ens160 test_envpage test_envstate test_envui test_envstore test_drift test_textwrap test_font test_font_clock test_timecalc test_canvas test_usagedata test_pages test_views test_settings test_ds3231 test_level test_levelbig test_particles test_pip test_maze
 
 .PHONY: all clean
 

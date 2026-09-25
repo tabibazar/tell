@@ -74,3 +74,8 @@ host_tests/test_pcf85063
 host_tests/test_face
 # Face renders are produced by test_face for eyeballing; regenerate, don't keep.
 host_tests/renders/
+build-speaker/
+sdkconfig.speaker
+sdkconfig.speaker.old
+host_tests/test_soundlevel
+host_tests/test_ring
