@@ -58,6 +58,9 @@ typedef enum {
     PAGE_GALLERY,    /* envio: browse the JPEGs PAGE_CAMERA saved to the
                         card. Kept last, right before PAGE_COUNT, for the
                         same NVS cycle_off reason as PAGE_CAMERA above. */
+    PAGE_FACE,       /* watch: the grand-complication analog face. Appended,
+                        like the two above, so no saved mask reindexes. */
+    PAGE_MOON,       /* watch: the big moon, its age and the next full/new */
     PAGE_COUNT
 } page_t;
 

@@ -154,7 +154,7 @@ static bool claude_busy(const ud_view_t *v, int64_t now)
  * "has touch".
  */
 #if defined(CONFIG_SCREEN_BOARD_CROWPANEL_7) || defined(CONFIG_SCREEN_BOARD_TOUCH_LCD_35B) \
-    || defined(CONFIG_SCREEN_BOARD_TOUCH_LCD_147)
+    || defined(CONFIG_SCREEN_BOARD_TOUCH_LCD_147) || defined(CONFIG_SCREEN_BOARD_TOUCH_LCD_169)
 #define HAVE_TOUCH 1
 #else
 #define HAVE_TOUCH 0
@@ -186,7 +186,8 @@ static bool claude_busy(const ud_view_t *v, int64_t now)
    the CrowPanel have no sensor; the IMU driver and Pip stay in the tree,
    excluded by CMakeLists on the boards that do not want them. */
 #if defined(CONFIG_SCREEN_BOARD_TOUCH_LCD_35B) \
- || defined(CONFIG_SCREEN_BOARD_WAVESHARE_147B)
+ || defined(CONFIG_SCREEN_BOARD_WAVESHARE_147B) \
+ || defined(CONFIG_SCREEN_BOARD_TOUCH_LCD_169)
 #define HAVE_IMU 1
 #else
 #define HAVE_IMU 0
@@ -204,7 +205,13 @@ static bool claude_busy(const ud_view_t *v, int64_t now)
    PAGE_LEVEL -- the Feather's spirit-level game replaced the sand-free
    bubblelevel.c there. She still has no sand: CMakeLists keeps
    particles.c excluded for her. */
+/* Not on watch: level.c lays its dial out for a landscape panel and would put
+   a 256 px dial on her 240 px glass. She pours sand and raises to wake. */
+#if defined(CONFIG_SCREEN_BOARD_TOUCH_LCD_169)
+#define HAVE_LEVEL 0
+#else
 #define HAVE_LEVEL (HAVE_IMU && !HAVE_PIP)
+#endif
 
 /*
  * One convention, everywhere: gravity_from gives the direction things fall.
@@ -1367,6 +1374,8 @@ static page_t home_page(void)
        home to the instrument rather than to the toy. This matters most on a
        board with no RTC: the clock it would otherwise show after every power
        cycle reads --:--:-- until a Mac speaks to it. */
+    /* watch comes home to her face, ahead of the sand she also carries. */
+    if (s_pages.available & PAGE_BIT(PAGE_FACE)) return PAGE_FACE;
     /* envio comes home to Pip -- her whole reason for a screen. */
     if (s_pages.available & PAGE_BIT(PAGE_PIP)) return PAGE_PIP;
     if (s_pages.available & PAGE_BIT(PAGE_PARTICLES)) return PAGE_PARTICLES;
@@ -1834,20 +1843,9 @@ static uint8_t s_env_buf[4096];
 static env_sample_t s_env_now;
 static bool         s_env_now_ok;
 
-/*
- * The series a board may hold. Every board has an entry for each; a board
- * without the sensor simply never fills its own, and the page is not offered.
- * Fixed rather than per-board because the log is read back by tools and by
- * later firmware, and an index that means different things on different
- * boards is a trap set for one of them.
- */
-#define ENV_TEMP 0
-#define ENV_RH   1
-#define ENV_HPA  2
-#define ENV_VOC  3
-#define ENV_CO2  4
-#define ENV_SERIES 5
-
+/* The series a board may hold -- ENV_TEMP through ENV_CO2, ENV_SERIES of them
+   -- are envstore.h's, beside env_sample_value, which says whether a reading
+   has one. They moved there so what "has a temperature" means is tested. */
 static envchart_t s_env_day[ENV_SERIES];
 static envchart_t s_env_month[ENV_SERIES];
 static envweek_t s_env_week[ENV_SERIES];
@@ -1956,20 +1954,48 @@ static void env_demo_fill(uint32_t now_minute)
 #endif
 
 /*
+ * What the ENS160 was last told, kept for the heartbeat's "room" line, so the
+ * log shows the compensation actually in force rather than a fresh read of
+ * some other sensor. `s_comp_written` says the last choice reached the chip.
+ */
+static ens160_comp_t s_comp;
+static bool          s_comp_tried;     /* a choice has been made at least once */
+static bool          s_comp_written;
+
+/*
  * Reads every environment sensor on the bus and folds the two that overlap
  * into an average, filling `rec` (all but its timestamp, which the caller
- * sets). Returns false when nothing measured the room.
+ * sets, having zeroed the rest). Returns false only when nothing at all was
+ * measured -- no temperature, no pressure, no gas -- and otherwise sets
+ * exactly the ENV_HAVE_* flags for what was. envo with its barometer pulled
+ * and its hygrometer failing every CRC still has gas to log, and the gas is
+ * what that board is for; a field left without its flag stays zero and is
+ * never charted or printed as a reading.
  *
  * With both an AHT21 and a BME280 on the bus neither one's microclimate is
- * more right than the other's, so temperature -- and humidity, when the BME is
- * a real humidity part -- is the mean of the two rather than a pick between
- * them. Shared by the once-a-minute flash sampler and envo's 30-second SD log
- * so the two never disagree: both fold the same reading the same way.
+ * more right than the other's, so the logged temperature -- and humidity, when
+ * the BME is a real humidity part -- is the mean of the two rather than a pick
+ * between them. Shared by the flash sampler and envo's 30-second SD log so
+ * the two never disagree: both fold the same reading the same way.
  */
 static bool env_read_averaged(env_sample_t *rec)
 {
     float at = 0, arh = 0;
     bool have_aht = aht21_present() && aht21_read(&at, &arh);
+    int64_t now_us = esp_timer_get_time();
+
+    /* The newest humidity the AHT21 vouched for -- a frame that passed
+       aht21_vet, not merely its CRC -- and when, so one refused frame does
+       not throw the gas sensor back to its default. The esp_timer clock runs
+       on through envo's light sleep, so the age is true. */
+    static float   s_good_rh;
+    static int64_t s_good_rh_us;
+    static bool    s_good_rh_ok;
+    if (have_aht) {
+        s_good_rh = arh;
+        s_good_rh_us = now_us;
+        s_good_rh_ok = true;
+    }
 
     float bt = 0, brh = 0, hpa = 0;
     bool have_bme = bme280_read(&bt, &hpa, &brh);
@@ -2009,13 +2035,18 @@ static bool env_read_averaged(env_sample_t *rec)
         rec->flags |= ENV_HAVE_HPA;
     }
 
-    if (!have_th) return false;
-    rec->temp_c100 = (int16_t)(t * 100.0f);
-    rec->rh_c100 = (uint16_t)(rh * 100.0f);
-    rec->flags |= ENV_HAVE_TEMP;
+    /* No temperature is no reason to stop here: the gas below is still worth
+       a record. Each field is claimed only when something measured it. */
+    if (have_th) {
+        rec->temp_c100 = (int16_t)(t * 100.0f);
+        rec->flags |= ENV_HAVE_TEMP;
+    }
     /* Only claim humidity when a humidity sensor actually answered: a BMP280
        (no RH) would otherwise chart a fabricated 0%. */
-    if (have_aht || have_bme_rh) rec->flags |= ENV_HAVE_RH;
+    if (have_aht || have_bme_rh) {
+        rec->rh_c100 = (uint16_t)(rh * 100.0f);
+        rec->flags |= ENV_HAVE_RH;
+    }
 
     if (ens160_present()) {
         /*
@@ -2023,20 +2054,57 @@ static bool env_read_averaged(env_sample_t *rec)
          * without compensation a MOX sensor's readings wander with the
          * weather. Then take the reading and keep the chip's own opinion of
          * how much it is worth.
+         *
+         * Not the averaged numbers above: the chip wants the air at its own
+         * surface, which the AHT21 beside it measures best, and only numbers
+         * that deserve belief -- ens160_choose_comp has the rules and the
+         * datasheet default they lean on. Something is written every time,
+         * the default when nothing real is under ten minutes old, so the
+         * chip never runs on a number the log cannot name.
          */
-        ens160_compensate(t, rh);
+        static float   s_good_t;
+        static int64_t s_good_t_us;
+        static bool    s_good_t_ok;
+        ens160_air_t air = {
+            .aht_ok = have_aht, .aht_c = at, .aht_rh = arh,
+            .held_ok = s_good_rh_ok, .held_rh = s_good_rh,
+            .held_age_us = now_us - s_good_rh_us,
+            .held_t_ok = s_good_t_ok, .held_c = s_good_t,
+            .held_t_age_us = now_us - s_good_t_us,
+            .bmx_ok = have_bme, .bmx_c = bt,
+            .bmx_rh_ok = have_bme_rh, .bmx_rh = brh,
+        };
+        s_comp = ens160_choose_comp(&air);
+        s_comp_tried = true;
+        s_comp_written = ens160_compensate(s_comp.celsius, s_comp.humidity);
+        if (s_comp.t_from == ENS160_FROM_AHT21 || s_comp.t_from == ENS160_FROM_BMX280) {
+            s_good_t = s_comp.celsius;
+            s_good_t_us = now_us;
+            s_good_t_ok = true;
+        }
 
+        /*
+         * The flash sampler and the SD log both land here, a hundred
+         * milliseconds apart when their times coincide, and the chip clears
+         * NEWDAT for the first of them: the second is handed the same
+         * reading rather than none. See ens160_gas_t.
+         */
+        static ens160_gas_t s_gas;
         uint16_t eco2, tvoc;
         uint8_t aqi;
         ens160_validity_t validity;
-        if (ens160_read(&eco2, &tvoc, &aqi, &validity)) {
-            rec->tvoc_ppb = tvoc;
-            rec->eco2_ppm = eco2;
-            rec->aqi = aqi;
-            rec->flags |= ENV_HAVE_GAS | ENV_GAS_FLAGS(validity);
+        int64_t gas_us = esp_timer_get_time();
+        if (ens160_read(&eco2, &tvoc, &aqi, &validity))
+            ens160_gas_keep(&s_gas, gas_us, eco2, tvoc, aqi, validity);
+        if (ens160_gas_recent(&s_gas, gas_us)) {
+            rec->tvoc_ppb = s_gas.tvoc_ppb;
+            rec->eco2_ppm = s_gas.eco2_ppm;
+            rec->aqi = s_gas.aqi;
+            rec->flags |= ENV_HAVE_GAS | ENV_GAS_FLAGS(s_gas.validity);
         }
     }
-    return true;
+    return (rec->flags & (ENV_HAVE_TEMP | ENV_HAVE_RH | ENV_HAVE_HPA
+                          | ENV_HAVE_GAS)) != 0;
 }
 
 static void env_sample(int64_t now)
@@ -2096,6 +2164,52 @@ static void env_sample(int64_t now)
 #define SDLOG_EVERY_US (30LL * 1000 * 1000)
 static int64_t s_sdlog_last_us;   /* when env_sdlog last tried; field_nap aims at the next */
 
+/* The file today's lines go in, chosen once a day rather than asked of the
+   card every thirty seconds: YYYYMMDD it was chosen for, 0 for "choose". */
+static char s_sdlog_path[48];
+static int  s_sdlog_day;
+
+static int sd_head(const char *path, char *line, size_t size, void *ctx)
+{
+    (void)ctx;
+    esp_err_t err = sd_first_line(path, line, size);
+    return err == ESP_OK ? 1 : err == ESP_ERR_NOT_FOUND ? 0 : -1;
+}
+
+/*
+ * The day's file, its header written if it is new -- see envcsv_path for why
+ * the header, not the file's existence, decides. NULL when the card cannot be
+ * read or written.
+ */
+static const char *env_sdlog_file(const ds3231_date_t *date)
+{
+    int day = date->year * 10000 + date->month * 100 + date->day;
+    if (s_sdlog_day == day) return s_sdlog_path;
+
+    bool fresh = false;
+    if (!envcsv_path(s_sdlog_path, sizeof s_sdlog_path, date->year, date->month,
+                     date->day, sd_head, NULL, &fresh)) {
+        /* Once a day, not every thirty seconds: a missing card already says
+           so each time it fails to mount. */
+        static int s_warned_day;
+        if (s_warned_day != day) {
+            s_warned_day = day;
+            ESP_LOGW(TAG, "no SD file will take today's log; serial only");
+        }
+        return NULL;
+    }
+    if (fresh && sd_append(s_sdlog_path, ENVCSV_HEADER, strlen(ENVCSV_HEADER)) != ESP_OK)
+        return NULL;
+    char plain[48];
+    snprintf(plain, sizeof plain, "envo/%04d-%02d-%02d.csv",
+             date->year, date->month, date->day);
+    if (strcmp(s_sdlog_path, plain) != 0)
+        ESP_LOGW(TAG, "%s has other columns; today's lines go to %s",
+                 plain, s_sdlog_path);
+    s_sdlog_day = day;
+    return s_sdlog_path;
+}
+
 static void env_sdlog(int64_t now)
 {
     int64_t last_us = s_sdlog_last_us;
@@ -2111,49 +2225,27 @@ static void env_sdlog(int64_t now)
     memset(&rec, 0, sizeof rec);
     if (!env_read_averaged(&rec)) return;
 
-    char path[48];
-    snprintf(path, sizeof path, "envo/%04d-%02d-%02d.csv",
-             date.year, date.month, date.day);
-
-    if (!sd_exists(path)) {
-        static const char hdr[] =
-            "timestamp,temp_c,rh_pct,pressure_hpa,tvoc_ppb,eco2_ppm,die_c\n";
-        sd_append(path, hdr, sizeof hdr - 1);
-    }
-
-    int hh = (int)(sod / 3600) % 24, mm = (int)(sod / 60) % 60, ss = (int)(sod % 60);
+    /* The columns, and what goes empty when, are envstore.h's -- see
+       envcsv_line, where they are tested against the header. */
+    float die = 0.0f;
+    bool have_die = tempsense_read(&die);
     char line[128];
-    int n = snprintf(line, sizeof line, "%04d-%02d-%02dT%02d:%02d:%02d,",
-                     date.year, date.month, date.day, hh, mm, ss);
-    n += snprintf(line + n, sizeof line - n, "%.2f,", rec.temp_c100 / 100.0f);
-    if (rec.flags & ENV_HAVE_RH)
-        n += snprintf(line + n, sizeof line - n, "%.2f,", rec.rh_c100 / 100.0f);
-    else
-        n += snprintf(line + n, sizeof line - n, ",");
-    if (rec.flags & ENV_HAVE_HPA)
-        n += snprintf(line + n, sizeof line - n, "%.1f,", rec.hpa_x10 / 10.0f);
-    else
-        n += snprintf(line + n, sizeof line - n, ",");
-    if (rec.flags & ENV_HAVE_GAS)
-        n += snprintf(line + n, sizeof line - n, "%u,%u,",
-                      (unsigned)rec.tvoc_ppb, (unsigned)rec.eco2_ppm);
-    else
-        n += snprintf(line + n, sizeof line - n, ",,");
-    /* The chip's own temperature: the field log's proof that it ran cool. */
-    float die;
-    if (tempsense_read(&die))
-        n += snprintf(line + n, sizeof line - n, "%.1f\n", die);
-    else
-        n += snprintf(line + n, sizeof line - n, "\n");
+    int n = envcsv_line(line, sizeof line, &rec, date.year, date.month, date.day,
+                        sod, have_die, die);
 
-    esp_err_t err = sd_append(path, line, (size_t)n);
+    const char *path = env_sdlog_file(&date);
+    esp_err_t err = path ? sd_append(path, line, (size_t)n) : ESP_ERR_NOT_FOUND;
+    /* A failed write may be a card pulled and put back: choose the file
+       afresh next time, header and all, rather than trust the old choice. */
+    if (err != ESP_OK) s_sdlog_day = 0;
     /* The same line on the serial log, so a Mac on the cable can watch the
-       room without pulling the card. Tagged so it greps cleanly. */
+       room without pulling the card -- and still has it when the card is
+       out. Tagged so it greps cleanly. */
     ESP_LOGI(TAG, "envcsv %.*s", n > 0 ? n - 1 : 0, line);
     static bool announced = false;
     if (!announced) {
         announced = true;
-        ESP_LOGI(TAG, "SD env log -> /sdcard/%s (%s)", path,
+        ESP_LOGI(TAG, "SD env log -> /sdcard/%s (%s)", path ? path : "(none)",
                  err == ESP_OK ? "written" : esp_err_to_name(err));
     }
 }
@@ -2198,24 +2290,23 @@ static bool env_fold(const env_sample_t *r, void *ctx)
     const env_fold_t *f = ctx;
     uint32_t age = f->newest >= r->minute ? f->newest - r->minute : 0;
 
-    int16_t v[ENV_SERIES] = {
-        r->temp_c100, (int16_t)r->rh_c100, (int16_t)r->hpa_x10,
-        (int16_t)r->tvoc_ppb, (int16_t)r->eco2_ppm,
-    };
-
     int wd = env_week_day(r->minute, f->newest);
-    if (wd >= 0)
-        for (int i = 0; i < ENV_SERIES; i++) envweek_add(&s_env_week[i], wd, v[i]);
+    /* Newest at the right-hand edge, so the chart grows leftwards into the
+       past the way every other chart here does. */
+    int day_col = age < ENV_DAY_MIN
+                ? ENVCHART_COLS - 1 - (int)((age * ENVCHART_COLS) / ENV_DAY_MIN) : -1;
+    int month_col = age < ENV_MONTH_MIN
+                  ? ENVCHART_COLS - 1 - (int)((age * ENVCHART_COLS) / ENV_MONTH_MIN) : -1;
 
-    if (age < ENV_DAY_MIN) {
-        /* Newest at the right-hand edge, so the chart grows leftwards into
-           the past the way every other chart here does. */
-        int col = ENVCHART_COLS - 1 - (int)((age * ENVCHART_COLS) / ENV_DAY_MIN);
-        for (int i = 0; i < ENV_SERIES; i++) envchart_add(&s_env_day[i], col, v[i]);
-    }
-    if (age < ENV_MONTH_MIN) {
-        int col = ENVCHART_COLS - 1 - (int)((age * ENVCHART_COLS) / ENV_MONTH_MIN);
-        for (int i = 0; i < ENV_SERIES; i++) envchart_add(&s_env_month[i], col, v[i]);
+    /* Only the series this reading actually has. A gas-only reading -- envo
+       with no working thermometer -- stores zero for the temperature, and
+       charting that would draw a 0 C floor under every real reading. */
+    for (int i = 0; i < ENV_SERIES; i++) {
+        int16_t v;
+        if (!env_sample_value(r, i, &v)) continue;
+        if (wd >= 0) envweek_add(&s_env_week[i], wd, v);
+        if (day_col >= 0) envchart_add(&s_env_day[i], day_col, v);
+        if (month_col >= 0) envchart_add(&s_env_month[i], month_col, v);
     }
     return true;
 }
@@ -2315,11 +2406,19 @@ static void draw_trend(canvas_t *c)
 {
     env_rebuild();
 
-    char value[24] = "--";
+    char value[40] = "--";
     env_sample_t latest;
-    if (s_env_ready && envstore_latest(&s_env, &latest))
-        snprintf(value, sizeof value, "%.1fC %.0f%%",
-                 (double)latest.temp_c100 / 100.0, (double)latest.rh_c100 / 100.0);
+    if (s_env_ready && envstore_latest(&s_env, &latest)) {
+        /* Each half only if the newest reading has it: "--" where a sensor
+           gave nothing, never a 0.0C that looks like a measurement. */
+        int16_t t, h;
+        char ts[12] = "--", hs[12] = "--";
+        if (env_sample_value(&latest, ENV_TEMP, &t))
+            snprintf(ts, sizeof ts, "%.1fC", (double)t / 100.0);
+        if (env_sample_value(&latest, ENV_RH, &h))
+            snprintf(hs, sizeof hs, "%.0f%%", (double)(uint16_t)h / 100.0);
+        snprintf(value, sizeof value, "%s %s", ts, hs);
+    }
 
     char footer[64];
     int16_t tlo, thi, hlo, hhi;
@@ -2363,16 +2462,16 @@ static void env_page(int which, envpage_t *p, char *value, size_t vsz, bool full
     int16_t mlo, mhi;
     bool have_month = envchart_range(&s_env_month[which], &mlo, &mhi);
 
-    if (s_env_ready && envstore_latest(&s_env, &latest)) {
-        int16_t raw[ENV_SERIES] = {
-            latest.temp_c100, (int16_t)latest.rh_c100, (int16_t)latest.hpa_x10,
-            (int16_t)latest.tvoc_ppb, (int16_t)latest.eco2_ppm,
-        };
-        p->latest = raw[which];
+    /* "Now" only if the newest reading has this series: one taken while the
+       sensor was silent stores a zero, and that is not the room's reading. */
+    int16_t now_raw;
+    if (s_env_ready && envstore_latest(&s_env, &latest)
+        && env_sample_value(&latest, which, &now_raw)) {
+        p->latest = now_raw;
         p->has_latest = true;
 
         char now_s[16];
-        env_format(which, raw[which], now_s, sizeof now_s);
+        env_format(which, now_raw, now_s, sizeof now_s);
 
         if (which == ENV_VOC) {
             const char *note = ENV_GAS_VALIDITY(latest.flags) == 0
@@ -2515,17 +2614,30 @@ static bool clock_room_line(char *out, int size)
      *
      * Where there is no barometer but there is a gas sensor, the third slot
      * goes to the VOCs, which is what that board is for.
+     *
+     * The same holds for temperature and humidity: a reading taken with the
+     * thermometer silent has neither, and leaves them out rather than showing
+     * a 0.0C room. A line with nothing measured in it is no line at all.
      */
-    char tail[24] = "";
+    char temp[12] = "", rh[12] = "", tail[24] = "";
+    int16_t v;
+    if (env_sample_value(&s_env_now, ENV_TEMP, &v))
+        snprintf(temp, sizeof temp, "%.1fC", (double)v / 100.0);
+    if (env_sample_value(&s_env_now, ENV_RH, &v))
+        snprintf(rh, sizeof rh, "%.0f%%", (double)(uint16_t)v / 100.0);
     if (s_env_now.flags & ENV_HAVE_HPA)
-        snprintf(tail, sizeof tail, "  %.0fhPa", (double)s_env_now.hpa_x10 / 10.0);
+        snprintf(tail, sizeof tail, "%.0fhPa", (double)s_env_now.hpa_x10 / 10.0);
     else if (s_env_now.flags & ENV_HAVE_GAS)
-        snprintf(tail, sizeof tail, "  %uppb", (unsigned)s_env_now.tvoc_ppb);
+        snprintf(tail, sizeof tail, "%uppb", (unsigned)s_env_now.tvoc_ppb);
 
-    snprintf(out, size, "%.1fC  %.0f%%%s",
-             (double)s_env_now.temp_c100 / 100.0,
-             (double)s_env_now.rh_c100 / 100.0, tail);
-    return true;
+    const char *parts[3] = { temp, rh, tail };
+    int n = 0;
+    out[0] = '\0';
+    for (int i = 0; i < 3; i++) {
+        if (!parts[i][0] || n >= size) continue;
+        n += snprintf(out + n, (size_t)(size - n), "%s%s", n ? "  " : "", parts[i]);
+    }
+    return out[0] != '\0';
 #else
     (void)out; (void)size;
     return false;
@@ -2856,6 +2968,16 @@ void app_main(void)
      * offered either page rather than being offered an empty one.
      */
     if (!s_rtc) available &= ~(PAGE_BIT(PAGE_RTC) | PAGE_BIT(PAGE_TEMPS));
+
+#if CONFIG_SCREEN_BOARD_TOUCH_LCD_169
+    /* watch is a watch: the face, the moon behind BOOT, and the sand behind
+       the function button (when the IMU answered). Nothing else -- the timer,
+       stopwatch and chip pages ride in with the sand and the RTC elsewhere. */
+    available = (available & PAGE_BIT(PAGE_PARTICLES))
+              | PAGE_BIT(PAGE_FACE) | PAGE_BIT(PAGE_MOON);
+#else
+    available &= ~(PAGE_BIT(PAGE_FACE) | PAGE_BIT(PAGE_MOON));
+#endif
 
     uint32_t rtc_secs;
     if (s_rtc && ds3231_read(&rtc_secs)) {
@@ -3541,7 +3663,48 @@ void app_main(void)
                     ESP_LOGI(TAG, "board vs chip: %+d ms, %d samples, slope not yet worth quoting",
                              (int)drift_slip_ms(&s_drift), n);
             }
-            if (have_air)
+            bool room_said = false;
+#if CONFIG_SCREEN_ENV_ONLY
+            if (ens160_present()) {
+                /*
+                 * With a gas sensor, the room as the gas sensor was told it:
+                 * the temperature and humidity actually written for its
+                 * compensation, each with where it came from and, when held,
+                 * how old. The barometer's own humidity was the old number
+                 * here, and on a BMP280 that is a 0 % it never measured.
+                 * With no thermometer this reads "25.0 C (default)" -- what
+                 * the chip was told -- rather than claiming it was told
+                 * nothing. Only a failed write leaves the chip on older
+                 * numbers, and that is said.
+                 */
+                char ts[40] = "-- C", hs[48] = "-- RH", ps[24] = "-- hPa";
+                if (s_comp_tried) {
+                    if (s_comp.t_from == ENS160_FROM_HELD)
+                        snprintf(ts, sizeof ts, "%.1f C (held, %d min old)",
+                                 (double)s_comp.celsius,
+                                 (int)(s_comp.t_age_us / (60LL * 1000000)));
+                    else
+                        snprintf(ts, sizeof ts, "%.1f C (%s)", (double)s_comp.celsius,
+                                 ens160_source_name(s_comp.t_from));
+                    if (s_comp.rh_from == ENS160_FROM_AHT21_HELD)
+                        snprintf(hs, sizeof hs, "%.0f%% RH (AHT21 held, %d min old)",
+                                 (double)s_comp.humidity,
+                                 (int)(s_comp.rh_age_us / (60LL * 1000000)));
+                    else
+                        snprintf(hs, sizeof hs, "%.0f%% RH (%s)", (double)s_comp.humidity,
+                                 ens160_source_name(s_comp.rh_from));
+                }
+                if (have_air)
+                    snprintf(ps, sizeof ps, "%.1f hPa", (double)env_msl(hpa));
+                ESP_LOGI(TAG, "room %s, %s, %s%s", ts, hs, ps,
+                         !s_comp_tried ? " (ENS160 not compensated yet)"
+                         : !s_comp_written
+                             ? " (compensation write failed; the ENS160 keeps its last values)"
+                             : "");
+                room_said = true;
+            }
+#endif
+            if (!room_said && have_air)
                 ESP_LOGI(TAG, "room %.1f C, %.0f%% RH, %.1f hPa",
                          (double)air, (double)rh, (double)env_msl(hpa));
         }

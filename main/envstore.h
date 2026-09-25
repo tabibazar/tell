@@ -88,6 +88,76 @@ typedef struct {
     uint8_t  flags;         /* ENV_HAVE_* and the gas validity */
 } env_sample_t;
 
+/*
+ * The series a reading may hold, as the charts index them. Every board has an
+ * entry for each; a board without the sensor simply never fills its own, and
+ * the page is not offered. Fixed rather than per-board because the log is read
+ * back by tools and by later firmware, and an index that means different
+ * things on different boards is a trap set for one of them.
+ */
+#define ENV_TEMP 0
+#define ENV_RH   1
+#define ENV_HPA  2
+#define ENV_VOC  3
+#define ENV_CO2  4
+#define ENV_SERIES 5
+
+/*
+ * One series out of a reading, in the log's own fixed point, and whether the
+ * reading has it at all. A series whose sensor did not answer is stored as
+ * zero, and zero is a real-looking value -- a reading of freezing, of bone-dry
+ * air, of clean air -- so anything that charts or prints a reading asks here
+ * first rather than taking the field. The case that forced this: envo with
+ * its barometer pulled and its hygrometer failing every CRC still logs gas,
+ * and a gas-only reading must not put a 0 C on the temperature chart.
+ */
+bool env_sample_value(const env_sample_t *r, int series, int16_t *out);
+
+/*
+ * envo's long-term log on the microSD: a CSV file a day, one line per 30 s
+ * reading. Here rather than beside the SD code because what matters about it
+ * is pure -- that every line has the columns its header names -- and that is
+ * tested on the host.
+ *
+ * gas_valid is the ENS160's own opinion of its numbers -- 0 normal,
+ * 1 warming up, 2 the first hour of a new part, 3 invalid -- so a settling
+ * hour can be told from a bad-air hour later. Last, so every column before it
+ * keeps the place it had in files already on the card. Every measured column
+ * is empty when its sensor gave nothing: an empty field is a gap to anything
+ * that reads the file, where 0.00 is a freezing room.
+ */
+extern const char ENVCSV_HEADER[];      /* ends in its newline */
+
+/* One line, newline and all, for a reading taken at `sod` seconds into the
+   given day. `die_c` is the chip's own temperature, if `die_ok`. Returns the
+   length written. */
+int envcsv_line(char *out, size_t size, const env_sample_t *rec,
+                int year, int month, int day, uint32_t sod,
+                bool die_ok, float die_c);
+
+/*
+ * Which file a day's lines go in.
+ *
+ * The header is written only when a file is made, so a file already on the
+ * card with other columns -- begun that morning by firmware from before a
+ * column was added -- must not be appended to: every new line would have a
+ * field its header does not name. The plain envo/YYYY-MM-DD.csv is used when
+ * it is new, empty, or has today's header; else envo/YYYY-MM-DD_2.csv, _3 and
+ * so on, the first that will do -- an underscore, so a later file sorts after
+ * the plain one rather than before it. Deciding by the header rather than by
+ * whether the file exists also stops a header being appended into the middle
+ * of a file whenever the card was not yet mounted to be asked.
+ *
+ * `head` reads a file's first line without its line ending and returns 1,
+ * 0 if there is no such file, or -1 if the card could not say. `*fresh` is
+ * set when the chosen file wants the header written first. False if nothing
+ * will do or the card could not say.
+ */
+#define ENVCSV_MAX_FILES 9
+typedef int (*envcsv_head_fn)(const char *path, char *line, size_t size, void *ctx);
+bool envcsv_path(char *out, size_t size, int year, int month, int day,
+                 envcsv_head_fn head, void *ctx, bool *fresh);
+
 #define ENVSTORE_RECORD   16          /* bytes on flash, serialised explicitly */
 #define ENVSTORE_HDR      8           /* magic and sequence, per sector */
 #define ENVSTORE_NO_MINUTE 0xFFFFFFFFu /* erased state: this slot is unwritten */

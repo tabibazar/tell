@@ -58,4 +58,6 @@ const page_def_t page_defs[PAGE_COUNT] = {
     [PAGE_SETTINGS] = { "Settings",      0,                             NULL,           false, 0,        PG_BIG,  true,  false },
     [PAGE_CAMERA]   = { "Camera",        0,                             NULL,           false, 0,        PG_BOTH,  false, false },
     [PAGE_GALLERY]  = { "Gallery",       0,                             NULL,           false, 0,        PG_BOTH,  false, false },
+    [PAGE_FACE]     = { "Face",          0,                             NULL,           false, 0,        PG_SMALL, false, false },
+    [PAGE_MOON]     = { "Moon",          0,                             NULL,           false, 0,        PG_SMALL, false, false },
 };

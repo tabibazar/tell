@@ -90,6 +90,112 @@ uint16_t ens160_encode_rh(float humidity);
 /* A one-to-five air quality index as a word, for a panel with room for one. */
 const char *ens160_aqi_name(uint8_t aqi);
 
+/*
+ * What to tell the chip about the air, chosen from what the board measured
+ * this time round. Pure, so the choice is tested on the host rather than
+ * trusted.
+ *
+ * Only numbers that deserve belief go in. An AHT21 frame that failed its CRC,
+ * or passed it only by luck, never reaches here at all -- aht21_read refuses
+ * it, see aht21_vet -- because on the bench those frames decoded to 5-20 % in
+ * a room that was really 70 %, and to 0 C. Compensating with that would bend
+ * every gas reading for the sake of a number the sensor itself disowned.
+ *
+ *   temperature  the AHT21, which sits beside the gas sensor; else the
+ *                barometer's thermometer; else the last of either, if under
+ *                ten minutes old; else 25 C.
+ *   humidity     the AHT21 now; else its last good reading, if under ten
+ *                minutes old; else a BME280's own hygrometer (never a
+ *                BMP280's, which has none and reports zero); else 50 %.
+ *
+ * Something is always chosen, and always written. The chip keeps TEMP_IN and
+ * RH_IN until they are written again, so writing nothing -- as this once did
+ * with no thermometer -- left in force whatever came last, however old, and
+ * the log could not say what that was. Now the chip is never compensating
+ * with a number more than ten minutes old, and the log names what it is.
+ *
+ * Twenty-five degrees and fifty per cent are not guesses made here. The chip
+ * reports what it is compensating with in DATA_T (0x30) and DATA_RH (0x32),
+ * and until the host writes TEMP_IN and RH_IN those read their defaults of
+ * 0x4A8A and 0x6400 -- 25 C and 50 %RH (ENS160 datasheet v1.3, SC-001224-DS-9,
+ * sections 16.2.12 and 16.2.13). So writing them tells the chip what it would
+ * assume anyway. The TEMP_IN and RH_IN registers themselves reset to 0x0000,
+ * which would read as 0 K and 0 %, but they are inputs and not what the chip
+ * uses until written.
+ */
+#define ENS160_DEFAULT_C    25.0f
+#define ENS160_DEFAULT_RH   50.0f
+#define ENS160_HOLD_US      (10LL * 60 * 1000000)   /* how long a real reading stays good */
+
+typedef enum {
+    ENS160_FROM_NONE = 0,       /* nothing chosen yet */
+    ENS160_FROM_AHT21,          /* this time round, vetted */
+    ENS160_FROM_AHT21_HELD,     /* the last vetted AHT21 humidity */
+    ENS160_FROM_BMX280,         /* the barometer: a BMP280's or BME280's */
+    ENS160_FROM_HELD,           /* the last real temperature, from either */
+    ENS160_FROM_DEFAULT,        /* the chip's own 25 C or 50 % */
+} ens160_source_t;
+
+/* Everything the board measured, and how much of it can be believed. */
+typedef struct {
+    bool    aht_ok;             /* an AHT21 frame that passed aht21_vet, just now */
+    float   aht_c, aht_rh;
+    bool    held_ok;            /* the newest vetted AHT21 humidity */
+    float   held_rh;
+    int64_t held_age_us;        /* how long ago that was */
+    bool    held_t_ok;          /* the newest real temperature, AHT21's or barometer's */
+    float   held_c;
+    int64_t held_t_age_us;
+    bool    bmx_ok;             /* the barometer answered */
+    float   bmx_c;
+    bool    bmx_rh_ok;          /* and is a BME280, with a real hygrometer */
+    float   bmx_rh;
+} ens160_air_t;
+
+typedef struct {
+    float           celsius, humidity;  /* humidity is never zero */
+    ens160_source_t t_from, rh_from;
+    int64_t         t_age_us;           /* nonzero only for a held temperature */
+    int64_t         rh_age_us;          /* nonzero only for a held humidity */
+} ens160_comp_t;
+
+ens160_comp_t ens160_choose_comp(const ens160_air_t *air);
+
+/* "AHT21", "AHT21 held", "BMx280", "held", "default" or "--", for a log line. */
+const char *ens160_source_name(ens160_source_t s);
+
+/*
+ * The newest gas reading, kept so that two readers a moment apart get the
+ * same one.
+ *
+ * The chip computes a reading a second in standard mode, raises NEWDAT, and
+ * clears it at the first read of the DATA registers (DEVICE_STATUS bit 1,
+ * datasheet v1.3). envo reads the gas twice in one pass whenever a five-minute flash
+ * sample falls in a thirty-second SD slot, which in field sleep is every
+ * time; the second reader, about a hundred milliseconds behind, found NEWDAT
+ * clear and got nothing. The reading it wanted is the one just taken -- the
+ * newest the chip has -- so it gets that, for as long as the chip could not
+ * have made a newer one. Two seconds is two of its cycles: past that a clear
+ * NEWDAT means the chip has stopped, and an old number is not passed off as
+ * a current one.
+ */
+#define ENS160_REUSE_US (2LL * 1000000)
+
+typedef struct {
+    bool              ok;
+    int64_t           at_us;        /* when it was read from the chip */
+    uint16_t          eco2_ppm, tvoc_ppb;
+    uint8_t           aqi;
+    ens160_validity_t validity;
+} ens160_gas_t;
+
+/* Keeps a reading just taken from the chip. */
+void ens160_gas_keep(ens160_gas_t *last, int64_t now_us, uint16_t eco2_ppm,
+                     uint16_t tvoc_ppb, uint8_t aqi, ens160_validity_t validity);
+
+/* True if the kept reading is still the newest the chip can have made. */
+bool ens160_gas_recent(const ens160_gas_t *last, int64_t now_us);
+
 #ifdef ESP_PLATFORM
 #include "esp_err.h"
 #include "i2cbus.h"
@@ -103,7 +209,8 @@ uint16_t ens160_part_id(void);
 
 /*
  * Tells the chip what the air around it is like, so it can compensate. Worth
- * calling whenever a fresh temperature and humidity are to hand.
+ * calling every time the gas is read, with what ens160_choose_comp chose.
+ * Refuses a humidity of zero or less.
  */
 bool ens160_compensate(float celsius, float humidity);
 

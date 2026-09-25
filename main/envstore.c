@@ -1,5 +1,7 @@
 #include "envstore.h"
 
+#include <stdarg.h>
+#include <stdio.h>
 #include <string.h>
 
 /*
@@ -49,6 +51,103 @@ static void decode(const uint8_t *p, env_sample_t *s)
     s->eco2_ppm = get_u16(p + 12);
     s->aqi = p[14];
     s->flags = p[15];
+}
+
+bool env_sample_value(const env_sample_t *r, int series, int16_t *out)
+{
+    uint8_t need;
+    int16_t v;
+    switch (series) {
+    case ENV_TEMP: need = ENV_HAVE_TEMP; v = r->temp_c100; break;
+    case ENV_RH:   need = ENV_HAVE_RH;   v = (int16_t)r->rh_c100; break;
+    case ENV_HPA:  need = ENV_HAVE_HPA;  v = (int16_t)r->hpa_x10; break;
+    case ENV_VOC:  need = ENV_HAVE_GAS;  v = (int16_t)r->tvoc_ppb; break;
+    case ENV_CO2:  need = ENV_HAVE_GAS;  v = (int16_t)r->eco2_ppm; break;
+    default:       return false;
+    }
+    if (!(r->flags & need)) return false;
+    if (out) *out = v;
+    return true;
+}
+
+const char ENVCSV_HEADER[] =
+    "timestamp,temp_c,rh_pct,pressure_hpa,tvoc_ppb,eco2_ppm,die_c,gas_valid\n";
+
+/* snprintf's count is what it wanted to write, which past a full buffer is
+   more than it did: clamp, so the next field starts at the real end. */
+__attribute__((format(printf, 4, 5)))
+static size_t csv_put(char *out, size_t size, size_t n, const char *fmt, ...)
+{
+    if (n >= size) return n;
+    va_list ap;
+    va_start(ap, fmt);
+    int w = vsnprintf(out + n, size - n, fmt, ap);
+    va_end(ap);
+    if (w < 0) return n;
+    return n + (size_t)w >= size ? size - 1 : n + (size_t)w;
+}
+
+int envcsv_line(char *out, size_t size, const env_sample_t *rec,
+                int year, int month, int day, uint32_t sod,
+                bool die_ok, float die_c)
+{
+    if (!out || size == 0) return 0;
+    int hh = (int)(sod / 3600) % 24, mm = (int)(sod / 60) % 60, ss = (int)(sod % 60);
+    size_t n = csv_put(out, size, 0, "%04d-%02d-%02dT%02d:%02d:%02d,",
+                       year, month, day, hh, mm, ss);
+    if (rec->flags & ENV_HAVE_TEMP)
+        n = csv_put(out, size, n, "%.2f,", rec->temp_c100 / 100.0f);
+    else
+        n = csv_put(out, size, n, ",");
+    if (rec->flags & ENV_HAVE_RH)
+        n = csv_put(out, size, n, "%.2f,", rec->rh_c100 / 100.0f);
+    else
+        n = csv_put(out, size, n, ",");
+    if (rec->flags & ENV_HAVE_HPA)
+        n = csv_put(out, size, n, "%.1f,", rec->hpa_x10 / 10.0f);
+    else
+        n = csv_put(out, size, n, ",");
+    if (rec->flags & ENV_HAVE_GAS)
+        n = csv_put(out, size, n, "%u,%u,", (unsigned)rec->tvoc_ppb,
+                    (unsigned)rec->eco2_ppm);
+    else
+        n = csv_put(out, size, n, ",,");
+    /* The chip's own temperature: the field log's proof that it ran cool. */
+    if (die_ok)
+        n = csv_put(out, size, n, "%.1f,", die_c);
+    else
+        n = csv_put(out, size, n, ",");
+    if (rec->flags & ENV_HAVE_GAS)
+        n = csv_put(out, size, n, "%u\n", (unsigned)ENV_GAS_VALIDITY(rec->flags));
+    else
+        n = csv_put(out, size, n, "\n");
+    return (int)n;
+}
+
+bool envcsv_path(char *out, size_t size, int year, int month, int day,
+                 envcsv_head_fn head, void *ctx, bool *fresh)
+{
+    size_t hlen = sizeof ENVCSV_HEADER - 2;         /* without its newline */
+    char first[sizeof ENVCSV_HEADER + 8];
+    for (int i = 1; i <= ENVCSV_MAX_FILES; i++) {
+        if (i == 1)
+            snprintf(out, size, "envo/%04d-%02d-%02d.csv", year, month, day);
+        else
+            snprintf(out, size, "envo/%04d-%02d-%02d_%d.csv", year, month, day, i);
+
+        first[0] = '\0';
+        int got = head(out, first, sizeof first, ctx);
+        if (got < 0) return false;
+        if (got == 0 || first[0] == '\0') {
+            *fresh = true;
+            return true;
+        }
+        if (strlen(first) == hlen && memcmp(first, ENVCSV_HEADER, hlen) == 0) {
+            *fresh = false;
+            return true;
+        }
+    }
+    return false;
 }
 
 static size_t sector_off(const envstore_t *s, int i)

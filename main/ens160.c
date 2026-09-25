@@ -51,6 +51,98 @@ const char *ens160_aqi_name(uint8_t aqi)
     }
 }
 
+/* A humidity worth telling the chip: above zero and not past saturation.
+   Written as one comparison each way so a NaN fails both. Zero is refused
+   outright -- it is what a BMP280 reports for the hygrometer it lacks, and
+   no room being logged is bone dry. */
+static bool rh_usable(float rh)
+{
+    return rh > 0.0f && rh <= 100.0f;
+}
+
+static bool temp_usable(float c)
+{
+    /* Only a guard against a NaN or an infinity: the encoder clamps the rest,
+       and anything that arrives here has already passed aht21_vet or come
+       from a barometer that answered. */
+    return c > -273.15f && c < 1000.0f;
+}
+
+static bool still_held(int64_t age_us)
+{
+    return age_us >= 0 && age_us < ENS160_HOLD_US;
+}
+
+ens160_comp_t ens160_choose_comp(const ens160_air_t *air)
+{
+    ens160_comp_t out = { 0 };
+
+    if (air->aht_ok && temp_usable(air->aht_c)) {
+        out.celsius = air->aht_c;
+        out.t_from = ENS160_FROM_AHT21;
+    } else if (air->bmx_ok && temp_usable(air->bmx_c)) {
+        out.celsius = air->bmx_c;
+        out.t_from = ENS160_FROM_BMX280;
+    } else if (air->held_t_ok && temp_usable(air->held_c)
+               && still_held(air->held_t_age_us)) {
+        /* A thermometer that missed one read -- an AHT21 frame refused, say
+           -- has not taken the room with it. */
+        out.celsius = air->held_c;
+        out.t_from = ENS160_FROM_HELD;
+        out.t_age_us = air->held_t_age_us;
+    } else {
+        out.celsius = ENS160_DEFAULT_C;
+        out.t_from = ENS160_FROM_DEFAULT;
+    }
+
+    if (air->aht_ok && rh_usable(air->aht_rh)) {
+        out.humidity = air->aht_rh;
+        out.rh_from = ENS160_FROM_AHT21;
+    } else if (air->held_ok && rh_usable(air->held_rh) && still_held(air->held_age_us)) {
+        /* A room's humidity moves over tens of minutes, so one that was good
+           a few minutes ago is nearer the truth than the chip's default. */
+        out.humidity = air->held_rh;
+        out.rh_from = ENS160_FROM_AHT21_HELD;
+        out.rh_age_us = air->held_age_us;
+    } else if (air->bmx_rh_ok && rh_usable(air->bmx_rh)) {
+        out.humidity = air->bmx_rh;
+        out.rh_from = ENS160_FROM_BMX280;
+    } else {
+        out.humidity = ENS160_DEFAULT_RH;
+        out.rh_from = ENS160_FROM_DEFAULT;
+    }
+    return out;
+}
+
+const char *ens160_source_name(ens160_source_t s)
+{
+    switch (s) {
+    case ENS160_FROM_AHT21:      return "AHT21";
+    case ENS160_FROM_AHT21_HELD: return "AHT21 held";
+    case ENS160_FROM_BMX280:     return "BMx280";
+    case ENS160_FROM_HELD:       return "held";
+    case ENS160_FROM_DEFAULT:    return "default";
+    default:                     return "--";
+    }
+}
+
+void ens160_gas_keep(ens160_gas_t *last, int64_t now_us, uint16_t eco2_ppm,
+                     uint16_t tvoc_ppb, uint8_t aqi, ens160_validity_t validity)
+{
+    last->ok = true;
+    last->at_us = now_us;
+    last->eco2_ppm = eco2_ppm;
+    last->tvoc_ppb = tvoc_ppb;
+    last->aqi = aqi;
+    last->validity = validity;
+}
+
+bool ens160_gas_recent(const ens160_gas_t *last, int64_t now_us)
+{
+    int64_t age = now_us - last->at_us;
+    return last->ok && age >= 0 && age < ENS160_REUSE_US;
+}
+
 #ifdef ESP_PLATFORM
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
@@ -147,6 +239,9 @@ uint16_t ens160_part_id(void) { return s_part_id; }
 bool ens160_compensate(float celsius, float humidity)
 {
     if (!s_present) return false;
+    /* Zero humidity is a missing hygrometer, not a room: refuse it here too,
+       so no caller can tell the chip about a desert by accident. */
+    if (!(humidity > 0.0f)) return false;
     uint16_t t = ens160_encode_temp(celsius);
     uint16_t h = ens160_encode_rh(humidity);
     /* Both registers are contiguous, so one write of four bytes. */

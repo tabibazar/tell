@@ -31,6 +31,13 @@ esp_err_t sd_append(const char *path, const char *data, size_t len);
    caller write a CSV header row only when it is creating the file. */
 bool sd_exists(const char *path);
 
+/* The first line of `path` (relative to /sdcard), without its line ending,
+   into `line` -- empty for an empty file. Mounts the card first, so "not
+   there" means not there rather than not yet looked at. ESP_OK, or
+   ESP_ERR_NOT_FOUND when there is no such file, or another error when the
+   card could not say. */
+esp_err_t sd_first_line(const char *path, char *line, size_t size);
+
 /* Formats "envio/IMG_YYYYMMDD_HHMMSS.jpg" from the DS3231, if the chip is
    present and its calendar holds a real year. Otherwise falls back to
    "envio/IMG_boot_<seq>.jpg" with a process-lifetime incrementing <seq>, so

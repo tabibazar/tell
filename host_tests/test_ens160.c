@@ -14,6 +14,21 @@ static void expect(const char *what, int cond)
     failures++;
 }
 
+/* A seven-byte AHT21 frame for a given status, temperature and humidity,
+   with the CRC it should carry. */
+static void make_frame(uint8_t f[7], uint8_t status, float celsius, float humidity)
+{
+    uint32_t raw_h = (uint32_t)(humidity / 100.0f * 1048576.0f);
+    uint32_t raw_t = (uint32_t)((celsius + 50.0f) / 200.0f * 1048576.0f);
+    f[0] = status;
+    f[1] = (uint8_t)(raw_h >> 12);
+    f[2] = (uint8_t)(raw_h >> 4);
+    f[3] = (uint8_t)(((raw_h & 0x0F) << 4) | ((raw_t >> 16) & 0x0F));
+    f[4] = (uint8_t)(raw_t >> 8);
+    f[5] = (uint8_t)raw_t;
+    f[6] = aht21_crc(f, 6);
+}
+
 int main(void)
 {
     /*
@@ -166,6 +181,388 @@ int main(void)
                 if (aht21_crc(bad, 6) == good) missed++;
             }
         expect("and catches every single-bit error in a frame", missed == 0);
+    }
+
+    /*
+     * What the gas sensor is told. The bench case this exists for: envo's
+     * AHT21 failing every CRC, its BMP280 about to come out, and the gas
+     * readings -- the point of the board -- compensated with whatever is left.
+     */
+    {
+        const int64_t MIN = 60LL * 1000000;
+        ens160_air_t a;
+        ens160_comp_t c;
+
+        /* Everything working: the AHT21 wins both, the barometer is ignored. */
+        memset(&a, 0, sizeof a);
+        a.aht_ok = true; a.aht_c = 22.5f; a.aht_rh = 68.0f;
+        a.bmx_ok = true; a.bmx_c = 24.0f;
+        c = ens160_choose_comp(&a);
+        expect("a good AHT21 supplies the temperature",
+               c.celsius == 22.5f && c.t_from == ENS160_FROM_AHT21);
+        expect("and the humidity",
+               c.humidity == 68.0f && c.rh_from == ENS160_FROM_AHT21 && c.rh_age_us == 0);
+
+        /* AHT21 failing its CRC, barometer answering, a good humidity five
+           minutes old: the barometer's temperature and the held humidity. */
+        memset(&a, 0, sizeof a);
+        a.bmx_ok = true; a.bmx_c = 24.0f;
+        a.held_ok = true; a.held_rh = 70.0f; a.held_age_us = 5 * MIN;
+        c = ens160_choose_comp(&a);
+        expect("with the AHT21 failing, the barometer supplies the temperature",
+               c.celsius == 24.0f && c.t_from == ENS160_FROM_BMX280);
+        expect("and a recent good humidity is held",
+               c.humidity == 70.0f && c.rh_from == ENS160_FROM_AHT21_HELD
+               && c.rh_age_us == 5 * MIN);
+
+        /* The same, but the held humidity is eleven minutes old. */
+        a.held_age_us = 11 * MIN;
+        c = ens160_choose_comp(&a);
+        expect("a stale humidity gives way to the chip's own 50 %",
+               c.humidity == ENS160_DEFAULT_RH
+               && c.rh_from == ENS160_FROM_DEFAULT);
+        a.held_age_us = 10 * MIN;
+        c = ens160_choose_comp(&a);
+        expect("and ten minutes exactly is already too old",
+               c.rh_from == ENS160_FROM_DEFAULT);
+        a.held_age_us = 10 * MIN - 1;
+        c = ens160_choose_comp(&a);
+        expect("where a moment under is still held", c.rh_from == ENS160_FROM_AHT21_HELD);
+
+        /* A BMP280 has no hygrometer and reports zero; it must never be
+           mistaken for a desert. */
+        memset(&a, 0, sizeof a);
+        a.bmx_ok = true; a.bmx_c = 24.0f;
+        a.bmx_rh_ok = false; a.bmx_rh = 0.0f;
+        c = ens160_choose_comp(&a);
+        expect("a BMP280's missing humidity is not written as zero",
+               c.humidity == ENS160_DEFAULT_RH);
+        /* Even flagged as real, zero is refused. */
+        a.bmx_rh_ok = true;
+        c = ens160_choose_comp(&a);
+        expect("nor is a zero from anywhere else", c.humidity == ENS160_DEFAULT_RH);
+        a.bmx_rh = 55.0f;
+        c = ens160_choose_comp(&a);
+        expect("while a BME280's real humidity is used",
+               c.humidity == 55.0f && c.rh_from == ENS160_FROM_BMX280);
+        /* ...but a recent AHT21 one, from beside the gas sensor, comes first. */
+        a.held_ok = true; a.held_rh = 70.0f; a.held_age_us = 1 * MIN;
+        c = ens160_choose_comp(&a);
+        expect("behind a held AHT21 humidity", c.rh_from == ENS160_FROM_AHT21_HELD);
+
+        /* An AHT21 whose humidity is zero still has a usable temperature. */
+        memset(&a, 0, sizeof a);
+        a.aht_ok = true; a.aht_c = 21.0f; a.aht_rh = 0.0f;
+        c = ens160_choose_comp(&a);
+        expect("an AHT21 reading zero humidity keeps its temperature",
+               c.t_from == ENS160_FROM_AHT21 && c.celsius == 21.0f);
+        expect("but not its zero", c.humidity == ENS160_DEFAULT_RH);
+
+        /*
+         * The barometer pulled and the AHT21 failing. The chip is never left
+         * to keep whatever it was last told: the old code wrote nothing here,
+         * so a value written once -- by a chance CRC pass, say -- stayed in
+         * force for as long as the thermometer was silent. Instead a recent
+         * real temperature is held, as a humidity is, and past that the chip
+         * gets its own power-on default, written, so the log and the chip
+         * agree on what it is using.
+         */
+        memset(&a, 0, sizeof a);
+        a.held_ok = true; a.held_rh = 70.0f; a.held_age_us = 3 * MIN;
+        a.held_t_ok = true; a.held_c = 22.0f; a.held_t_age_us = 3 * MIN;
+        c = ens160_choose_comp(&a);
+        expect("with no thermometer now, a recent real temperature is held",
+               c.celsius == 22.0f && c.t_from == ENS160_FROM_HELD
+               && c.t_age_us == 3 * MIN);
+        expect("beside the held humidity", c.rh_from == ENS160_FROM_AHT21_HELD);
+
+        a.held_t_age_us = a.held_age_us = 10 * MIN;
+        c = ens160_choose_comp(&a);
+        expect("ten minutes on, the chip's own default temperature is written",
+               c.celsius == ENS160_DEFAULT_C && c.t_from == ENS160_FROM_DEFAULT
+               && c.t_age_us == 0);
+        expect("with its default humidity",
+               c.humidity == ENS160_DEFAULT_RH && c.rh_from == ENS160_FROM_DEFAULT);
+
+        memset(&a, 0, sizeof a);
+        c = ens160_choose_comp(&a);
+        expect("with nothing ever measured, the default too",
+               c.t_from == ENS160_FROM_DEFAULT && c.rh_from == ENS160_FROM_DEFAULT);
+        /* And that default is the chip's own: DATA_T and DATA_RH read 0x4A8A
+           and 0x6400 until TEMP_IN and RH_IN are written (ENS160 datasheet
+           v1.3, 16.2.12 and 16.2.13), so writing it changes nothing but what
+           the log can say. */
+        expect("which encodes to the chip's power-on 0x4A8A and 0x6400",
+               ens160_encode_temp(c.celsius) == 0x4A8A
+               && ens160_encode_rh(c.humidity) == 0x6400);
+
+        /* A held temperature is only held; one measured now comes first. */
+        a.held_t_ok = true; a.held_c = 30.0f; a.held_t_age_us = MIN;
+        a.bmx_ok = true; a.bmx_c = 24.0f;
+        c = ens160_choose_comp(&a);
+        expect("a barometer now beats a held temperature",
+               c.t_from == ENS160_FROM_BMX280 && c.celsius == 24.0f);
+
+        /* A NaN is not a temperature. */
+        memset(&a, 0, sizeof a);
+        a.aht_ok = true; a.aht_c = NAN; a.aht_rh = 50.0f;
+        a.bmx_ok = true; a.bmx_c = 23.0f;
+        c = ens160_choose_comp(&a);
+        expect("a NaN temperature falls through to the barometer",
+               c.t_from == ENS160_FROM_BMX280 && c.celsius == 23.0f);
+
+        /* Whatever the inputs, a written humidity is never zero. */
+        int zeros = 0;
+        const float rhs[4] = { 0.0f, -5.0f, 0.0f, 150.0f };
+        for (int i = 0; i < 64; i++) {
+            memset(&a, 0, sizeof a);
+            a.aht_ok = i & 1;  a.aht_c = 20.0f; a.aht_rh = rhs[(i >> 1) & 3];
+            a.bmx_ok = (i >> 3) & 1; a.bmx_c = 20.0f;
+            a.bmx_rh_ok = (i >> 4) & 1; a.bmx_rh = 0.0f;
+            a.held_ok = (i >> 5) & 1; a.held_rh = 0.0f; a.held_age_us = MIN;
+            c = ens160_choose_comp(&a);
+            if (!(c.humidity > 0.0f)) zeros++;
+        }
+        expect("no combination of inputs writes a humidity of zero", zeros == 0);
+
+        expect("the sources read as words",
+               strcmp(ens160_source_name(ENS160_FROM_AHT21), "AHT21") == 0
+               && strcmp(ens160_source_name(ENS160_FROM_DEFAULT), "default") == 0
+               && strcmp(ens160_source_name(ENS160_FROM_HELD), "held") == 0
+               && strcmp(ens160_source_name(ENS160_FROM_NONE), "--") == 0);
+    }
+
+    /*
+     * Two readers in one pass. envo's flash sampler and its SD log both ask
+     * for the gas, about a hundred milliseconds apart when a five-minute
+     * sample falls in a thirty-second slot -- which in field sleep is every
+     * five minutes. The chip clears NEWDAT at the first DATA read and sets it
+     * again a second later, so the second reader used to find nothing: its
+     * CSV line lost the gas, or, with no thermometer, was never written.
+     * This walks that pass against a model of the chip's NEWDAT.
+     */
+    {
+        const int64_t MS = 1000;
+        ens160_gas_t last;
+        memset(&last, 0, sizeof last);
+        expect("nothing is recent before the first reading",
+               !ens160_gas_recent(&last, 0));
+
+        /* The chip: a new reading each second, NEWDAT cleared when read. */
+        bool newdat = true;
+        int64_t t0 = 300000 * MS;
+        int got = 0;
+        for (int reader = 0; reader < 2; reader++) {
+            int64_t now = t0 + reader * 100 * MS;
+            if (newdat) {
+                newdat = false;
+                ens160_gas_keep(&last, now, 512, 85, 2, ENS160_NORMAL);
+            }
+            if (ens160_gas_recent(&last, now)) got++;
+        }
+        expect("both readers in one pass get the gas", got == 2);
+        expect("and the same reading",
+               last.eco2_ppm == 512 && last.tvoc_ppb == 85 && last.aqi == 2
+               && last.validity == ENS160_NORMAL && last.at_us == t0);
+
+        expect("a reading under two seconds old is still the newest there is",
+               ens160_gas_recent(&last, t0 + 1999 * MS));
+        expect("but at two seconds the chip has stopped, and it is not reused",
+               !ens160_gas_recent(&last, t0 + 2000 * MS));
+        expect("nor is one stamped in the future",
+               !ens160_gas_recent(&last, t0 - 1));
+    }
+
+    /*
+     * The AHT21's CRC tally: one line per ten minutes, with the rate and the
+     * newest bad frame, instead of a warning per read.
+     */
+    {
+        const int64_t MIN = 60LL * 1000000;
+        aht21_tally_t t;
+        memset(&t, 0, sizeof t);
+        char line[160];
+
+        uint8_t good[7] = { 0x1C, 0x73, 0x4A, 0x55, 0x2C, 0x61, 0 };
+        good[6] = aht21_crc(good, 6);
+        uint8_t bad[7] = { 0x1C, 0x10, 0x20, 0x35, 0x2C, 0x61, 0x00 };
+        uint8_t worse[7] = { 0x98, 0x00, 0x00, 0x00, 0x00, 0x00, 0xAB };
+
+        /* Twenty reads, thirty seconds apart, every one bad. */
+        int64_t now = 1000;
+        for (int i = 0; i < 20; i++, now += MIN / 2)
+            aht21_tally_note(&t, now, i == 19 ? worse : bad, false);
+        expect("nothing is said before ten minutes have passed",
+               !aht21_tally_report(&t, now - MIN / 2, line, sizeof line));
+        expect("and at ten minutes the tally is reported",
+               aht21_tally_report(&t, 1000 + 10 * MIN, line, sizeof line));
+        expect("as a count of the reads",
+               strstr(line, "20 of 20 reads failed CRC in the last 10 min") != NULL);
+        char want[8];
+        snprintf(want, sizeof want, "want %02x", aht21_crc(worse, 6));
+        expect("with the newest bad frame's bytes",
+               strstr(line, "98 00 00 00 00 00 crc ab") != NULL
+               && strstr(line, want) != NULL);
+
+        /* The next window starts from the report, empty. */
+        expect("and the count starts again", t.reads == 0 && t.bad == 0);
+        expect("so nothing more is said straight away",
+               !aht21_tally_report(&t, 1000 + 11 * MIN, line, sizeof line));
+
+        /* A mixed window: only the failures are failures. */
+        now = 1000 + 10 * MIN;
+        for (int i = 0; i < 10; i++, now += MIN)
+            aht21_tally_note(&t, now, (i % 5 == 0) ? bad : good, i % 5 != 0);
+        expect("a partly failing sensor is reported by its rate",
+               aht21_tally_report(&t, 1000 + 20 * MIN, line, sizeof line)
+               && strstr(line, "2 of 10 reads failed CRC") != NULL);
+
+        /* A clean window says nothing, and still starts the next. */
+        now = 1000 + 20 * MIN;
+        for (int i = 0; i < 20; i++, now += MIN / 2)
+            aht21_tally_note(&t, now, good, true);
+        line[0] = '\0';
+        expect("a window with no failures stays quiet",
+               !aht21_tally_report(&t, 1000 + 30 * MIN, line, sizeof line)
+               && line[0] == '\0');
+        expect("and resets its count all the same", t.reads == 0);
+    }
+
+    /*
+     * Which CRC-good frames deserve belief. A CRC of eight bits passes about
+     * one damaged frame in 256 by chance -- 1 in 259 when bits were dropped
+     * at random from a real 23 C / 70 % frame -- so on envo's bus, where every
+     * frame was damaged, the only frames the CRC let through would be
+     * garbage. These are the bench's own bad frames with their CRC byte
+     * repaired: exactly what a chance pass looks like.
+     */
+    {
+        aht21_vet_t v;
+        float c = -99.0f, rh = -99.0f;
+
+        /* The bench frames, each given the CRC it wanted. */
+        uint8_t bench[4][7] = {
+            { 0x18, 0x30, 0x01, 0xd4, 0x00, 0x00, 0 },    /* 0.00 C, 18.8 % */
+            { 0x18, 0x0c, 0x80, 0x34, 0x32, 0x8c, 0 },    /* 2.47 C,  4.9 % */
+            { 0x18, 0x20, 0x01, 0x04, 0x00, 0x80, 0 },    /* 0.02 C, 12.5 % */
+            { 0x18, 0x34, 0x00, 0x55, 0xff, 0x00, 0 },    /* 24.95 C, 20.3 % */
+        };
+        for (int i = 0; i < 4; i++) bench[i][6] = aht21_crc(bench[i], 6);
+
+        uint8_t room[7], room2[7], breath[7], busy[7], nocal[7], cold[7], badcrc[7];
+        make_frame(room, 0x18, 23.0f, 70.0f);
+        make_frame(room2, 0x18, 23.2f, 69.0f);
+        make_frame(breath, 0x18, 23.4f, 78.0f);         /* breathed on: +8 % */
+        make_frame(busy, 0x98, 23.0f, 70.0f);
+        make_frame(nocal, 0x10, 23.0f, 70.0f);          /* CAL clear, CRC fine */
+        make_frame(cold, 0x18, -42.6f, 70.0f);          /* below the part's range */
+        make_frame(badcrc, 0x18, 23.0f, 70.0f);
+        badcrc[6] ^= 0x01;
+
+        /* A healthy sensor. Its first frame stands alone, so it asks for a
+           second straight away; that one agrees and is used. */
+        memset(&v, 0, sizeof v);
+        expect("a first good frame is not used alone",
+               aht21_vet(&v, room, &c, &rh) == AHT21_CONFIRM);
+        expect("an agreeing frame straight after it is",
+               aht21_vet(&v, room2, &c, &rh) == AHT21_USE
+               && fabsf(c - 23.2f) < 0.01f && fabsf(rh - 69.0f) < 0.01f);
+        expect("and so is the next, thirty seconds on",
+               aht21_vet(&v, room, &c, &rh) == AHT21_USE);
+
+        /* A real jump -- a breath -- costs a second measurement, not the
+           reading. */
+        expect("a real jump is asked about again",
+               aht21_vet(&v, breath, &c, &rh) == AHT21_CONFIRM);
+        expect("and used once a second frame agrees",
+               aht21_vet(&v, breath, &c, &rh) == AHT21_USE && fabsf(rh - 78.0f) < 0.01f);
+
+        /* One chance pass among good frames: it disagrees with the frame
+           before, the frame measured to confirm it fails its CRC, and it is
+           never used. */
+        memset(&v, 0, sizeof v);
+        aht21_vet(&v, room, &c, &rh);
+        aht21_vet(&v, room, &c, &rh);
+        c = rh = -99.0f;
+        expect("a chance pass after good frames is not used",
+               aht21_vet(&v, bench[0], &c, &rh) == AHT21_CONFIRM);
+        expect("and its confirming frame, failing, drops it",
+               aht21_vet(&v, badcrc, &c, &rh) == AHT21_DROP);
+        expect("so 0 C was never handed out", c == -99.0f && rh == -99.0f);
+        /* The next good frame has a failed one before it, not a good one. */
+        expect("a good frame after a failed one is confirmed, not trusted",
+               aht21_vet(&v, room, &c, &rh) == AHT21_CONFIRM);
+        expect("and then used", aht21_vet(&v, room, &c, &rh) == AHT21_USE);
+
+        /* Two good frames with a failed one between are not consecutive. */
+        memset(&v, 0, sizeof v);
+        aht21_vet(&v, room, &c, &rh);
+        aht21_vet(&v, badcrc, &c, &rh);
+        expect("agreement across a failed frame does not count",
+               aht21_vet(&v, room, &c, &rh) == AHT21_CONFIRM);
+
+        /* The target state: every frame damaged. Even two chance passes in a
+           row that agree with each other -- 0.00 C and 0.02 C, both near the
+           zero the damage drags bytes towards -- are not used. */
+        memset(&v, 0, sizeof v);
+        for (int i = 0; i < 20; i++) aht21_vet(&v, badcrc, &c, &rh);
+        expect("a sensor failing every frame is not trusted", !aht21_vet_trusted(&v));
+        uint8_t near0[7] = { 0x18, 0x30, 0x01, 0xd4, 0x00, 0x60, 0 };  /* 0.01 C */
+        near0[6] = aht21_crc(near0, 6);
+        c = rh = -99.0f;
+        int used = 0;
+        used += aht21_vet(&v, bench[0], &c, &rh) == AHT21_USE;
+        used += aht21_vet(&v, near0, &c, &rh) == AHT21_USE;
+        for (int i = 0; i < 4; i++) used += aht21_vet(&v, bench[i], &c, &rh) == AHT21_USE;
+        expect("so no chance pass is used, even two that agree",
+               used == 0 && c == -99.0f);
+
+        /* Recovery: once most of the recent frames are good again, it is. */
+        for (int i = 0; i < AHT21_HISTORY; i++) aht21_vet(&v, room, &c, &rh);
+        expect("a sensor that recovers is trusted again", aht21_vet_trusted(&v));
+        expect("and its readings used", aht21_vet(&v, room2, &c, &rh) == AHT21_USE);
+
+        /* The gate sits at half: more than half failed is distrust. Good
+           frames first, so each failure after them pushes a good one out. */
+        memset(&v, 0, sizeof v);
+        for (int i = 0; i < AHT21_HISTORY; i++)
+            aht21_vet(&v, i < AHT21_HISTORY / 2 ? room : badcrc, &c, &rh);
+        expect("half the recent frames failing is still trusted", aht21_vet_trusted(&v));
+        aht21_vet(&v, badcrc, &c, &rh);
+        expect("a majority failing is not", !aht21_vet_trusted(&v));
+        /* At boot, with fewer frames than the window, the rate is over what
+           there is. */
+        memset(&v, 0, sizeof v);
+        aht21_vet(&v, badcrc, &c, &rh);
+        expect("one failure of one is a majority", !aht21_vet_trusted(&v));
+        aht21_vet(&v, room, &c, &rh);
+        expect("one of two is not", aht21_vet_trusted(&v));
+
+        /* What a CRC cannot see. */
+        memset(&v, 0, sizeof v);
+        aht21_vet(&v, room, &c, &rh);
+        expect("a frame without the calibrated bit is dropped",
+               aht21_vet(&v, nocal, &c, &rh) == AHT21_DROP);
+        memset(&v, 0, sizeof v);
+        aht21_vet(&v, room, &c, &rh);
+        expect("as is one outside the part's rated range",
+               aht21_vet(&v, cold, &c, &rh) == AHT21_DROP);
+        memset(&v, 0, sizeof v);
+        aht21_vet(&v, room, &c, &rh);               /* a neighbour, now */
+        expect("a busy frame is no reading either",
+               aht21_vet(&v, busy, &c, &rh) == AHT21_DROP);
+        expect("and breaks the chain, so the next sound frame is only confirmed",
+               aht21_vet(&v, room, &c, &rh) == AHT21_CONFIRM);
+        expect("but is not counted as damage", aht21_vet_trusted(&v) && v.failed == 0);
+
+        /* The bench frames: three of the four also fall outside a room, but
+           the fourth, 24.95 C and 20 %, is a room reading in every respect a
+           band could test. Agreement is what stops it. */
+        memset(&v, 0, sizeof v);
+        aht21_vet(&v, room, &c, &rh);
+        aht21_vet(&v, room, &c, &rh);
+        expect("a room-shaped chance pass is caught by disagreement",
+               aht21_vet(&v, bench[3], &c, &rh) == AHT21_CONFIRM);
     }
 
     printf("%s\n", failures ? "FAILURES" : "all tests passed");

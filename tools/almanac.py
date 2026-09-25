@@ -104,7 +104,10 @@ def sun_times():
 def main():
     now = dt.datetime.now()
     today = now.date()
-    phase, name, age = moon(now)
+    # NEW_MOON is a UTC instant, so the phase is worked out from UTC; `now`
+    # stays local for the date lines. Local time here put the phase four
+    # or five hours out, and out of step with watch, which computes it itself.
+    phase, name, age = moon(dt.datetime.now(dt.timezone.utc).replace(tzinfo=None))
 
     start = dt.date(today.year, 1, 1)
     end = dt.date(today.year, 12, 31)

@@ -161,6 +161,32 @@ bool sd_exists(const char *path)
     return stat(full, &st) == 0;
 }
 
+esp_err_t sd_first_line(const char *path, char *line, size_t size)
+{
+    if (!path || !line || size == 0) return ESP_ERR_INVALID_ARG;
+    line[0] = '\0';
+
+    esp_err_t err = sd_mount();
+    if (err != ESP_OK) return err;
+
+    char full[320];
+    int n = snprintf(full, sizeof full, "/sdcard/%s", path);
+    if (n <= 0 || (size_t)n >= sizeof full) return ESP_ERR_INVALID_ARG;
+
+    FILE *f = fopen(full, "r");
+    if (!f) return errno == ENOENT ? ESP_ERR_NOT_FOUND : ESP_FAIL;
+    /* Only a file that could not be read is an error; an empty one is an
+       empty first line. */
+    bool failed = !fgets(line, (int)size, f) && ferror(f);
+    fclose(f);
+    if (failed) {
+        line[0] = '\0';
+        return ESP_FAIL;
+    }
+    line[strcspn(line, "\r\n")] = '\0';
+    return ESP_OK;
+}
+
 void sd_photo_name(char *out, size_t n)
 {
     static uint32_t s_boot_seq = 0;
