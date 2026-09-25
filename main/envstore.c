@@ -71,7 +71,7 @@ bool env_sample_value(const env_sample_t *r, int series, int16_t *out)
 }
 
 const char ENVCSV_HEADER[] =
-    "timestamp,temp_c,rh_pct,pressure_hpa,tvoc_ppb,eco2_ppm,die_c,gas_valid\n";
+    "timestamp,temp_c,rh_pct,pressure_hpa,tvoc_ppb,eco2_ppm,die_c,gas_valid,aqi\n";
 
 /* snprintf's count is what it wanted to write, which past a full buffer is
    more than it did: clamp, so the next field starts at the real end. */
@@ -117,10 +117,13 @@ int envcsv_line(char *out, size_t size, const env_sample_t *rec,
         n = csv_put(out, size, n, "%.1f,", die_c);
     else
         n = csv_put(out, size, n, ",");
+    /* The chip's own validity, then its own 1..5 air-quality index: both
+       belong to the gas reading, so both are empty without one. */
     if (rec->flags & ENV_HAVE_GAS)
-        n = csv_put(out, size, n, "%u\n", (unsigned)ENV_GAS_VALIDITY(rec->flags));
+        n = csv_put(out, size, n, "%u,%u\n", (unsigned)ENV_GAS_VALIDITY(rec->flags),
+                    (unsigned)rec->aqi);
     else
-        n = csv_put(out, size, n, "\n");
+        n = csv_put(out, size, n, ",\n");
     return (int)n;
 }
 

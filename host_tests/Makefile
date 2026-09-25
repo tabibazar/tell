@@ -4,7 +4,7 @@ CFLAGS = -std=c11 -Wall -Wextra -Werror -g -I../main
 VIEW_SRCS = $(wildcard ../main/view_*.c)
 UD_SRCS = ../main/usagedata.c $(wildcard ../main/ud_*.c)
 
-all: test_textwrap test_font test_font_clock test_timecalc test_canvas test_usagedata test_pages test_views test_drift test_envstore test_envpage test_ens160 test_settings test_ds3231 test_level test_levelbig test_particles test_pip test_maze test_bubblelevel test_vector test_moonphase test_pcf85063 test_face
+all: test_textwrap test_font test_font_clock test_timecalc test_canvas test_usagedata test_pages test_views test_drift test_envstore test_envpage test_ens160 test_settings test_ds3231 test_level test_levelbig test_particles test_pip test_maze test_bubblelevel test_vector test_moonphase test_pcf85063 test_face test_envstate test_envui
 
 test_textwrap: test_textwrap.c ../main/textwrap.c
 	cc $(CFLAGS) -o $@ $^
@@ -30,6 +30,9 @@ test_drift: test_drift.c ../main/drift.c ../main/canvas.c ../main/textwrap.c
 
 test_envstore: test_envstore.c ../main/envstore.c
 	$(CC) $(CFLAGS) -o $@ $^
+
+test_envstate: test_envstate.c ../main/envstate.c
+	$(CC) $(CFLAGS) -o $@ $^ -lm
 
 test_envpage: test_envpage.c ../main/envpage.c ../main/canvas.c ../main/textwrap.c
 	$(CC) $(CFLAGS) -o $@ $^ -lm
@@ -79,8 +82,15 @@ test_pcf85063: test_pcf85063.c ../main/pcf85063.c ../main/ds3231.c
 test_face: test_face.c ../main/face.c ../main/vector.c ../main/vfont.c ../main/moonphase.c
 	$(CC) $(CFLAGS) -o $@ $^ -lm
 
+# envui draws with envstate's limits table. Until envstate.c exists the test
+# brings a stand-in for envs_limits (ENVUI_LIMITS_STUB); once it is there the
+# real one is linked and the stand-in drops out by itself.
+ENVUI_ENVSTATE = $(wildcard ../main/envstate.c)
+test_envui: test_envui.c ../main/envui.c ../main/vector.c ../main/vfont.c ../main/canvas.c ../main/textwrap.c $(ENVUI_ENVSTATE)
+	$(CC) $(CFLAGS) $(if $(ENVUI_ENVSTATE),,-DENVUI_LIMITS_STUB) -o $@ $^ -lm
+
 clean:
-	rm -f test_vector test_moonphase test_pcf85063 test_face test_ens160 test_envpage test_envstore test_drift test_textwrap test_font test_font_clock test_timecalc test_canvas test_usagedata test_pages test_views test_settings test_ds3231 test_level test_levelbig test_particles test_pip test_maze
+	rm -f test_vector test_moonphase test_pcf85063 test_face test_ens160 test_envpage test_envstate test_envui test_envstore test_drift test_textwrap test_font test_font_clock test_timecalc test_canvas test_usagedata test_pages test_views test_settings test_ds3231 test_level test_levelbig test_particles test_pip test_maze
 
 .PHONY: all clean
 

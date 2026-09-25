@@ -47,7 +47,9 @@ stroke font, `main/vfont.c`), marks use `main/vector.c`, and 14 px labels use
 the 12x24 bitmap font.
 
 - **Label** top-left (x 16, top 8), grey, 14 px: VOC / eCO2 est / TEMP / HUMIDITY.
-- **Unit** top-right, right-aligned to 304, grey, 14 px: ppb / ppm, from VOCs / C / %.
+- **Unit** top-right, right-aligned to 304, grey, 14 px: ppb / ppm / C / %.
+  (Amended after the design critique: "ppm, from VOCs" ran into the "eCO2 est"
+  label as one phrase; "est" and FROM VOCS already say where it comes from.)
 - **The number:** vfont ~64 px capital height, white, x 16, readable across a
   room. It shrinks in 2 px steps while wider than 200 px (minimum 40).
   - Quantised by truncation so the last digit is not noise: VOC in steps of 5
@@ -80,8 +82,9 @@ the 12x24 bitmap font.
 
 The gas pages show no number:
 - `WARMING UP` (or `GAS ERROR`) in grey vfont ~34.
-- Under it, `12 MIN SO FAR` in grey 22 px, counted from sensor start and redrawn
-  each minute. Never a remaining time: the chip cannot know it.
+- Under WARMING UP, `12 MIN SO FAR` in grey 22 px, counted from sensor start and
+  redrawn each minute. Never a remaining time: the chip cannot know it. Nothing
+  under GAS ERROR: a count going up there reads as progress that is not made.
 - The strip still shows the valid history.
 
 ## The full 24 h chart (a tap on a reading page; mockups `ref/v2_voc_24h.png`, `v3_eco2_24h.png`)
@@ -89,7 +92,8 @@ The gas pages show no number:
 - **Title slot** at (16, 8) white 14 px: "VOC 24H", with the unit on the line below in grey.
 - **Top right:** the number (vfont 30) and state word (vfont 22), styled by
   state, plus the trend arrow when moving.
-- **Plot** x 16..249 (234 columns of about 6.2 min), y 44..141, on a FIXED scale.
+- **Plot** x 16..246 (231 columns of about 6.2 min), y 44..141, on a FIXED scale
+  (ends 10 px short of the key, so the now-dot is not read as a bullet on it).
   - **Gas: three linear zones.**
     - GOOD 0-220 ppb / 400-800 ppm, 42 px.
     - FAIR 220-650 / 800-1000, 32 px.

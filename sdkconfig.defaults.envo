@@ -31,9 +31,12 @@ CONFIG_SCREEN_ALTITUDE_M=0
 # 10-character base name is not an 8.3 short name. Heap-allocated LFN buffers.
 CONFIG_FATFS_LFN_HEAP=y
 
-# Low: at 100% the panel and board run hot to the touch, and the heat reaches
-# the soldered sensors.
-CONFIG_SCREEN_BRIGHTNESS=20
+# 40, up from 20 so the readable-air pages carry across a room. Still well
+# short of 100%, where the panel and board run hot to the touch and the heat
+# reaches the soldered sensors; the screen sleeps after five idle minutes and
+# field sleep is unchanged, so the extra light is only spent while someone
+# looks.
+CONFIG_SCREEN_BRIGHTNESS=40
 
 # Idle at 80 MHz instead of spinning at 160 (see app_main); no light sleep.
 CONFIG_PM_ENABLE=y

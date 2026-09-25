@@ -56,6 +56,8 @@ tools/__pycache__/
 host_tests/test_drift
 host_tests/test_envstore
 host_tests/test_envpage
+host_tests/test_envstate
+host_tests/test_envui
 host_tests/test_ens160
 host_tests/test_pip
 host_tests/test_maze

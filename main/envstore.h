@@ -121,10 +121,12 @@ bool env_sample_value(const env_sample_t *r, int series, int16_t *out);
  *
  * gas_valid is the ENS160's own opinion of its numbers -- 0 normal,
  * 1 warming up, 2 the first hour of a new part, 3 invalid -- so a settling
- * hour can be told from a bad-air hour later. Last, so every column before it
- * keeps the place it had in files already on the card. Every measured column
- * is empty when its sensor gave nothing: an empty field is a gap to anything
- * that reads the file, where 0.00 is a freezing room.
+ * hour can be told from a bad-air hour later. aqi is the chip's own 1..5 UBA
+ * index, which the flash log has always kept and the card had not. Each new
+ * column goes last, so every column before it keeps the place it had in files
+ * already on the card. Every measured column is empty when its sensor gave
+ * nothing: an empty field is a gap to anything that reads the file, where
+ * 0.00 is a freezing room.
  */
 extern const char ENVCSV_HEADER[];      /* ends in its newline */
 

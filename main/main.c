@@ -45,6 +45,10 @@
 #if CONFIG_SCREEN_BOARD_TOUCH_LCD_147
 /* envo logs a reading to the microSD every 30 s as well as to flash. */
 #include "sdcard.h"
+/* And shows it as readable air: envstate says what the readings mean,
+   envui draws them. */
+#include "envstate.h"
+#include "envui.h"
 #endif
 #include "settings.h"
 #include "shaketimer.h"
@@ -1374,6 +1378,11 @@ static page_t home_page(void)
        home to the instrument rather than to the toy. This matters most on a
        board with no RTC: the clock it would otherwise show after every power
        cycle reads --:--:-- until a Mac speaks to it. */
+#if CONFIG_SCREEN_BOARD_TOUCH_LCD_147
+    /* envo is an air monitor: VOC is what she is for, so it is home, and
+       waking the screen always opens it. */
+    if (s_pages.available & PAGE_BIT(PAGE_ROOM_VOC)) return PAGE_ROOM_VOC;
+#endif
     /* watch comes home to her face, ahead of the sand she also carries. */
     if (s_pages.available & PAGE_BIT(PAGE_FACE)) return PAGE_FACE;
     /* envio comes home to Pip -- her whole reason for a screen. */
@@ -1843,15 +1852,19 @@ static uint8_t s_env_buf[4096];
 static env_sample_t s_env_now;
 static bool         s_env_now_ok;
 
+#if !CONFIG_SCREEN_BOARD_TOUCH_LCD_147
 /* The series a board may hold -- ENV_TEMP through ENV_CO2, ENV_SERIES of them
    -- are envstore.h's, beside env_sample_value, which says whether a reading
-   has one. They moved there so what "has a temperature" means is tested. */
+   has one. They moved there so what "has a temperature" means is tested.
+   Not on envo, whose pages keep their own day and week (air_cache_add). */
 static envchart_t s_env_day[ENV_SERIES];
 static envchart_t s_env_month[ENV_SERIES];
 static envweek_t s_env_week[ENV_SERIES];
+#endif
 
 static bool s_env_gas;        /* a gas sensor answered at boot */
 
+#if !CONFIG_SCREEN_BOARD_TOUCH_LCD_147
 /* Which of the seven days a reading belongs to. Day six is today; day zero is
    six days before it. Older than that and it is not in this week. */
 static int env_week_day(uint32_t minute, uint32_t newest)
@@ -1862,6 +1875,7 @@ static int env_week_day(uint32_t minute, uint32_t newest)
     if (back < 0 || back > ENVWEEK_DAYS - 1) return -1;
     return ENVWEEK_DAYS - 1 - (int)back;
 }
+#endif
 
 /* Minutes since 1970, from the date the Mac or the clock chip supplied and
    the board's own seconds. */
@@ -2107,6 +2121,518 @@ static bool env_read_averaged(env_sample_t *rec)
                           | ENV_HAVE_GAS)) != 0;
 }
 
+#if CONFIG_SCREEN_BOARD_TOUCH_LCD_147
+/*
+ * envo's readable air: one big reading per page, a fixed-scale day under it,
+ * a tap for the full chart. See
+ * docs/superpowers/specs/2026-09-25-envo-readable-air-design.md.
+ *
+ * Three things live here. The 30 s readings go into envstate's ring, which
+ * says what to show now -- the display value, its state and trend, and
+ * whether the gas sensor is still warming up. The flash log's 5-minute
+ * records are kept folded into a day of slots and a week of hourly cells, so
+ * a page is drawn from RAM: the log is walked at boot, never once a frame.
+ * And the pages -- their order, the tap, the clock's verdict -- which envui
+ * draws from what is kept here.
+ */
+static envs_t s_air;                    /* the last 48 minutes of 30 s readings */
+
+/*
+ * When each series last had a valid reading, and when the gas sensor last
+ * said anything at all. envstate has no clock, so a sensor gone quiet is
+ * noticed here: after AIR_STALE_US its page says NO READING rather than
+ * showing a number from before it stopped.
+ */
+#define AIR_STALE_US (5 * 60 * 1000000LL)
+static int64_t s_air_seen_us[ENVS_N];
+static int64_t s_air_gas_us;
+
+/* Where the next 5-minute record's window starts, so each 30 s reading is
+   folded into exactly one record. */
+static int64_t s_air_fold_us;
+#define AIR_WINDOW_US ((int64_t)ENV_EVERY_MIN * 60 * 1000000LL)
+
+static bool air_fresh(int64_t seen_us, int64_t now)
+{
+    return seen_us > 0 && now - seen_us < AIR_STALE_US;
+}
+
+static const char *air_state_name(envs_state_t st)
+{
+    switch (st) {
+    case ENVS_OK:   return "OK";
+    case ENVS_FAIR: return "FAIR";
+    case ENVS_POOR: return "POOR";
+    default:        return "WAIT";
+    }
+}
+
+static const char *air_trend_name(envs_trend_t t)
+{
+    switch (t) {
+    case ENVS_STEADY:  return "steady";
+    case ENVS_RISING:  return "rising";
+    case ENVS_FALLING: return "falling";
+    default:           return "no trend yet";
+    }
+}
+
+/*
+ * One 30 s reading into the ring -- the same averaged reading the SD card
+ * gets, so the page and the card agree to the digit -- and every state moved
+ * on from it. The page showing redraws with it, and the log says what that
+ * page now shows, for a board watched over the cable rather than looked at.
+ */
+static void air_feed(const env_sample_t *rec, int64_t now)
+{
+    envs_reading_t r = {
+        .t_us = now,
+        .temp_c100 = rec->temp_c100, .rh_c100 = rec->rh_c100,
+        .tvoc = rec->tvoc_ppb, .eco2 = rec->eco2_ppm, .aqi = rec->aqi,
+        .validity = (uint8_t)ENV_GAS_VALIDITY(rec->flags),
+        .have = (uint8_t)(rec->flags & (ENV_HAVE_TEMP | ENV_HAVE_RH | ENV_HAVE_GAS)),
+    };
+    envs_push(&s_air, &r);
+    if (r.have & ENV_HAVE_GAS) {
+        s_air_gas_us = now;
+        if (r.validity == 0) s_air_seen_us[ENVS_VOC] = s_air_seen_us[ENVS_ECO2] = now;
+    }
+    if (r.have & ENV_HAVE_TEMP) s_air_seen_us[ENVS_TEMP] = now;
+    if (r.have & ENV_HAVE_RH)   s_air_seen_us[ENVS_RH] = now;
+    for (int s = 0; s < ENVS_N; s++) envs_update(&s_air, (envs_series_t)s);
+    s_drawn_page = PAGE_COUNT;
+
+    char say[ENVS_N][40];
+    for (int s = 0; s < ENVS_N; s++) {
+        int32_t v;
+        if (!envs_value(&s_air, (envs_series_t)s, &v)) {
+            snprintf(say[s], sizeof say[s], "--");
+            continue;
+        }
+        const char *trend = air_trend_name(envs_trend(&s_air, (envs_series_t)s, now));
+        if (s == ENVS_TEMP || s == ENVS_RH)
+            snprintf(say[s], sizeof say[s], "%.2f%s %s", (double)v / 100.0,
+                     s == ENVS_TEMP ? " C" : "%", trend);
+        else
+            snprintf(say[s], sizeof say[s], "%ld %s %s %s", (long)v,
+                     s == ENVS_VOC ? "ppb" : "ppm", air_state_name(s_air.state[s]), trend);
+    }
+    int minutes;
+    bool error;
+    if (envs_gas_warming(&s_air, &minutes, &error, now))
+        ESP_LOGI(TAG, "air: gas %s, %d min so far; temp %s; rh %s",
+                 error ? "ERROR" : "warming up", minutes, say[ENVS_TEMP], say[ENVS_RH]);
+    else
+        ESP_LOGI(TAG, "air: VOC %s; eCO2 %s; temp %s; rh %s",
+                 say[ENVS_VOC], say[ENVS_ECO2], say[ENVS_TEMP], say[ENVS_RH]);
+}
+
+/*
+ * The flash record, every ENV_EVERY_MIN: the mean of the valid 30 s readings
+ * since the last record, with the highest TVOC among them where the pressure
+ * envo does not measure would go (envs_fold5 has the rules). From where the
+ * last window ended, so every reading counts once -- unless that is more than
+ * two windows back (a write that failed, a clock that stepped), when one
+ * window's worth is taken rather than a mean of most of an hour. False when
+ * nothing at all was measured in it. `rec->minute` is the caller's.
+ *
+ * The window ends at `now`, not after it, and the next one starts there: a
+ * reading stamped `now` belongs to the NEXT record. The loop runs env_sample
+ * before env_sdlog, both with the same `now`, so on a pass that writes a
+ * record the 30 s reading of that pass is pushed only after this fold. With
+ * the window closed at now + 1 and the next opened there, that reading fell
+ * between the two and was in no record at all -- in field sleep, where the
+ * loop wakes only for the 30 s slot, one reading in ten, every record. Split
+ * at `now`, every reading lands in exactly one window whichever order the
+ * loop calls these in.
+ */
+static bool air_fold(int64_t now, env_sample_t *rec)
+{
+    int64_t from = now - AIR_WINDOW_US;
+    if (s_air_fold_us > 0 && now - s_air_fold_us <= 2 * AIR_WINDOW_US) from = s_air_fold_us;
+    return envs_fold5(&s_air, from, now, rec);
+}
+
+/*
+ * The day the pages chart: ENVUI_SLOTS 5-minute slots, slot ENVUI_SLOTS-1
+ * the newest record's. Kept by absolute 5-minute bucket (minute / 5), so a
+ * record lands in the same slot however it arrives -- from the walk at boot
+ * or live from env_sample. The window ends at the newest record rather than
+ * at "now", so the trace runs up to the now-dot instead of stopping a slot
+ * short of it; once the log goes quiet it is pulled on to the slot before
+ * now's, so a dead sensor reads as a gap growing at the right, not as old air
+ * labelled NOW.
+ *
+ * Two records in one slot -- a clock stepped back -- are averaged, which is
+ * what the counts are for. The VOC slot also keeps the highest TVOC its
+ * records stored, for the full chart's peak marker.
+ */
+static envui_series_t s_air_day[ENVS_N];
+static uint8_t  s_air_count[ENVS_N][ENVUI_SLOTS];
+static int32_t  s_air_peak[ENVUI_SLOTS];
+static uint32_t s_air_end;              /* the bucket of slot ENVUI_SLOTS-1 */
+static bool     s_air_based;            /* s_air_end means something yet */
+
+/*
+ * The week: for each day and hour, how many 5-minute records were in each
+ * state -- the worse of VOC and eCO2, from the plain limits, since history
+ * has no "before" for hysteresis to hold to. Row 6 is the day of s_air_end.
+ */
+static uint8_t  s_air_hours[7][24][3];
+static uint32_t s_air_today;            /* the day (minute / 1440) of row 6 */
+static envui_week_t s_air_week;
+
+/* Moves the window on so its last slot is bucket `end`, and the week's last
+   row the day that falls in. Never back: see air_tick for a clock set back. */
+static void air_shift_to(uint32_t end)
+{
+    if (end <= s_air_end) return;
+    int n = end - s_air_end >= ENVUI_SLOTS ? ENVUI_SLOTS : (int)(end - s_air_end);
+    int keep = ENVUI_SLOTS - n;
+    for (int s = 0; s < ENVS_N; s++) {
+        envui_series_t *d = &s_air_day[s];
+        if (keep > 0) {
+            memmove(d->slot, d->slot + n, (size_t)keep * sizeof d->slot[0]);
+            memmove(d->valid, d->valid + n, (size_t)keep * sizeof d->valid[0]);
+            memmove(s_air_count[s], s_air_count[s] + n, (size_t)keep);
+        }
+        memset(d->slot + keep, 0, (size_t)n * sizeof d->slot[0]);
+        memset(d->valid + keep, 0, (size_t)n * sizeof d->valid[0]);
+        memset(s_air_count[s] + keep, 0, (size_t)n);
+    }
+    if (keep > 0) memmove(s_air_peak, s_air_peak + n, (size_t)keep * sizeof s_air_peak[0]);
+    memset(s_air_peak + keep, 0, (size_t)n * sizeof s_air_peak[0]);
+    s_air_end = end;
+
+    uint32_t day = end * 5u / 1440u;
+    if (day > s_air_today) {
+        int dn = day - s_air_today >= 7 ? 7 : (int)(day - s_air_today);
+        if (dn < 7) memmove(s_air_hours[0], s_air_hours[dn], (size_t)(7 - dn) * sizeof s_air_hours[0]);
+        memset(s_air_hours[7 - dn], 0, (size_t)dn * sizeof s_air_hours[0]);
+        s_air_today = day;
+    }
+}
+
+/* Folds a value into a slot's running mean. */
+static void air_slot_add(int s, int i, int32_t v)
+{
+    envui_series_t *d = &s_air_day[s];
+    int n = s_air_count[s][i];
+    d->slot[i] = n == 0 ? v : (int32_t)(((int64_t)d->slot[i] * n + v) / (n + 1));
+    d->valid[i] = true;
+    if (n < 255) s_air_count[s][i] = (uint8_t)(n + 1);
+}
+
+/*
+ * One flash record into the day and the week. `live` is a record just
+ * written, which is now and may move the window on; one from the walk is
+ * history, and a record newer than the window -- written before the clock
+ * was set back -- is left out rather than dragging the window forward.
+ *
+ * Gas counts only with the chip's validity 0: a warming or invalid reading is
+ * a gap, on the day and in the week alike.
+ */
+static void air_cache_add(const env_sample_t *r, bool live)
+{
+    if (!s_air_based) return;
+    uint32_t b = r->minute / 5u;
+    if (b > s_air_end) {
+        if (!live) return;
+        air_shift_to(b);
+    }
+    bool gas = (r->flags & ENV_HAVE_GAS) && ENV_GAS_VALIDITY(r->flags) == 0;
+    uint32_t back = s_air_end - b;
+    if (back < ENVUI_SLOTS) {
+        int i = ENVUI_SLOTS - 1 - (int)back;
+        if (gas) {
+            /* The record's own peak where it stored one. Before ENV_MEANPEAK a
+               record was a single reading, and that reading is its peak. */
+            int32_t peak = (r->flags & ENV_MEANPEAK) && !(r->flags & ENV_HAVE_HPA)
+                         ? (int32_t)r->hpa_x10 : (int32_t)r->tvoc_ppb;
+            if (s_air_count[ENVS_VOC][i] == 0 || peak > s_air_peak[i]) s_air_peak[i] = peak;
+            air_slot_add(ENVS_VOC, i, r->tvoc_ppb);
+            air_slot_add(ENVS_ECO2, i, r->eco2_ppm);
+        }
+        if (r->flags & ENV_HAVE_TEMP) air_slot_add(ENVS_TEMP, i, r->temp_c100);
+        if (r->flags & ENV_HAVE_RH)   air_slot_add(ENVS_RH, i, r->rh_c100);
+    }
+
+    uint32_t day = r->minute / 1440u;
+    if (gas && day <= s_air_today && s_air_today - day < 7) {
+        envs_state_t v = envs_classify(ENVS_VOC, r->tvoc_ppb, ENVS_OK);
+        envs_state_t e = envs_classify(ENVS_ECO2, r->eco2_ppm, ENVS_OK);
+        int row = 6 - (int)(s_air_today - day), hour = (int)(r->minute % 1440u / 60u);
+        uint8_t *n = &s_air_hours[row][hour][e > v ? e : v];
+        if (*n < 255) (*n)++;
+    }
+}
+
+static bool air_walk_one(const env_sample_t *r, void *ctx)
+{
+    (void)ctx;
+    air_cache_add(r, false);
+    return true;
+}
+
+/* The day and the week from the flash log, ending at bucket `end`: once the
+   date or a record is first known, and again if the clock is set back an
+   hour or more. The only walk of the log these pages ever make. */
+static void air_cache_rebuild(uint32_t end)
+{
+    memset(s_air_day, 0, sizeof s_air_day);
+    memset(s_air_count, 0, sizeof s_air_count);
+    memset(s_air_peak, 0, sizeof s_air_peak);
+    memset(s_air_hours, 0, sizeof s_air_hours);
+    s_air_end = end;
+    s_air_today = end * 5u / 1440u;
+    s_air_based = true;
+    if (s_env_ready) envstore_walk(&s_env, s_env_buf, air_walk_one, NULL);
+    s_drawn_page = PAGE_COUNT;
+}
+
+/*
+ * Once a loop, and cheap: keeps the window's end on the newest record, or on
+ * the slot before now's once the log has gone quiet. The first time a date or
+ * a record is known, the day and week are built from the log; a clock set
+ * back an hour or more builds them again, since the slots it filled belong to
+ * times that now lie ahead.
+ */
+static void air_tick(int64_t now)
+{
+    uint32_t minute;
+    bool have_now = env_now_minute(now, &minute);
+    uint32_t b = have_now ? minute / 5u : 0;
+    if (!s_air_based) {
+        if (!have_now && !s_env_now_ok) return;
+        uint32_t end = s_env_now_ok ? s_env_now.minute / 5u : 0;
+        if (have_now && b > end + 1) end = b - 1;
+        air_cache_rebuild(end);
+        return;
+    }
+    if (!have_now) return;
+    if (b + 12 < s_air_end) air_cache_rebuild(b);
+    else if (b > s_air_end + 1) air_shift_to(b - 1);
+}
+
+static const char *const s_air_day3[7] = { "SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT" };
+static const char *const s_air_day2[7] = { "SU", "MO", "TU", "WE", "TH", "FR", "SA" };
+
+/*
+ * One series, ready to draw: the day's slots as kept, and "now" -- the
+ * display value, state, trend and warm-up -- from the ring as of this moment,
+ * so a redraw each minute moves "N MIN SO FAR" on without a new reading.
+ */
+static const envui_series_t *air_series(envs_series_t s, int64_t now)
+{
+    envui_series_t *d = &s_air_day[s];
+    bool gas = s == ENVS_VOC || s == ENVS_ECO2;
+    d->series = s;
+
+    /* The day's peak: VOC's from what the records stored, eCO2's its highest
+       5-minute mean, since only TVOC has a stored maximum. The earlier, if it
+       was reached twice. */
+    d->peak_slot = -1;
+    d->peak_value = 0;
+    for (int i = 0; gas && i < ENVUI_SLOTS; i++) {
+        if (!d->valid[i]) continue;
+        int32_t v = s == ENVS_VOC ? s_air_peak[i] : d->slot[i];
+        if (d->peak_slot < 0 || v > d->peak_value) { d->peak_slot = i; d->peak_value = v; }
+    }
+
+    if (s_air_based) {
+        uint32_t last = s_air_end * 5u;          /* the first minute of the last slot */
+        uint32_t mid = last - last % 1440u;
+        d->midnight_slot = ENVUI_SLOTS - 1 - (int)((last - mid) / 5u);
+        d->midnight_day = s_air_day3[timecalc_weekday((int32_t)(mid / 1440u))];
+        d->last_slot_hour = (int)(last % 1440u / 60u);
+    } else {
+        d->midnight_slot = -1;
+        d->midnight_day = NULL;
+        d->last_slot_hour = -1;
+    }
+
+    int32_t v = 0;
+    d->have_now = envs_value(&s_air, s, &v) && air_fresh(s_air_seen_us[s], now);
+    d->now_value = d->have_now ? v : 0;
+    d->state = s_air.state[s];
+    d->trend = envs_trend(&s_air, s, now);
+    d->warming = d->gas_error = false;
+    d->warm_minutes = 0;
+    int minutes = 0;
+    bool error = false;
+    if (gas && air_fresh(s_air_gas_us, now)
+        && envs_gas_warming(&s_air, &minutes, &error, now)) {
+        d->warming = !error;
+        d->gas_error = error;
+        d->warm_minutes = minutes;
+    }
+    return d;
+}
+
+/*
+ * The week grid from the hour counts. A cell is the worst state that lasted
+ * at least three of its twelve 5-minute records -- fifteen minutes -- or all
+ * of them when fewer than three were logged, so an hour of one FAIR record
+ * and nothing else is not called OK. Hours still to come today are blank; the
+ * takeaway counts the hours the grid shows in each state.
+ */
+static void air_week_build(void)
+{
+    envui_week_t *w = &s_air_week;
+    memset(w, 0, sizeof *w);
+    int hour_now = s_air_based ? (int)(s_air_end * 5u % 1440u / 60u) : 23;
+    for (int d = 0; d < 7; d++) {
+        const char *name = s_air_based
+            ? s_air_day2[timecalc_weekday((int32_t)s_air_today - (6 - d))] : "--";
+        w->day[d][0] = name[0];
+        w->day[d][1] = name[1];
+        for (int h = 0; h < 24; h++) {
+            const uint8_t *n = s_air_hours[d][h];
+            int total = n[ENVS_OK] + n[ENVS_FAIR] + n[ENVS_POOR];
+            int need = total < 3 ? total : 3;
+            uint8_t cell;
+            if (d == 6 && h > hour_now)                   cell = ENVUI_CELL_FUTURE;
+            else if (total == 0)                          cell = ENVUI_CELL_NONE;
+            else if (n[ENVS_POOR] >= need)                cell = ENVUI_CELL_POOR;
+            else if (n[ENVS_FAIR] + n[ENVS_POOR] >= need) cell = ENVUI_CELL_FAIR;
+            else                                          cell = ENVUI_CELL_OK;
+            w->cell[d][h] = cell;
+            if (cell == ENVUI_CELL_POOR) w->poor_hours++;
+            if (cell == ENVUI_CELL_FAIR) w->fair_hours++;
+        }
+    }
+}
+
+/*
+ * The order a swipe takes: VOC first, the clock last, wrapping. Not the
+ * enum's order, which is fixed by the cycle-off mask saved in flash (see
+ * pages.h), so envo pages through this list rather than pages_advance.
+ */
+static const page_t s_air_order[] = {
+    PAGE_ROOM_VOC, PAGE_ROOM_CO2, PAGE_ROOM_TEMP, PAGE_ROOM_RH, PAGE_WEEK, PAGE_CLOCK,
+#ifdef ENVO_DEBUG_TEMPS
+    PAGE_TEMPS,             /* die against crystal: a debug build's page */
+#endif
+};
+#define AIR_ORDER_N ((int)(sizeof s_air_order / sizeof s_air_order[0]))
+
+/* The full 24 h chart is up over the reading page. Closed by a tap, by any
+   page change, and whenever the screen sleeps or wakes. */
+static bool s_air_detail;
+
+/* Which reading a page shows, or -1 for a page that is not a reading. */
+static int air_reading_of(page_t p)
+{
+    switch (p) {
+    case PAGE_ROOM_VOC:  return ENVS_VOC;
+    case PAGE_ROOM_CO2:  return ENVS_ECO2;
+    case PAGE_ROOM_TEMP: return ENVS_TEMP;
+    case PAGE_ROOM_RH:   return ENVS_RH;
+    default:             return -1;
+    }
+}
+
+/* The pages envui draws. They redraw on news -- a reading, the minute, a
+   tap -- rather than on pagedefs' refresh timer. */
+static bool air_page(page_t p)
+{
+    return air_reading_of(p) >= 0 || p == PAGE_WEEK;
+}
+
+/* Where a page sits among the pages this board offers, for the page dots. */
+static int air_page_index(page_t p, int *count)
+{
+    int at = -1, n = 0;
+    for (int k = 0; k < AIR_ORDER_N; k++) {
+        if (!(s_pages.available & PAGE_BIT(s_air_order[k]))) continue;
+        if (s_air_order[k] == p) at = n;
+        n++;
+    }
+    *count = n;
+    return at;
+}
+
+/* A swipe or the button: the next page in envo's order (dir 1) or the one
+   before it (-1), wrapping. Any page change closes the full chart. */
+static page_t air_step(int dir, int64_t now)
+{
+    int at = 0;
+    for (int k = 0; k < AIR_ORDER_N; k++)
+        if (s_air_order[k] == s_pages.current) at = k;
+    for (int i = 1; i <= AIR_ORDER_N; i++) {
+        page_t p = s_air_order[((at + dir * i) % AIR_ORDER_N + AIR_ORDER_N) % AIR_ORDER_N];
+        if (s_pages.available & PAGE_BIT(p)) {
+            pages_show(&s_pages, p, now);
+            break;
+        }
+    }
+    s_pages.last_activity_us = now;
+    s_air_detail = false;
+    s_drawn_page = PAGE_COUNT;
+    return s_pages.current;
+}
+
+/* A tap on a reading page opens its full 24 h chart, and a tap on the chart
+   closes it. On the week and the clock a tap only says someone is there. */
+static bool air_tap(int64_t now)
+{
+    s_pages.last_activity_us = now;
+    if (air_reading_of(s_pages.current) < 0) return true;
+    s_air_detail = !s_air_detail;
+    s_drawn_page = PAGE_COUNT;
+    ESP_LOGI(TAG, "tap -> %s", s_air_detail ? "24 h chart" : "reading");
+    return true;
+}
+
+/* The page showing, drawn once per change: from the page-entry switch, which
+   runs when the page changes, a reading lands, the minute turns, or a tap
+   opens or closes the chart. */
+static void air_draw(canvas_t *c, int64_t now)
+{
+    int count, at = air_page_index(s_pages.current, &count);
+    if (s_pages.current == PAGE_WEEK) {
+        air_week_build();
+        envui_week(c, &s_air_week, at, count);
+    } else {
+        int which = air_reading_of(s_pages.current);
+        if (which < 0) return;
+        const envui_series_t *s = air_series((envs_series_t)which, now);
+        if (s_air_detail) envui_detail(c, s);
+        else envui_reading(c, s, at, count);
+    }
+    display_blit();
+}
+
+/*
+ * The clock's line under the digits: the air's verdict, centred, at the
+ * reading pages' word size so it carries as far as they do. Nothing at all
+ * while the gas sensor has not answered for five minutes or has never given
+ * a reading: WARMING UP about a sensor that is not there would be a lie.
+ */
+#define AIR_VERDICT_SIZE 28.0f
+
+static void air_verdict(canvas_t *c, int row)
+{
+    int64_t now = esp_timer_get_time();
+    if (!air_fresh(s_air_gas_us, now)) return;
+    envs_verdict_t v = envs_verdict(&s_air);
+    float y = (float)(row * c->cell_h) + 4.0f;
+    if (v.state == ENVS_WAIT) {
+        /* No verdict: say why, as the gas pages do. envs_verdict waits alike
+           for a chip warming up and one flagging its data invalid, so ask
+           which -- the clock must not say WARMING UP while VOC says GAS
+           ERROR. */
+        bool error = false;
+        if (!envs_gas_warming(&s_air, NULL, &error, now)) return;
+        float w = envui_verdict_wait_width(AIR_VERDICT_SIZE, error);
+        envui_verdict_wait(c, ((float)c->w - w) / 2.0f, y, AIR_VERDICT_SIZE, error);
+        return;
+    }
+    float w = envui_verdict_width(AIR_VERDICT_SIZE, v);
+    envui_verdict(c, ((float)c->w - w) / 2.0f, y, AIR_VERDICT_SIZE, v);
+}
+#endif /* CONFIG_SCREEN_BOARD_TOUCH_LCD_147 */
+
 static void env_sample(int64_t now)
 {
     if (!s_env_ready) return;
@@ -2117,7 +2643,13 @@ static void env_sample(int64_t now)
        board with no clock chip the time does not exist until a Mac says so. */
     {
         static bool filled;
-        if (!filled) { filled = true; env_demo_fill(minute); }
+        if (!filled) {
+            filled = true;
+            env_demo_fill(minute);
+#if CONFIG_SCREEN_BOARD_TOUCH_LCD_147
+            s_air_based = false;        /* air_tick rebuilds the day from the fill */
+#endif
+        }
     }
 #endif
     /*
@@ -2141,13 +2673,25 @@ static void env_sample(int64_t now)
 
     /* Nothing measured the room, so there is nothing to record. A row of
        zeros would chart as a real reading of zero. */
+#if CONFIG_SCREEN_BOARD_TOUCH_LCD_147
+    /* envo records the mean and peak of the 30 s readings since the last
+       record, rather than one more reading: one sample of noise standing for
+       ten is what made the old charts jitter. */
+    if (!air_fold(now, &rec)) return;
+#else
     if (!env_read_averaged(&rec)) return;
+#endif
 
     if (envstore_add(&s_env, &rec)) {
         s_env_last_min = minute;
         s_env_dirty = true;
         s_env_now = rec;
         s_env_now_ok = true;
+#if CONFIG_SCREEN_BOARD_TOUCH_LCD_147
+        s_air_fold_us = now;            /* the next window starts where this one ended */
+        air_cache_add(&rec, true);
+        s_drawn_page = PAGE_COUNT;
+#endif
     }
 }
 
@@ -2225,6 +2769,10 @@ static void env_sdlog(int64_t now)
     memset(&rec, 0, sizeof rec);
     if (!env_read_averaged(&rec)) return;
 
+    /* The same reading feeds the pages, whether or not there is a card to
+       write it to: one sensor read every 30 s serves both. */
+    air_feed(&rec, now);
+
     /* The columns, and what goes empty when, are envstore.h's -- see
        envcsv_line, where they are tested against the header. */
     float die = 0.0f;
@@ -2280,6 +2828,14 @@ static bool field_nap(void)
 }
 #endif /* CONFIG_SCREEN_BOARD_TOUCH_LCD_147 */
 
+#if !CONFIG_SCREEN_BOARD_TOUCH_LCD_147
+/*
+ * The auto-scaled chart pages, for an env board other than envo. envo's own
+ * pages -- one big reading each, on fixed scales -- replaced these on her
+ * (air_draw and envui.c), along with the TREND and pressure pages, the week
+ * that turned over by itself, and the voc_thresh/co2_thresh lines below,
+ * whose place envstate's limits table took.
+ */
 /* Folding the log into the charts. One walk fills all six: reading the
    partition six times to draw three pages would be six times the flash
    traffic for the same answer. */
@@ -2541,6 +3097,7 @@ static void draw_pair(canvas_t *c, int top, int bottom)
 
 static void draw_climate(canvas_t *c) { draw_pair(c, ENV_TEMP, ENV_RH); }
 static void draw_air(canvas_t *c)     { draw_pair(c, ENV_VOC, ENV_CO2); }
+#endif /* !CONFIG_SCREEN_BOARD_TOUCH_LCD_147 */
 #endif /* CONFIG_SCREEN_ENV_ONLY */
 
 /* One line of text, centred on the page. */
@@ -2599,11 +3156,12 @@ static int clock_face(canvas_t *c, const char *buf)
  */
 /*
  * The room, in one line, from the newest logged reading. Empty on a board
- * with no sensor, which is every board but wave.
+ * with no sensor, which is every board but wave -- and on envo, whose clock
+ * shows the air's verdict there instead (air_verdict).
  */
 static bool clock_room_line(char *out, int size)
 {
-#if CONFIG_SCREEN_ENV_ONLY
+#if CONFIG_SCREEN_ENV_ONLY && !CONFIG_SCREEN_BOARD_TOUCH_LCD_147
     if (!s_env_now_ok) return false;
 
     /*
@@ -2651,6 +3209,12 @@ static void draw_clock_extras(canvas_t *c, int first_row)
     int top = first_row > 0 ? first_row : c->rows - 2;
     int last = c->rows - 1;
     if (top > last) return;
+#if CONFIG_SCREEN_BOARD_TOUCH_LCD_147
+    /* envo's line under the digits is the air's verdict, in place of the
+       room line (clock_room_line gives her none). She has no radio, so no
+       weather comes to share the space with it. */
+    air_verdict(c, top);
+#endif
 
     char room[40];
     bool have_room = clock_room_line(room, sizeof room);
@@ -2968,6 +3532,13 @@ static void watch_boot_key(canvas_t *c, int64_t now)
 #define WATCH_ASLEEP()   0
 #define WATCH_FACE_TAP() 0
 #endif
+/* envo takes every tap that is not a wake: a tap is the full chart, never a
+   page turn (air_tap). */
+#if CONFIG_SCREEN_BOARD_TOUCH_LCD_147
+#define ENVO_TAP(now)    air_tap(now)
+#else
+#define ENVO_TAP(now)    0
+#endif
 
 void app_main(void)
 {
@@ -3066,11 +3637,31 @@ void app_main(void)
        after their own sensor/board guards; only the clock survives this
        mask untouched. */
     available &= PAGE_BIT(PAGE_CLOCK);
+#elif CONFIG_SCREEN_BOARD_TOUCH_LCD_147
+    /* envo's readable air: VOC, eCO2, TEMP, HUMIDITY, the WEEK and the CLOCK,
+       in that order (s_air_order; the enum's order is not it). Gone from her:
+       TREND, the pressure page and week (the barometer is off her bus), the
+       week that turned over by itself, and TEMPS, the die against the
+       crystal, which a debug build (ENVO_DEBUG_TEMPS) brings back -- the SD
+       log's die_c column still carries it. */
+    available &= PAGE_BIT(PAGE_ROOM_VOC) | PAGE_BIT(PAGE_ROOM_CO2)
+               | PAGE_BIT(PAGE_ROOM_TEMP) | PAGE_BIT(PAGE_ROOM_RH)
+               | PAGE_BIT(PAGE_WEEK) | PAGE_BIT(PAGE_CLOCK)
+#ifdef ENVO_DEBUG_TEMPS
+               | PAGE_BIT(PAGE_TEMPS)
+#endif
+               ;
+    /* A gas page for a gas sensor that did not answer would be an empty room,
+       as elsewhere; the clock is then home. */
+    if (!s_env_gas) available &= ~(PAGE_BIT(PAGE_ROOM_VOC) | PAGE_BIT(PAGE_ROOM_CO2));
+    /* No menu, so no MENU tab: a swipe pages and a tap opens the full chart. */
+    vw_set_menu_tab(false);
 #else
-    /* envo, and any other short-panel logger: the clock and a page per thing
-       the board can measure, charted from the flash log. This is the NiceMCU
-       envo's mask (061acd7^) brought back -- the clock-only mask above is
-       envio's camera app and must not strip an env logger's pages. */
+    /* Any other short-panel logger (envo has her own mask above): the clock
+       and a page per thing the board can measure, charted from the flash log.
+       This is the NiceMCU envo's mask (061acd7^) brought back -- the
+       clock-only mask above is envio's camera app and must not strip an env
+       logger's pages. */
     available &= PAGE_BIT(PAGE_CLOCK)
                | PAGE_BIT(PAGE_ROOM_TEMP) | PAGE_BIT(PAGE_ROOM_RH)
                | PAGE_BIT(PAGE_ROOM_HPA)
@@ -3267,6 +3858,11 @@ void app_main(void)
                      envstore_capacity(&s_env) / (24 * 60));
         else
             ESP_LOGW(TAG, "room log unavailable; the charts will stay empty");
+#if CONFIG_SCREEN_BOARD_TOUCH_LCD_147
+        /* The ring starts empty and the gases waiting; the day and the week
+           are built from the log by air_tick on the loop's first pass. */
+        envs_init(&s_air);
+#endif
     }
 #endif
 #if HAVE_IMU
@@ -3428,6 +4024,9 @@ void app_main(void)
                 ESP_LOGI(TAG, "tap at %d,%d -> wake", tx, ty);
             } else if (WATCH_FACE_TAP()) {
                 s_pages.last_activity_us = now;
+            } else if (ENVO_TAP(now)) {
+                /* envo: the tap opened or closed the full chart, or on the
+                   week and the clock did nothing but count as activity. */
             } else if ((s_pages.available & PAGE_BIT(PAGE_MENU))
                        && s_pages.current != PAGE_MENU && vw_menu_tab_hit(c, tx, ty)) {
                 pages_show(&s_pages, PAGE_MENU, now);
@@ -3541,10 +4140,20 @@ void app_main(void)
                 if (s_saver || now < s_wake_grace_us || WATCH_ASLEEP()) {
                     s_pages.last_activity_us = now;
                 } else {
+#if CONFIG_SCREEN_BOARD_TOUCH_LCD_147
+                    /* envo turns pages like a book: a swipe left brings the
+                       next page, a swipe right the one before -- the spec's
+                       convention, in her own page order. touch_swipe says -1
+                       for a swipe left. */
+                    page_t p = air_step(swipe < 0 ? 1 : -1, now);
+                    ESP_LOGI(TAG, "swipe %s -> page %d",
+                             swipe < 0 ? "next" : "prev", (int)p);
+#else
                     page_t p = swipe > 0 ? pages_advance(&s_pages, now)
                                          : pages_back(&s_pages, now);
                     ESP_LOGI(TAG, "swipe %s -> page %d",
                              swipe > 0 ? "next" : "prev", (int)p);
+#endif
                     s_auto_jumped = false;
                 }
             }
@@ -3599,10 +4208,18 @@ void app_main(void)
                 s_pages.last_activity_us = now;
                 ESP_LOGI(TAG, "button -> wake");
             } else if (press == BUTTON_PREV) {
+#if CONFIG_SCREEN_BOARD_TOUCH_LCD_147
+                page_t p = air_step(-1, now);           /* in envo's own order */
+#else
                 page_t p = pages_back(&s_pages, now);
+#endif
                 ESP_LOGI(TAG, "button -> back to page %d", (int)p);
             } else {
+#if CONFIG_SCREEN_BOARD_TOUCH_LCD_147
+                page_t p = air_step(1, now);
+#else
                 page_t p = pages_advance(&s_pages, now);
+#endif
                 ESP_LOGI(TAG, "button -> page %d", (int)p);
             }
             s_auto_jumped = false;          /* a press means a person is choosing */
@@ -3611,6 +4228,9 @@ void app_main(void)
 
         templog_sample(now);
         drift_sample(now);
+#if CONFIG_SCREEN_BOARD_TOUCH_LCD_147
+        air_tick(now);
+#endif
 #if CONFIG_SCREEN_ENV_ONLY
         env_sample(now);
 #endif
@@ -3678,6 +4298,11 @@ void app_main(void)
             /* envo logs whether anyone looks or not: the saver is a dark,
                sleeping panel, and a tap brings it back. */
             display_sleep(s_saver);
+            /* The full chart never outlasts the screen, and waking always
+               opens VOC. Only on waking: showing a page counts as activity,
+               and would call the saver straight back off. */
+            s_air_detail = false;
+            if (!s_saver) pages_show(&s_pages, home_page(), now);
 #endif
         }
 #if CONFIG_SCREEN_BOARD_TOUCH_LCD_147
@@ -3777,6 +4402,16 @@ void app_main(void)
                 case PAGE_TODAY:    views_today(c, &s_data); display_blit(); break;
                 case PAGE_SETTINGS: views_settings(c, &s_settings); display_blit(); break;
                 case PAGE_MENU:     views_menu(c, &s_pages, s_cycle_off, s_menu_held); display_blit(); break;
+#if CONFIG_SCREEN_BOARD_TOUCH_LCD_147
+                /* envo's air pages: drawn here, once per change, never per
+                   tick -- air_feed, the minute and a tap each bring them back
+                   through this entry by resetting s_drawn_page. */
+                case PAGE_ROOM_VOC:
+                case PAGE_ROOM_CO2:
+                case PAGE_ROOM_TEMP:
+                case PAGE_ROOM_RH:
+                case PAGE_WEEK:     air_draw(c, now); break;
+#endif
 #if CONFIG_SCREEN_HAVE_CAMERA
                 case PAGE_GALLERY:  draw_gallery(c); break;
 #endif
@@ -3798,7 +4433,7 @@ void app_main(void)
             display_blit();
         }
 
-#if CONFIG_SCREEN_ENV_ONLY
+#if CONFIG_SCREEN_ENV_ONLY && !CONFIG_SCREEN_BOARD_TOUCH_LCD_147
         if (s_pages.current == PAGE_ROOM_TEMP) draw_room(c, ENV_TEMP);
         if (s_pages.current == PAGE_ROOM_RH)   draw_room(c, ENV_RH);
         if (s_pages.current == PAGE_ROOM_HPA)  draw_room(c, ENV_HPA);
@@ -3851,8 +4486,16 @@ void app_main(void)
            keyed off the page transition, not here. */
         if (s_pages.current == PAGE_CAMERA) draw_camera(c);
 #endif
-        /* Pages with ages on them redraw on their own so the ages keep counting. */
+        /* Pages with ages on them redraw on their own so the ages keep counting.
+           envo's air pages are not among them: they redraw on news (see the
+           entry switch above), and pagedefs' timer would redraw the week
+           every second for nothing. */
+#if CONFIG_SCREEN_BOARD_TOUCH_LCD_147
+        if (pd->refresh_us > 0 && now - s_page_drawn_us > pd->refresh_us
+            && !air_page(s_pages.current))
+#else
         if (pd->refresh_us > 0 && now - s_page_drawn_us > pd->refresh_us)
+#endif
             s_drawn_page = PAGE_COUNT;
 
         /* USB-Serial-JTAG drops output when no host is attached, so the boot

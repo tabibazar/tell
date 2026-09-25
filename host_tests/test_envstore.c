@@ -396,7 +396,9 @@ int main(void)
      */
     {
         int header_commas = commas(ENVCSV_HEADER);
-        expect("the header names eight columns", header_commas == 7);
+        expect("the header names nine columns", header_commas == 8);
+        expect("and the newest, aqi, is the last of them",
+               strstr(ENVCSV_HEADER, ",gas_valid,aqi\n") != NULL);
         expect("and is one line", strchr(ENVCSV_HEADER, '\n')
                == ENVCSV_HEADER + strlen(ENVCSV_HEADER) - 1);
 
@@ -421,12 +423,18 @@ int main(void)
                               | ENV_GAS_FLAGS(1) };
         char line[128];
         envcsv_line(line, sizeof line, &full, 2026, 9, 24, 13 * 3600 + 5 * 60 + 30, true, 31.5f);
-        expect("a full line reads as it always did, sign and all",
-               strcmp(line, "2026-09-24T13:05:30,-2.50,68.00,1013.2,85,512,31.5,1\n") == 0);
+        expect("a full line reads as it always did, sign and all, with the aqi last",
+               strcmp(line, "2026-09-24T13:05:30,-2.50,68.00,1013.2,85,512,31.5,1,2\n") == 0);
         env_sample_t gas = { 0, 0, 0, 0, 85, 512, 2, ENV_HAVE_GAS };
         envcsv_line(line, sizeof line, &gas, 2026, 9, 24, 59, false, 0.0f);
         expect("a gas-only line leaves the rest empty, not zero",
-               strcmp(line, "2026-09-24T00:00:59,,,,85,512,,0\n") == 0);
+               strcmp(line, "2026-09-24T00:00:59,,,,85,512,,0,2\n") == 0);
+        /* No gas reading, no index: an aqi of 0 is not one the chip gives,
+           and an empty field says "not measured" where a number would not. */
+        env_sample_t room = { 0, 2250, 6800, 0, 0, 0, 3, ENV_HAVE_TEMP | ENV_HAVE_RH };
+        envcsv_line(line, sizeof line, &room, 2026, 9, 24, 59, true, 30.0f);
+        expect("a line without gas leaves both gas_valid and aqi empty",
+               strcmp(line, "2026-09-24T00:00:59,22.50,68.00,,,,30.0,,\n") == 0);
     }
 
     /*
@@ -438,6 +446,10 @@ int main(void)
     {
         static const char OLD[] =
             "timestamp,temp_c,rh_pct,pressure_hpa,tvoc_ppb,eco2_ppm,die_c";
+        /* The header before aqi was added: what the card holds the morning
+           this is flashed. */
+        static const char PREV[] =
+            "timestamp,temp_c,rh_pct,pressure_hpa,tvoc_ppb,eco2_ppm,die_c,gas_valid";
         char now_hdr[128];
         snprintf(now_hdr, sizeof now_hdr, "%.*s",
                  (int)strlen(ENVCSV_HEADER) - 1, ENVCSV_HEADER);
@@ -466,6 +478,16 @@ int main(void)
         expect("and after a reboot the same day, its successor is found again",
                envcsv_path(path, sizeof path, 2026, 9, 24, fake_head, &fs, &fresh)
                && strcmp(path, "envo/2026-09-24_2.csv") == 0 && !fresh);
+
+        memset(&fs, 0, sizeof fs);
+        fakefs_add(&fs, "envo/2026-09-24.csv", PREV);
+        expect("a file begun without the aqi column is left alone too",
+               envcsv_path(path, sizeof path, 2026, 9, 24, fake_head, &fs, &fresh)
+               && strcmp(path, "envo/2026-09-24_2.csv") == 0 && fresh);
+        fakefs_add(&fs, "envo/2026-09-24_2.csv", OLD);
+        expect("and past a successor with older columns still, to the next",
+               envcsv_path(path, sizeof path, 2026, 9, 24, fake_head, &fs, &fresh)
+               && strcmp(path, "envo/2026-09-24_3.csv") == 0 && fresh);
 
         memset(&fs, 0, sizeof fs);
         fakefs_add(&fs, "envo/2026-09-24.csv", "");
