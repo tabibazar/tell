@@ -1078,6 +1078,7 @@ static int s_restore_fails;
 static uint32_t s_sd_errors;        /* every failure since boot, for the log's count */
 static int s_sd_bad;                /* failures since the card last did what was asked */
 static bool s_sd_worked;            /* the card has done something since this mount */
+static bool s_sd_lost;              /* let go by sd_down, and not mounted again yet */
 
 static bool exists(const char *path)
 {
@@ -1144,7 +1145,7 @@ static void sd_ok(void)
    was mounted once. */
 static const char *sd_state(void)
 {
-    if (!s_sd) return "none";
+    if (!s_sd) return s_sd_lost ? "lost" : "none";
     if (s_sd_bad > 0) return "failing";
     return s_sd_worked ? "ok" : "mounted";
 }
@@ -1169,6 +1170,7 @@ static bool sd_up(int64_t now)
     sd_recover(DAILY_TMP, DAILY_PATH);
     sd_recover(TODAY_TMP, TODAY_PATH);
     s_sd = true;
+    s_sd_lost = false;
     s_sd_bad = 0;
     s_sd_worked = false;
     ESP_LOGI(TAG, "sd: logging to %s", SD_DIR);
@@ -1194,6 +1196,7 @@ static void sd_down(int64_t now)
     ESP_LOGW(TAG, "sd: %d failures in a row; unmounting, and mounting again in a minute", s_sd_bad);
     sd_unmount();
     s_sd = false;
+    s_sd_lost = true;
     s_sd_retry_us = now + SD_RETRY_US;
 }
 
@@ -1394,6 +1397,7 @@ static uint32_t s_logged_sec_tod = UINT32_MAX;
 static int32_t s_logged_min_day = SOUNDLEVEL_NO_DAY;
 static uint32_t s_logged_min_tod = UINT32_MAX;
 static int32_t s_logged_yday = SOUNDLEVEL_NO_DAY;
+static int32_t s_tried_yday = SOUNDLEVEL_NO_DAY;
 
 static void sd_service(int64_t now)
 {
@@ -1426,9 +1430,11 @@ static void sd_service(int64_t now)
         detail_add(&sec, calibrated);
     }
     /* A day that has just closed gets its last line, with its last minute in
-       it, before today's is written; a line that did not go in is tried again
-       next pass, and after a remount if it comes to that. */
-    if (have_yday && yday.day >= 0 && yday.day != s_logged_yday) {
+       it, before today's is written. A line that did not go in is tried again
+       once a minute, not every pass: failing ten times a second would trip
+       sd_down on a card that is otherwise logging. */
+    if (have_yday && yday.day >= 0 && yday.day != s_logged_yday && (yday.day != s_tried_yday || new_min)) {
+        s_tried_yday = yday.day;
         if (daily_put(&yday, calibrated)) s_logged_yday = yday.day;
     }
     if (new_min) {
