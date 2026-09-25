@@ -1585,8 +1585,15 @@ void speaker_app_main(void)
 
     /* The clock chip: the time, and the date if it keeps one. */
     s_rtc = ds3231_init() == ESP_OK;
-    if (!s_rtc || !rtc_take("from the RTC")) ESP_LOGI(TAG, "clock: none yet; waiting for a Mac's sync");
     s_rtc_checked_us = esp_timer_get_time();
+    if (!s_rtc || !rtc_take("from the RTC")) {
+        ESP_LOGI(TAG, "clock: none yet; waiting for a Mac's sync");
+        /* A chip that answered but was not taken -- read in the two seconds
+           either side of midnight, say -- is asked again in ten seconds
+           rather than an hour, which would be an hour with no date and so no
+           log. Only once: a chip with no time says so on every read. */
+        if (s_rtc) s_rtc_checked_us -= RTC_RECHECK_US - 10 * 1000000LL;
+    }
 
     gpio_config_t boot = {
         .pin_bit_mask = 1ULL << PIN_BOOT,
