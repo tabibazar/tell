@@ -12,4 +12,4 @@ wave	28:84:85:55:6e:68	Waveshare ESP32-S3-LCD-1.47B, 320x172 ST7789 SPI + QMI865
 small	68:ee:8f:da:62:28	Adafruit Feather ESP32-S3 TFT (given away 2026-09-11)
 envo	28:84:85:88:1c:3c	Waveshare ESP32-S3-LCD-1.47 JD9853, 172x320 SPI + env sensor array
 envio	a4:cb:8f:d7:70:3c	Waveshare ESP32-S3-Touch-LCD-3.5B, 320x480 AXS15231B QSPI + touch
-watch	80:45:6b:35:11:d4	Waveshare ESP32-S3-Touch-LCD-1.69, 240x280 ST7789V2 SPI + CST816D + QMI8658 + PCF85063
+watch	80:45:6b:35:11:d4	Waveshare ESP32-S3-LCD-1.69 (no touch), 240x280 ST7789V2 SPI + QMI8658 + PCF85063

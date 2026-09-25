@@ -38,13 +38,15 @@ elseif(CONFIG_SCREEN_BOARD_TOUCH_LCD_147)
                        "axp2101.c" "axs_touch.c" "gt911.c" "camera.c"
                        "qmi8658.c" "level.c" "levelbig.c" "particles.c" "shaketimer.c" "pip.c")
 elseif(CONFIG_SCREEN_BOARD_TOUCH_LCD_169)
-    # watch: a Waveshare ESP32-S3-Touch-LCD-1.69, an ST7789V2 standing upright
-    # at 240x280 over SPI (display_st7789.c), a CST816D for touch, a QMI8658
-    # for the sand and raise-to-wake, and a PCF85063 clock (pcf85063.c, which
-    # answers to the ds3231_* names). No PMIC, no card slot, no camera.
+    # watch: a Waveshare ESP32-S3-LCD-1.69 -- the variant WITHOUT touch, as the
+    # PCB says -- an ST7789V2 standing upright at 240x280 over SPI
+    # (display_st7789.c), a QMI8658 for the sand and raise-to-wake, and a
+    # PCF85063 clock (pcf85063.c, which answers to the ds3231_* names). No
+    # touch, so gt911.c stays in as the harmless default, as on wave and lilly.
+    # No PMIC, no card slot, no camera.
     set(BOARD_EXCLUDES "display_rgb.c" "display_jd9853.c" "display_i80.c" "display_axs15231b.c"
                        "axp2101.c" "levelbig.c"
-                       "pip.c" "axs_touch.c" "axs5106l_touch.c" "gt911.c" "sdcard.c" "camera.c")
+                       "pip.c" "axs_touch.c" "axs5106l_touch.c" "sdcard.c" "camera.c")
 elseif(CONFIG_SCREEN_BOARD_WAVESHARE_147B)
     # wave is back: a Waveshare ESP32-S3-LCD-1.47B with an ST7789 over SPI and
     # a QMI8658 soldered on, so she compiles display_st7789.c and the sensor
@@ -101,10 +103,10 @@ list(APPEND BOARD_EXCLUDES "maze.c" "maze_levels.c")
 # unused, on every board.
 list(APPEND BOARD_EXCLUDES "bubblelevel.c")
 
-# The CST816D is watch's alone, and it defines touch_* like every other touch
-# driver, so it is out everywhere else.
+# The CST816D driver is for the Touch variant of watch's board; the unit here
+# has no touch controller, so no board compiles it. Kept for a Touch unit.
+list(APPEND BOARD_EXCLUDES "cst816d_touch.c")
 if(NOT CONFIG_SCREEN_BOARD_TOUCH_LCD_169)
-    list(APPEND BOARD_EXCLUDES "cst816d_touch.c")
     # The analog face and what only it needs -- the vector drawing, its stroke
     # font, the moon's arithmetic -- and watch's power/battery and PCF85063
     # clock are hers alone. The pure ones build on the host for the tests.
@@ -127,9 +129,4 @@ idf_component_register(
     EMBED_FILES ${BOARD_EMBEDS}
     REQUIRES esp_lcd esp_lcd_jd9853 driver esp_driver_ledc esp_driver_i2c esp_driver_spi esp_driver_tsens esp_timer bt nvs_flash esp_event fatfs esp_driver_sdmmc sdmmc esp_driver_usb_serial_jtag esp_driver_gpio esp_adc)
 
-# The CST816D's reset and interrupt lines on watch (Waveshare V2.1 schematic:
-# TP_RST GPIO13, TP_INT GPIO14). Without the reset pulse a controller that has
-# dozed off never answers again that boot.
-if(CONFIG_SCREEN_BOARD_TOUCH_LCD_169)
-    target_compile_definitions(${COMPONENT_LIB} PRIVATE WATCH_TP_RST=13 WATCH_TP_INT=14)
-endif()
+

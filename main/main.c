@@ -154,7 +154,7 @@ static bool claude_busy(const ud_view_t *v, int64_t now)
  * "has touch".
  */
 #if defined(CONFIG_SCREEN_BOARD_CROWPANEL_7) || defined(CONFIG_SCREEN_BOARD_TOUCH_LCD_35B) \
-    || defined(CONFIG_SCREEN_BOARD_TOUCH_LCD_147) || defined(CONFIG_SCREEN_BOARD_TOUCH_LCD_169)
+    || defined(CONFIG_SCREEN_BOARD_TOUCH_LCD_147)
 #define HAVE_TOUCH 1
 #else
 #define HAVE_TOUCH 0

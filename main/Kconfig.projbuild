@@ -39,9 +39,10 @@ config SCREEN_BOARD_TOUCH_LCD_147
         nothing answers on GPIO42/41, that is the board you have.
 
 config SCREEN_BOARD_TOUCH_LCD_169
-    bool "Waveshare ESP32-S3-Touch-LCD-1.69 (ST7789V2 240x280, SPI, portrait)"
+    bool "Waveshare ESP32-S3-LCD-1.69 (ST7789V2 240x280, SPI, portrait)"
     help
-        watch. A small portrait panel with a CST816D touch controller, a
+        watch. The unit is the plain ESP32-S3-LCD-1.69, with NO touch (the
+        symbol's name predates finding that out). A small portrait panel, a
         QMI8658 IMU, a PCF85063 clock and a LiPo charger whose power latch
         (SYS_EN) the firmware must hold high or the board switches itself off
         on battery. Runs a grand-complication analog face and the sand. See
