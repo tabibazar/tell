@@ -90,3 +90,18 @@ phy_init / `model` 960K (speech models) / ota_0 6M / ota_1 6M.
   0x106): a sensor this build does not support, or none fitted.
 - GPIO7 driven as an output early (likely a power/amp enable).
 - Wi-Fi setup mode: softAP "Xiaozhi-F6B1", portal at http://192.168.4.1.
+
+## Identified: Waveshare ESP32-S3-AUDIO-Board
+
+Sold as "Waveshare ESP32-S3 AI Smart Speaker Development Board" (Amazon
+B0FP1VL37J). Wiki: https://www.waveshare.com/wiki/ESP32-S3-AUDIO-Board
+Schematic: https://files.waveshare.com/wiki/ESP32-S3-AUDIO-Board/ESP32-S3-AUDIO-Board_1.1.pdf
+On board: ES8311 codec + amplifier, ES7210 with dual mics, 7x WS2812 ring,
+PCF85063 RTC, TCA9555 IO expander (EXIO), TF card, LiPo charger, BOOT/RST/user
+keys. External: SPI LCD FPC (Waveshare 1.47/2/2.8/3.5 touch LCDs) and a 24-pin
+DVP camera header (OV5640).
+Pins (wiki): LCD CS3 SCK4 BL5 DC7 MISO8 MOSI9 RST=EXIO0; touch on I2C, RST
+EXIO1, INT EXIO2. I2C SDA11 SCL10. I2S MCLK12 SCLK13 LRCK14, DSDIN16 (speaker),
+ASDOUT15 (mics). SD SPI MISO41 MOSI42 SCLK40 CS=EXIO3. Camera D0-D7 on
+2/17/18/39/45-48, HREF1, PCLK 44/19 and XCLK 43/20 (switched by EXIO6),
+PWDN EXIO5. To verify against the schematic before driving anything.
