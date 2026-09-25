@@ -105,3 +105,10 @@ EXIO1, INT EXIO2. I2C SDA11 SCL10. I2S MCLK12 SCLK13 LRCK14, DSDIN16 (speaker),
 ASDOUT15 (mics). SD SPI MISO41 MOSI42 SCLK40 CS=EXIO3. Camera D0-D7 on
 2/17/18/39/45-48, HREF1, PCLK 44/19 and XCLK 43/20 (switched by EXIO6),
 PWDN EXIO5. To verify against the schematic before driving anything.
+
+## Factory backup
+
+Full 16 MB read 2026-09-25 in 1 MB pieces (the USB link dropped once on a
+single 16 MB read): `firmware-backup/speaker/speaker-factory-16MB.bin`
+(git-ignored), sha256 `221c2a435a3e77e43a4852c858b6a50ba38a1cdb82bf7b1cd3a4d4ad33dbbf19`.
+Restore: `esptool.py --chip esp32s3 --port PORT write_flash 0 firmware-backup/speaker/speaker-factory-16MB.bin`.
