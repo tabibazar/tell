@@ -72,5 +72,6 @@ host_tests/test_vector
 host_tests/test_moonphase
 host_tests/test_pcf85063
 host_tests/test_face
+host_tests/test_aafont
 # Face renders are produced by test_face for eyeballing; regenerate, don't keep.
 host_tests/renders/

@@ -49,7 +49,7 @@ the 12x24 bitmap font.
 - **Label** top-left (x 16, top 8), grey, 14 px: VOC / eCO2 est / TEMP / HUMIDITY.
 - **Unit** top-right, right-aligned to 304, grey, 14 px: ppb / ppm / C / %.
   (Amended after the design critique: "ppm, from VOCs" ran into the "eCO2 est"
-  label as one phrase; "est" and FROM VOCS already say where it comes from.)
+  label as one phrase; "est" and FROM VOCs already say where it comes from.)
 - **The number:** vfont ~64 px capital height, white, x 16, readable across a
   room. It shrinks in 2 px steps while wider than 200 px (minimum 40).
   - Quantised by truncation so the last digit is not noise: VOC in steps of 5
@@ -60,7 +60,7 @@ the 12x24 bitmap font.
   - **GOOD** blue `0x04BF`, **FAIR** amber `0xFD40`, **POOR** black on a red
     `0xF8C1` block.
   - The eCO2 page never says GOOD: below its first limit the slot says
-    `FROM VOCS` in grey, 22 px.
+    `FROM VOCs` in grey, 22 px.
   - TEMP and HUMIDITY have no word; the slot is empty.
 - **Trend,** right side (right-aligned to 304, level with the number): an arrow
   (`vec_polygon`) and RISING / FALLING in white 22 px, or STEADY in grey.
@@ -130,7 +130,7 @@ The gas pages show no number:
 ## CLOCK
 
 The existing clock page. Its small sensor line becomes the verdict: "AIR GOOD",
-"VOC FAIR" or "ECO2 POOR", naming the worse gas (VOC on a tie), styled by state.
+"VOC FAIR" or "eCO2 POOR", naming the worse gas (VOC on a tie), styled by state.
 
 ## States: one table drives everything
 

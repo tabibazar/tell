@@ -94,6 +94,98 @@ uint16_t vec_blend(uint16_t dst, uint16_t src, uint8_t alpha)
     return (uint16_t)((r << 11) | (g << 5) | b);
 }
 
+/* ---- blending in linear light -------------------------------------------- */
+
+/*
+ * A 5- or 6-bit channel code's light, as a share of full scale in 0..65535:
+ * (code / max) ^ 2.2. And the codes' midpoints in the ENCODED scale,
+ * ((code + 0.5) / max) ^ 2.2, so that turning light back into a code rounds
+ * the way the eye would rather than the way the light does -- rounded in
+ * light, anything short of half of the first step's light went to black,
+ * though that is most of the way to the step as the eye sees it. Made by
+ *
+ *     python3 -c "m=31; print([round((k/m)**2.2*65535) for k in range(m+1)])"
+ *
+ * and the same with (k + 0.5) for the midpoints, m = 63 for green;
+ * test_aafont.c and test_vector.c check them against pow.
+ */
+static const uint16_t s_lin5[32] = {
+        0,    34,   158,   385,   724,  1184,  1768,  2481,
+     3329,  4313,  5438,  6707,  8122,  9686, 11401, 13270,
+    15295, 17477, 19819, 22322, 24989, 27820, 30818, 33984,
+    37320, 40827, 44506, 48359, 52387, 56592, 60974, 65535,
+};
+
+static const uint16_t s_mid5[31] = {
+        7,    84,   258,   540,   939,  1460,  2108,  2888,
+     3804,  4858,  6055,  7396,  8885, 10525, 12316, 14263,
+    16366, 18628, 21050, 23635, 26384, 29298, 32380, 35631,
+    39052, 42645, 46411, 50351, 54467, 58761, 63232,
+};
+
+static const uint16_t s_lin6[64] = {
+        0,     7,    33,    81,   152,   249,   371,   521,
+      699,   906,  1143,  1409,  1707,  2035,  2396,  2788,
+     3214,  3672,  4164,  4690,  5250,  5845,  6475,  7140,
+     7841,  8578,  9351, 10161, 11007, 11890, 12811, 13770,
+    14766, 15800, 16872, 17983, 19133, 20322, 21550, 22817,
+    24124, 25471, 26858, 28285, 29752, 31260, 32809, 34398,
+    36029, 37701, 39415, 41170, 42967, 44805, 46686, 48610,
+    50575, 52583, 54634, 56728, 58865, 61045, 63268, 65535,
+};
+
+static const uint16_t s_mid6[63] = {
+        2,    18,    54,   113,   197,   307,   443,   607,
+      799,  1021,  1272,  1554,  1867,  2211,  2588,  2997,
+     3439,  3914,  4423,  4966,  5543,  6156,  6803,  7486,
+     8205,  8960,  9751, 10579, 11444, 12346, 13286, 14263,
+    15278, 16331, 17423, 18554, 19723, 20931, 22179, 23466,
+    24793, 26160, 27566, 29014, 30501, 32029, 33599, 35209,
+    36860, 38553, 40287, 42063, 43881, 45741, 47643, 49587,
+    51574, 53604, 55676, 57791, 59950, 62151, 64396,
+};
+
+/* The code whose light is nearest `light` as the eye judges: how many of the
+   n midpoints it has reached. */
+static unsigned encode(const uint16_t *mid, unsigned n, uint32_t light)
+{
+    unsigned lo = 0, hi = n;                /* the answer is in [lo, hi] */
+    while (lo < hi) {
+        unsigned m = (lo + hi) / 2;
+        if (mid[m] <= light) lo = m + 1;
+        else hi = m;
+    }
+    return lo;
+}
+
+static unsigned mix(const uint16_t *lin, const uint16_t *mid, unsigned n,
+                    unsigned d, unsigned s, unsigned a)
+{
+    uint32_t light = ((uint32_t)lin[d] * (255u - a) + (uint32_t)lin[s] * a + 127u) / 255u;
+    return encode(mid, n, light);
+}
+
+uint16_t vec_blend_linear(uint16_t dst, uint16_t src, uint8_t alpha)
+{
+    if (alpha == 0) return dst;
+    if (alpha == 255) return src;
+    unsigned r = mix(s_lin5, s_mid5, 31, dst >> 11, src >> 11, alpha);
+    unsigned g = mix(s_lin6, s_mid6, 63, (dst >> 5) & 0x3Fu, (src >> 5) & 0x3Fu, alpha);
+    unsigned b = mix(s_lin5, s_mid5, 31, dst & 0x1Fu, src & 0x1Fu, alpha);
+    return (uint16_t)((r << 11) | (g << 5) | b);
+}
+
+/* Off unless a caller asks: the watch face was drawn and judged with the
+   codes mixed directly, and stays exactly as it was. */
+static bool s_linear;
+
+bool vec_linear_light(bool on)
+{
+    bool was = s_linear;
+    s_linear = on;
+    return was;
+}
+
 /* Lays `colour` over one pixel by `cov`, the fraction of it the shape covers.
    Callers have already clipped (x, y) to the canvas. */
 static inline void plot(canvas_t *c, int x, int y, float cov, uint16_t colour)
@@ -102,7 +194,8 @@ static inline void plot(canvas_t *c, int x, int y, float cov, uint16_t colour)
     int a = cov >= 1.0f ? 255 : (int)(cov * 255.0f + 0.5f);
     if (a <= 0) return;
     uint16_t *p = &c->fb[(size_t)y * (size_t)c->w + (size_t)x];
-    *p = a >= 255 ? colour : vec_blend(*p, colour, (uint8_t)a);
+    if (a >= 255) *p = colour;
+    else *p = s_linear ? vec_blend_linear(*p, colour, (uint8_t)a) : vec_blend(*p, colour, (uint8_t)a);
 }
 
 /* The coverage of a pixel whose centre is `d` (>= 0) from the centre line of

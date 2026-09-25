@@ -1,18 +1,18 @@
 #include "envui.h"
 
+#include "aafont.h"
 #include "vector.h"
-#include "vfont.h"
 
 #include <math.h>
 #include <stdio.h>
-#include <string.h>
 
 /*
  * The layouts are the spec's, measured off the research mockups
  * (docs/design/envo-ui/mock_rev1.c page_single, mock_rev2.c for the chart and
- * the week). Every y below is the top of the capitals' INK -- for the bitmap
- * font and the stroke font alike -- so two pieces of text said to line up do,
- * whichever font each is in.
+ * the week). Every piece of text is Inter, anti-aliased (aafont.h), and every
+ * y below is the top of its capitals' ink, so two pieces said to line up do,
+ * whichever size each is. Where text of two sizes shares a line, the line is
+ * a baseline -- the capitals' top plus the face's cap -- the way type is set.
  */
 
 #define N ENVUI_SLOTS
@@ -37,41 +37,56 @@
 #define XL 16
 #define XR 304
 
-/* Stroke weight as a share of the size: the big numbers a little lighter,
-   so their counters stay open at 60 px; words at the mockups' 0.15. */
-#define NUM_WT  0.13f
-#define WORD_WT 0.15f
+/*
+ * The faces, by job (aafont.h has what each is and why): six sizes, four
+ * ranks. Labels in the smallest; a secondary line one up; the words that
+ * name a state in the next two; the numbers in the largest two.
+ */
+#define F_LABEL   (&aafont_inter_label)     /* capitals 13: labels, units, axis, key, week */
+#define F_SUB     (&aafont_inter_sub)       /* 17: the trend word, minutes so far, the date */
+#define F_WORD    (&aafont_inter_word)      /* 25: FROM VOCs, NO READING, the chart's word */
+#define F_STATE   (&aafont_inter_state)     /* 32: GOOD / FAIR / POOR, the chart's number */
+#define F_NUMBER  (&aafont_inter_number)    /* 47: the clock's time */
+#define F_READING (&aafont_inter_reading)   /* 57: the reading */
+
+#define DEG "\xC2\xB0"
+#define MINUS "\xE2\x88\x92"                 /* U+2212, in F_LABEL */
+
+/*
+ * The POOR block's word, a weight heavier than the face it stands in for:
+ * black on red reads lighter than white on black at the same weight, and at
+ * the same weight the word on the block looked a size smaller than the white
+ * one beside it (aafont.h). Same capitals, so it stands on the same line.
+ */
+static const aafont_t *knockout(const aafont_t *f)
+{
+    return f == F_LABEL ? &aafont_inter_label_knock : f == F_SUB ? &aafont_inter_sub_knock
+         : f == F_WORD ? &aafont_inter_word_knock : f == F_STATE ? &aafont_inter_state_knock : f;
+}
 
 /* ---- the reading page -------------------------------------------------- */
 
-#define LABEL_CAP    14.0f  /* the bitmap labels' capitals, in px */
 #define R_LABEL_TOP  8
-/* The number: as big as the page allows, ink 27..90 (63 px) at full size.
-   It stands on a fixed ink bottom, so when a wide one shrinks it stays on
-   the same line above its word. */
-#define R_NUM_SIZE   56.0f
-#define R_NUM_MIN    40.0f
-#define R_NUM_MAXW   200.0f
-#define R_NUM_BOTTOM 90.0f
-#define R_NUM_GAP    10.0f  /* between the number and the trend word */
-/* The state word under it, ink 98..130; POOR's block reaches 4 px beyond,
-   94..134, clear of the number above and the strip below. */
-#define R_WORD_SIZE  28.0f
-#define R_WORD_TOP   98.0f
-#define R_WORD_PAD   4.0f
-#define R_NOTE_SIZE  22.0f  /* FROM VOCS, NO READING, the warm-up minutes */
-#define R_NOTE_TOP   101.0f
+/*
+ * The number stands on a fixed baseline, so when a wide one steps down a
+ * size it stays on the same line above its word. At full size its capitals
+ * are rows 33..89, 57 px, where the stroke number's ink was 63.
+ */
+#define R_NUM_BASE   90
+#define R_NUM_MAXW   200
+#define R_NUM_GAP    10     /* between the number and the trend word */
+/* The state word under it, capitals 98..129 and baseline 130; POOR's block
+   reaches 4 px above and below, 94..133, clear of the number above and the
+   strip below, and 6 px either side (block_side). FROM VOCs and NO READING, a
+   size smaller, stand on the same baseline. */
+#define R_WORD_TOP   98
+#define R_WORD_BASE  130
+#define R_WORD_PAD   4
 /* The trend, right-aligned: the arrow at the top of the number's band, the
-   word standing on the number's ink bottom. */
+   word standing on the number's baseline. */
 #define R_ARROW      26.0f
-#define R_ARROW_TOP  30.0f
-#define R_TREND_SIZE 22.0f
-/* Warming up: the message where the number would be. */
-#define R_WARM_SIZE  34.0f
-#define R_WARM_TOP   30.0f
-#define R_SOFAR_TOP  82.0f
 /* The 24 h strip, rows 138..151 over a floor at 152, then its end labels
-   with the page dots between them. */
+   with the page dots between them, on the labels' middle. */
 #define R_STRIP_FLOOR 152
 #define R_STRIP_H     14.0f
 #define R_STRIP_LABEL 156
@@ -80,36 +95,56 @@
 /* ---- the full chart ------------------------------------------------------ */
 
 /* The plot ends 10 px short of the key rather than 7, so the now-dot, 3.5 px
-   in radius, is not read as a bullet on the key word level with it. */
+   in radius, is not read as a bullet on the key word level with it. The key
+   starts where its widest word, GOOD (51 px of ink), ends on the margin. */
 #define D_X0     16
-#define D_X1     246        /* 231 columns of about 6.2 minutes */
+#define D_X1     243        /* 228 columns of about 6.3 minutes */
 #define D_FLOOR  142        /* plot rows 44..141 */
 #define D_H      98.0f
-#define D_KEY_X  256
+#define D_KEY_X  253
 #define D_AXIS   150        /* the time axis labels */
-/* The header, right: number (30, shrinking to 22) and word (22) stand on
-   one baseline, ink bottoms at y 39, as the mockup has them; POOR's block
-   then spans 12..42, clear of the key's POOR under it at 45. */
-#define D_NUM_SIZE   30.0f
-#define D_NUM_MIN    22.0f
-#define D_NUM_BOTTOM 40.0f
-#define D_WORD_SIZE  22.0f
-#define D_WORD_TOP   14.0f
-#define D_WORD_PAD   2.0f
+/*
+ * The header. The title's capitals start at y 8 and the unit under it stands
+ * on y 40; the number on the right spans both, its capitals from 8 to that
+ * same baseline, and the state word beside it stands on it too. POOR's block
+ * then spans 13..41, clear of the key's POOR under it at 45, and the unit's
+ * descenders end on row 43, above the plot; 4 px either side.
+ */
+#define D_TITLE_TOP  8
+#define D_BASE       40
+#define D_WORD_PAD   2
 #define D_ARROW      18.0f
-#define D_ARROW_CY   26.0f
+#define D_ARROW_CY   26.0f  /* between the number's middle and the word's */
 
 /* ---- the week ------------------------------------------------------------ */
 
-/* Rows 16 px apart rather than the mockup's 17, so the hour labels finish at
-   y 154 and the page dots fit under them at the same height as on every
-   other page. The grid ends at x 304 exactly: 43 + 23 * 11 + 9. */
-#define W_GX   43
+/*
+ * Rows 16 px apart rather than the mockup's 17, so the hour labels finish at
+ * y 153 and the page dots fit under them at the same height as on every
+ * other page. The grid starts at x 44, a pixel right of the mockup's 43, so
+ * the widest day, "We" (ink 16..41), clears a full-height cell by two
+ * columns rather than one; its last column is then 305, 44 + 23 * 11 + 9 - 1,
+ * a pixel past the text's margin -- a cell, not a letter, and half-way down
+ * the panel, nowhere near a rounded corner.
+ */
+#define W_GX   44
 #define W_GY   28
 #define W_CW   11
 #define W_CH   16
 #define W_CELL_W 9
 #define W_CELL_H 12
+
+/* ---- the clock ------------------------------------------------------------- */
+
+/*
+ * The date, the time and the verdict, centred, the block of them centred on
+ * the panel: the date's capitals 22..38, the time's 53..99, the verdict's
+ * 118..149. The date sits close over the time, which it belongs to; the
+ * verdict is a line of its own, further off.
+ */
+#define K_DATE_TOP     22
+#define K_TIME_TOP     53
+#define K_VERDICT_TOP  118
 
 /* ---- series ---------------------------------------------------------------- */
 
@@ -128,17 +163,20 @@ typedef struct {
  * offset, no "est", and no comfort word until a trusted one says otherwise.
  *
  * eCO2's reading page says "eCO2 est" over a plain "ppm": the label already
- * says it is an estimate, FROM VOCS says where from in the word's slot, and
+ * says it is an estimate, FROM VOCs says where from in the word's slot, and
  * "ppm, from VOCs" filled the top line from edge to edge, so that label and
  * unit ran together into one phrase. Its chart is titled "eCO2 24H" over
  * "ppm, est.": the header's number and word have to clear both lines, and
  * "est." keeps the estimate named on the one page that has no label.
+ *
+ * A temperature's unit is "°C" now that the type has a degree sign; the
+ * 12x24 font had none, and said "C".
  */
 static const meta_t s_meta[ENVS_N] = {
-    [ENVS_VOC]  = { "VOC",      "ppb", "VOC 24H",      "ppb",       0,    2200, { 0, 0 } },
-    [ENVS_ECO2] = { "eCO2 est", "ppm", "eCO2 24H",     "ppm, est.", 400,  1500, { 0, 0 } },
-    [ENVS_TEMP] = { "TEMP",     "C",   "TEMP 24H",     "C",         1600, 3000, { 2000, 2500 } },
-    [ENVS_RH]   = { "HUMIDITY", "%",   "HUMIDITY 24H", "%",         2000, 8000, { 3000, 6000 } },
+    [ENVS_VOC]  = { "VOC",      "ppb",  "VOC 24H",      "ppb",       0,    2200, { 0, 0 } },
+    [ENVS_ECO2] = { "eCO2 est", "ppm",  "eCO2 24H",     "ppm, est.", 400,  1500, { 0, 0 } },
+    [ENVS_TEMP] = { "TEMP",     DEG "C", "TEMP 24H",    DEG "C",     1600, 3000, { 2000, 2500 } },
+    [ENVS_RH]   = { "HUMIDITY", "%",    "HUMIDITY 24H", "%",         2000, 8000, { 3000, 6000 } },
 };
 
 /* Through int, because an enum with no negative member may be unsigned and a
@@ -239,74 +277,13 @@ static uint16_t zone_colour(const zones_t *z, float y)
 
 /* ---- drawing helpers ------------------------------------------------------ */
 
-/* The bitmap labels are 1x whatever magnification the caller's canvas has;
-   a copy is cheap and leaves theirs alone. */
-static canvas_t at_1x(const canvas_t *c)
+/* The first of `n` faces, largest first, that sets `s` no wider than `maxw`;
+   the last, the smallest, when none does. */
+static const aafont_t *fit(const aafont_t *const *faces, int n, const char *s, int maxw)
 {
-    canvas_t t;
-    canvas_init(&t, c->fb, c->w, c->h, 1);
-    return t;
-}
-
-/* The 12x24 bitmap font. Its capitals' ink is rows 4..17 of the cell. */
-static void text(canvas_t *c, int x, int top, const char *s, uint16_t col)
-{
-    canvas_puts_px(c, x, top - 4, s, col);
-}
-
-static int text_w(const canvas_t *c, const char *s)
-{
-    return c->cell_w * (int)strlen(s);
-}
-
-/* The stroke font, placed by its ink: `x` is the ink's left edge, centre or
-   right edge by `align`, `top` the top of the ink. vfont itself places the
-   centre lines, and the stroke reaches half a weight past them. */
-static float vwidth(float size, float wt, const char *s)
-{
-    vfont_style_t st = { size, wt, 0.0f };
-    return vfont_width(&st, s) + wt;
-}
-
-static void vtext(canvas_t *c, float x, float top, float size, float wt,
-                  int align, uint16_t col, const char *s)
-{
-    vfont_style_t st = { size, wt, 0.0f };
-    float ax = align == VFONT_LEFT ? x + wt / 2 : align == VFONT_RIGHT ? x - wt / 2 : x;
-    vfont_draw(c, &st, ax, top + wt / 2 + size / 2, 0.0f, align, col, s);
-}
-
-/*
- * A unit beside a label. The bitmap font's "%" is an x-height squiggle that
- * reads as "96" at arm's length, so a lone "%" is set in the stroke font at
- * the labels' cap height instead; everything else is bitmap text like the
- * label it sits by. Returns the ink width.
- */
-static int unit(canvas_t *c, int x, int top, const char *s, int align, uint16_t col)
-{
-    if (strcmp(s, "%") == 0) {
-        float wt = 2.0f, w = vwidth(LABEL_CAP, wt, s);
-        vtext(c, (float)x, (float)top, LABEL_CAP, wt, align, col, s);
-        return (int)ceilf(w);
-    }
-    int w = text_w(c, s);
-    text(c, align == VFONT_RIGHT ? x - w : x, top, s, col);
-    return w;
-}
-
-/* Floats to pixel edges, sanely even for a coordinate a caller got wrong:
-   NaN and anything past the panel by miles land just off it. */
-static int edge(float v)
-{
-    if (!(v > -30000.0f)) return -30000;
-    if (v > 30000.0f) return 30000;
-    return (int)floorf(v);
-}
-
-static void block(canvas_t *c, float x0, float y0, float x1, float y1, uint16_t col)
-{
-    int a = edge(x0), b = edge(y0), r = edge(ceilf(x1)), d = edge(ceilf(y1));
-    canvas_fill_rect(c, a, b, r - a, d - b, col);
+    for (int k = 0; k < n - 1; k++)
+        if (aafont_width(faces[k], s) <= maxw) return faces[k];
+    return faces[n - 1];
 }
 
 static void pixel(canvas_t *c, int x, int y, uint16_t col)
@@ -337,30 +314,41 @@ static const char *state_name(envs_state_t st)
     return st == ENVS_OK ? "GOOD" : st == ENVS_FAIR ? "FAIR" : st == ENVS_POOR ? "POOR" : NULL;
 }
 
-/* The width a state word takes, its block included. */
-static float state_width(float size, envs_state_t st, float pad)
+/*
+ * How far POOR's block reaches past the ink at the sides, for a block `pad`
+ * past it above and below: two pixels more. Above and below, the pages have
+ * no room to give -- the reading page's block is boxed in between the number
+ * and the strip -- and a block as tight at the sides as there looked cramped,
+ * its P and R pressed against the edges; the sides are free.
+ */
+static int block_side(int pad) { return pad > 0 ? pad + 2 : 0; }
+
+/* The width a state word takes in `f`, its block included. */
+static int state_width(const aafont_t *f, envs_state_t st, int pad)
 {
     const char *w = state_name(st);
-    if (w == NULL) return 0.0f;
-    return vwidth(size, size * WORD_WT, w) + (st == ENVS_POOR ? 2 * pad : 0.0f);
+    if (w == NULL) return 0;
+    return st == ENVS_POOR ? aafont_width(knockout(f), w) + 2 * block_side(pad) : aafont_width(f, w);
 }
 
 /*
- * A state's word, its left edge at x: GOOD in blue, FAIR in amber, POOR in
- * black on a red block reaching `pad` beyond the ink -- the one state that
- * must be seen from across the room is the one that is a solid patch.
+ * A state's word, what it draws starting at x: GOOD in blue, FAIR in amber,
+ * POOR in black on a red block reaching `pad` beyond the ink above and below
+ * and block_side(pad) at the sides -- the one state that must be seen from
+ * across the room is the one that is a solid patch -- in the knock-out
+ * weight. The letters' overshoot (O is a pixel taller than H) stays inside
+ * the pad.
  */
-static void state_word(canvas_t *c, float x, float top, float size, envs_state_t st, float pad)
+static void state_word(canvas_t *c, const aafont_t *f, int x, int top, envs_state_t st, int pad)
 {
     const char *w = state_name(st);
     if (w == NULL) return;
-    float wt = size * WORD_WT;
     if (st != ENVS_POOR) {
-        vtext(c, x, top, size, wt, VFONT_LEFT, st == ENVS_OK ? COL_GOOD : COL_FAIR, w);
+        aafont_draw(c, f, x, top, w, st == ENVS_OK ? COL_GOOD : COL_FAIR, AAFONT_LEFT);
         return;
     }
-    block(c, x, top - pad, x + state_width(size, st, pad), top + size + wt + pad, COL_POOR);
-    vtext(c, x + pad, top, size, wt, VFONT_LEFT, COL_BG, w);
+    canvas_fill_rect(c, x, top - pad, state_width(f, st, pad), f->cap + 2 * pad, COL_POOR);
+    aafont_draw(c, knockout(f), x + block_side(pad), top, w, COL_BG, AAFONT_LEFT);
 }
 
 /* One arrow, up or down, in an s x s box centred on (cx, cy); its ink is
@@ -377,55 +365,92 @@ static void arrow(canvas_t *c, float cx, float cy, float s, bool up, uint16_t co
     vec_polygon(c, xy, 7, col);
 }
 
-/* The degree sign, which vfont does not have: a ring at the top of the
-   capitals, a little after the number. Returns the width it adds. */
-static float degree_width(float size) { return size * 0.06f + size * 0.22f + size * 0.07f + 0.6f; }
-
-static void degree(canvas_t *c, float x, float top, float size, uint16_t col)
+/*
+ * Numbers are placed by their advance boxes, not their ink. The figures are
+ * tabular, so set that way each digit has its own fixed place, and 19.9 going
+ * to 20.0 changes the digits and nothing else. Placed by the ink, the whole
+ * number moved with its first digit's side bearing -- a leading 4 has 3 px
+ * of it at the reading's size, a 1 has 7 -- and jumped sideways by as much
+ * as the difference whenever that digit changed. The box's edge goes where
+ * the figure that reaches furthest past it lets no ink cross the line: so a
+ * leading 1 stands a few pixels in from the margin, as it would in a column.
+ */
+static int figures_lsb(const aafont_t *f)
 {
-    float r = size * 0.11f, w = size * 0.07f + 0.6f;
-    vec_ring(c, x + size * 0.06f + r + w / 2, top + r + w / 2, r, w, col);
+    int least = 0;
+    for (char d = '0'; d <= '9'; d++) {
+        char one[2] = { d, '\0' };
+        int b = aafont_bearing(f, one);
+        if (d == '0' || b < least) least = b;
+    }
+    return least;
+}
+
+static int figures_rsb(const aafont_t *f)
+{
+    int least = 0;
+    for (char d = '0'; d <= '9'; d++) {
+        char one[2] = { d, '\0' };
+        int b = aafont_advance(f, one) - aafont_bearing(f, one) - aafont_width(f, one);
+        if (d == '0' || b < least) least = b;
+    }
+    return least;
 }
 
 /*
- * What stands after a number: the degree ring for temperature, a percent sign
- * for humidity, or nothing. Humidity's gets one because the reading page's
- * "37" is otherwise a bare number whose unit is a 14 px grey "%" in the
- * corner -- from across the room it could as well be a temperature, and the
- * temperature beside it carries its own ring. Half the number's size, top to
- * top with it, the way a unit is set after a big figure.
+ * A reading as the page sets it, in one of the figure faces: the digits, then
+ * whatever stands after them. For temperature that is the degree sign, which
+ * is in every face and is simply set on the end. For humidity it is a percent
+ * sign, because the reading page's "37" is otherwise a bare number whose unit
+ * is a small grey "%" in the corner -- from across the room it could as well
+ * be a temperature, and the temperature beside it carries its degree sign.
+ * The percent is set a size down, about half the digits' height, top to top
+ * with them, the way a unit is set after a big figure, PCT_GAP past where the
+ * digits' box lets their ink reach -- by the box again, so it holds still.
  */
 typedef enum { SUFFIX_NONE, SUFFIX_DEG, SUFFIX_PCT } suffix_t;
 
-#define PCT_SCALE 0.5f
-#define PCT_GAP   4.0f
+#define PCT_GAP 6
 
-static float suffix_width(float size, suffix_t sx)
+typedef struct {
+    const aafont_t *f, *pf;  /* the digits' face, and the percent sign's */
+    suffix_t sx;
+    char s[24];              /* what is set in f: the digits, and a degree sign */
+    int lead;                /* the pen starts this far left of the margin */
+    int left;                /* the left edge of the ink, from the margin */
+    int digits;              /* the right edge of the digits' ink, likewise */
+    int pct;                 /* the left edge of the percent sign's ink, likewise */
+    int whole;               /* the right edge of everything, likewise */
+    int hang;                /* how far below the capitals' top the suffix reaches */
+} figure_t;
+
+static void figure(figure_t *g, const aafont_t *f, const aafont_t *pf, const char *b, suffix_t sx)
 {
-    if (sx == SUFFIX_DEG) return degree_width(size);
-    if (sx == SUFFIX_PCT) {
-        float ps = size * PCT_SCALE;
-        return PCT_GAP + vwidth(ps, ps * NUM_WT, "%");
-    }
-    return 0.0f;
+    g->f = f;
+    g->pf = pf;
+    g->sx = sx;
+    snprintf(g->s, sizeof g->s, "%s%s", b, sx == SUFFIX_DEG ? DEG : "");
+    /* A minus reaching further left than any figure moves the box rather
+       than cross the margin. */
+    g->lead = figures_lsb(f);
+    int own = aafont_bearing(f, b);
+    if (own < g->lead) g->lead = own;
+    g->left = own - g->lead;
+    g->digits = own + aafont_width(f, b) - g->lead;
+    g->pct = aafont_advance(f, b) - figures_rsb(f) + PCT_GAP - g->lead;
+    g->whole = sx == SUFFIX_DEG ? aafont_bearing(f, g->s) + aafont_width(f, g->s) - g->lead
+             : sx == SUFFIX_PCT ? g->pct + aafont_width(pf, "%")
+             : g->digits;
+    /* Inter's degree sign is a ring on the capitals' top reaching not quite
+       half-way down them; the percent sign is its own face's capitals. */
+    g->hang = sx == SUFFIX_DEG ? (f->cap + 1) / 2 : sx == SUFFIX_PCT ? pf->cap : 0;
 }
 
-/* A number in the stroke font, with its suffix; returns its whole ink width. */
-static float number_width(const char *b, float size, float wt, suffix_t sx)
+static void figure_draw(canvas_t *c, const figure_t *g, int x, int top, uint16_t col)
 {
-    return vwidth(size, wt, b) + suffix_width(size, sx);
-}
-
-static void number(canvas_t *c, float x, float top, float size, float wt, suffix_t sx,
-                   uint16_t col, const char *b)
-{
-    vtext(c, x, top, size, wt, VFONT_LEFT, col, b);
-    float r = x + vwidth(size, wt, b);
-    if (sx == SUFFIX_DEG) degree(c, r, top, size, col);
-    if (sx == SUFFIX_PCT) {
-        float ps = size * PCT_SCALE;
-        vtext(c, r + PCT_GAP, top, ps, ps * NUM_WT, VFONT_LEFT, col, "%");
-    }
+    aafont_draw(c, g->f, x - g->lead, top, g->s, col, AAFONT_LEFT | AAFONT_ADVANCE);
+    if (g->sx == SUFFIX_PCT)
+        aafont_draw(c, g->pf, x + g->pct, top, "%", col, AAFONT_LEFT);
 }
 
 /* How long the gas sensor has been at it. Never a time remaining: the chip
@@ -531,8 +556,8 @@ static void midnight_line(canvas_t *c, const envui_series_t *s, const plot_t *p)
  */
 static void time_axis(canvas_t *c, const envui_series_t *s, const plot_t *p)
 {
-    int now_x = p->x1 + 1 - text_w(c, "NOW");
-    text(c, now_x, D_AXIS, "NOW", COL_WHITE);
+    int now_x = p->x1 + 1 - aafont_width(F_LABEL, "NOW");
+    aafont_draw(c, F_LABEL, now_x, D_AXIS, "NOW", COL_WHITE, AAFONT_LEFT);
 
     bool exact;
     int mid = midnight(s, &exact);
@@ -551,9 +576,10 @@ static void time_axis(canvas_t *c, const envui_series_t *s, const plot_t *p)
         bool is_mid = hour == 0;
         if (!(is_mid && exact)) canvas_fill_rect(c, x, p->floor + 1, 1, 3, COL_GREY);
         const char *lab = is_mid ? day : hour == 6 ? "06" : hour == 12 ? "12" : "18";
-        int w = text_w(c, lab), lx = x - w / 2;
+        /* Centred on the tick's pixel column, its middle at x + 0.5. */
+        int w = aafont_width(F_LABEL, lab), lx = x - (w - 1) / 2;
         if (lx < XL || lx + w > now_x - 4) continue;
-        text(c, lx, D_AXIS, lab, is_mid && exact ? COL_WHITE : COL_GREY);
+        aafont_draw(c, F_LABEL, lx, D_AXIS, lab, is_mid && exact ? COL_WHITE : COL_GREY, AAFONT_LEFT);
     }
 }
 
@@ -703,48 +729,51 @@ static void peak(canvas_t *c, const envui_series_t *s, const plot_t *p)
     /*
      * The number beside the triangle on a black knock-out, on whichever side
      * keeps it 12 px clear of the plot's end, where the now-dot and the key
-     * would otherwise run into it ("1100 POOR"). The knock-out is 16 rows,
-     * one either side of the ink; if a zone line would run through it, the
-     * number drops to just under that line rather than cutting it -- a zone
-     * line with a hole in it is an edge the eye cannot follow across.
+     * would otherwise run into it ("1100 POOR"). The knock-out reaches one
+     * row and two columns past the ink; if a zone line would run through it,
+     * the number drops to just under that line rather than cutting it -- a
+     * zone line with a hole in it is an edge the eye cannot follow across.
      */
     char b[16];
     format_value(s->series, s->peak_value, b, sizeof b);
-    int w = text_w(c, b);
+    int w = aafont_width(F_LABEL, b), cap = F_LABEL->cap;
     int lx = (int)px + 7;
     if (lx + w > p->x1 - 12) lx = (int)px - 7 - w;
-    int ly = (int)py - 16;
+    int ly = (int)py - 3 - cap;
     if (ly < top) ly = top;
     int line[2] = { yline(p, s->series, L->poor), yline(p, s->series, L->fair) };
     for (int k = 0; k < 2; k++)
-        if (line[k] >= ly - 1 && line[k] <= ly + 14) ly = line[k] + 3;
-    canvas_fill_rect(c, lx - 2, ly - 1, w + 4, 16, COL_BG);
-    text(c, lx, ly, b, COL_WHITE);
+        if (line[k] >= ly - 1 && line[k] <= ly + cap) ly = line[k] + 3;
+    canvas_fill_rect(c, lx - 2, ly - 1, w + 4, cap + 2, COL_BG);
+    aafont_draw(c, F_LABEL, lx, ly, b, COL_WHITE, AAFONT_LEFT);
 }
 
 /* The key beside the full chart: each zone's word in its colour, and the
-   two edges' values in grey level with their lines. */
+   two edges' values in grey, centred on their lines. */
 static void key(canvas_t *c, const envui_series_t *s, const plot_t *p)
 {
     char b[16];
+    const aafont_t *f = F_LABEL;
+    int half = f->cap / 2;
     const envs_limits_t *L = is_gas(s->series) ? envs_limits(s->series) : NULL;
     if (L != NULL) {
         int yf = yline(p, s->series, L->fair), yp = yline(p, s->series, L->poor);
-        text(c, D_KEY_X, p->floor - (int)p->h + 1, "POOR", COL_POOR);
+        aafont_draw(c, f, D_KEY_X, p->floor - (int)p->h + 1, "POOR", COL_POOR, AAFONT_LEFT);
         snprintf(b, sizeof b, "%ld", (long)L->poor);
-        text(c, D_KEY_X, yp - 7, b, COL_GREY);
-        text(c, D_KEY_X, (yf + yp) / 2 - 7, "FAIR", COL_FAIR);
+        aafont_draw(c, f, D_KEY_X, yp - half, b, COL_GREY, AAFONT_LEFT);
+        aafont_draw(c, f, D_KEY_X, (yf + yp) / 2 - half, "FAIR", COL_FAIR, AAFONT_LEFT);
         snprintf(b, sizeof b, "%ld", (long)L->fair);
-        text(c, D_KEY_X, yf - 7, b, COL_GREY);
+        aafont_draw(c, f, D_KEY_X, yf - half, b, COL_GREY, AAFONT_LEFT);
         /* eCO2 is never called GOOD: it is estimated from the VOCs, so a low
            one says nothing the VOC page has not. */
-        if (s->series == ENVS_VOC) text(c, D_KEY_X, yf + 14, "GOOD", COL_GOOD);
+        if (s->series == ENVS_VOC)
+            aafont_draw(c, f, D_KEY_X, yf + 14, "GOOD", COL_GOOD, AAFONT_LEFT);
         return;
     }
     const meta_t *m = &s_meta[s->series];
     for (int k = 0; k < 2; k++) {
         snprintf(b, sizeof b, "%ld", (long)(m->ref[k] / 100));
-        text(c, D_KEY_X, yline(p, s->series, m->ref[k]) - 7, b, COL_GREY);
+        aafont_draw(c, f, D_KEY_X, yline(p, s->series, m->ref[k]) - half, b, COL_GREY, AAFONT_LEFT);
     }
 }
 
@@ -796,100 +825,143 @@ static void plot(canvas_t *c, const envui_series_t *s, const plot_t *p)
     if (first < 0) {
         /* Between the two lines, where nothing crosses it, so it needs no
            knock-out to be read. */
-        const char *t = "NO DATA";
-        int w = text_w(c, t), x = (p->x0 + p->x1 + 1) / 2 - w / 2, y = (ya + yb) / 2 - 7;
-        text(c, x, y, t, COL_GREY);
+        aafont_draw(c, F_LABEL, (p->x0 + p->x1 + 1) / 2, (ya + yb) / 2 - F_LABEL->cap / 2,
+                    "NO DATA", COL_GREY, AAFONT_CENTRE);
     }
 }
 
 /* ---- the reading page ---------------------------------------------------- */
 
-/* The trend, right-aligned: an arrow and RISING or FALLING in white, or
-   STEADY in grey alone. Nothing until there is enough history to say.
-   Returns the left edge of what it drew, for the number to keep clear of. */
-static float reading_trend(canvas_t *c, envs_trend_t tr)
+/*
+ * The number's sizes, largest first, and each one's percent sign. It is as
+ * big as fits -- 200 px at most, and clear of the trend word -- and steps
+ * down a size at a time, as the stroke number shrank 2 px at a time.
+ */
+static const aafont_t *const s_num_face[] = { F_READING, F_NUMBER, F_STATE };
+static const aafont_t *const s_pct_face[] = { F_WORD, F_WORD, F_SUB };
+#define NUM_FACES ((int)(sizeof s_num_face / sizeof s_num_face[0]))
+
+/* WARMING UP and GAS ERROR, where the number would be: the state words' size
+   when it fits, the next down when not (WARMING UP is 291 px in it). */
+static const aafont_t *const s_wait_face[] = { F_STATE, F_WORD };
+
+/*
+ * The trend, right-aligned: an arrow and RISING or FALLING in white, or
+ * STEADY in grey alone. Nothing until there is enough history to say. The
+ * arrow is what carries across the room, and keeps its size, at the top of
+ * the number's band; the word under it is the secondary size, standing on
+ * the number's baseline -- set as large as the stroke font set it, Inter's
+ * wider letters left the number beside it no room. Returns the left edge of
+ * what stands level with the number's foot, for the number to keep clear of.
+ */
+static int reading_trend(canvas_t *c, envs_trend_t tr)
 {
-    float wt = R_TREND_SIZE * WORD_WT;
     const char *w = tr == ENVS_RISING ? "RISING" : tr == ENVS_FALLING ? "FALLING"
                   : tr == ENVS_STEADY ? "STEADY" : NULL;
     if (w == NULL) return XR + R_NUM_GAP;
-    float top = R_NUM_BOTTOM - R_TREND_SIZE - wt;
     bool moving = tr != ENVS_STEADY;
+    float top = (float)(R_NUM_BASE - F_READING->cap);
     if (moving)
-        arrow(c, XR - 0.4f * R_ARROW, R_ARROW_TOP + R_ARROW / 2, R_ARROW, tr == ENVS_RISING, COL_WHITE);
-    vtext(c, XR, top, R_TREND_SIZE, wt, VFONT_RIGHT, moving ? COL_WHITE : COL_GREY, w);
-    return XR - vwidth(R_TREND_SIZE, wt, w);
+        arrow(c, XR - 0.4f * R_ARROW, top + R_ARROW / 2, R_ARROW, tr == ENVS_RISING, COL_WHITE);
+    aafont_draw(c, F_SUB, XR, R_NUM_BASE - F_SUB->cap, w, moving ? COL_WHITE : COL_GREY, AAFONT_RIGHT);
+    return XR - aafont_width(F_SUB, w);
 }
 
-void envui_reading(canvas_t *cv, const envui_series_t *s, int page, int pages)
+/*
+ * The reading, as big as fits. Two things limit it: 200 px of ink in all, and
+ * the trend word, which it must stay 10 px clear of. The trend word is low, on
+ * the number's baseline, and a degree or percent sign hangs from the top of
+ * the digits; so where the suffix ends well above the word's capitals, only
+ * the digits need to clear it, and the suffix may stand over the word's
+ * shoulder -- which is what lets "22.5°" keep its size beside STEADY. The
+ * arrow over the word is always clear: 16 + 200 + 10 is well left of it.
+ */
+static void reading_number(canvas_t *c, const envui_series_t *s, int trend_left)
 {
-    canvas_t c = at_1x(cv);
-    canvas_clear(&c);
+    char b[16];
+    format_value(s->series, s->now_value, b, sizeof b);
+    suffix_t sx = s->series == ENVS_TEMP ? SUFFIX_DEG : s->series == ENVS_RH ? SUFFIX_PCT : SUFFIX_NONE;
+    int word_top = R_NUM_BASE - F_SUB->cap;
+    figure_t g;
+    for (int k = 0; k < NUM_FACES; k++) {
+        figure(&g, s_num_face[k], s_pct_face[k], b, sx);
+        int top = R_NUM_BASE - g.f->cap;
+        int low = top + g.hang + 3 <= word_top ? g.digits : g.whole;
+        if (g.whole - g.left <= R_NUM_MAXW && XL + low + R_NUM_GAP <= trend_left) break;
+    }
+    figure_draw(c, &g, XL, R_NUM_BASE - g.f->cap, COL_WHITE);
+}
+
+static void reading_page(canvas_t *c, const envui_series_t *s, int page, int pages)
+{
+    canvas_clear(c);
     if (s == NULL || !series_ok(s->series)) return;
     const meta_t *m = &s_meta[s->series];
 
-    text(&c, XL, R_LABEL_TOP, m->label, COL_GREY);
-    unit(&c, XR, R_LABEL_TOP, m->unit, VFONT_RIGHT, COL_GREY);
+    aafont_draw(c, F_LABEL, XL, R_LABEL_TOP, m->label, COL_GREY, AAFONT_LEFT);
+    aafont_draw(c, F_LABEL, XR, R_LABEL_TOP, m->unit, COL_GREY, AAFONT_RIGHT);
 
+    int band = R_NUM_BASE - F_READING->cap;     /* the top of the number's band */
     if (gas_waiting(s)) {
         /* No number while the chip settles: only how long it has been at it.
            Not under an error: the minutes count from the sensor's start, and
            beneath GAS ERROR a count going up reads as progress that is not
            being made. */
-        vtext(&c, XL, R_WARM_TOP, R_WARM_SIZE, R_WARM_SIZE * WORD_WT, VFONT_LEFT, COL_GREY,
-              wait_text(s->gas_error));
+        const char *t = wait_text(s->gas_error);
+        aafont_draw(c, fit(s_wait_face, 2, t, XR - XL), XL, band, t, COL_GREY, AAFONT_LEFT);
         if (!s->gas_error) {
             char b[24];
             so_far(b, sizeof b, s->warm_minutes);
-            vtext(&c, XL, R_SOFAR_TOP, R_NOTE_SIZE, R_NOTE_SIZE * WORD_WT, VFONT_LEFT, COL_GREY, b);
+            aafont_draw(c, F_SUB, XL, R_NUM_BASE - F_SUB->cap, b, COL_GREY, AAFONT_LEFT);
         }
     } else if (!s->have_now) {
         /* A sensor that is not answering: say so, rather than leave a "--"
            that could as well mean "wait". */
-        vtext(&c, XL, R_NUM_BOTTOM - R_NUM_SIZE * (1 + NUM_WT), R_NUM_SIZE, R_NUM_SIZE * NUM_WT,
-              VFONT_LEFT, COL_GREY, "--");
-        vtext(&c, XL, R_NOTE_TOP, R_NOTE_SIZE, R_NOTE_SIZE * WORD_WT, VFONT_LEFT, COL_GREY, "NO READING");
+        aafont_draw(c, F_READING, XL, band, "--", COL_GREY, AAFONT_LEFT);
+        aafont_draw(c, F_WORD, XL, R_WORD_BASE - F_WORD->cap, "NO READING", COL_GREY, AAFONT_LEFT);
     } else {
-        float trend_left = reading_trend(&c, s->trend);
-
-        /* As big as fits: 200 px at most, and clear of the trend word. */
-        char b[16];
-        format_value(s->series, s->now_value, b, sizeof b);
-        suffix_t sx = s->series == ENVS_TEMP ? SUFFIX_DEG : s->series == ENVS_RH ? SUFFIX_PCT : SUFFIX_NONE;
-        float size = R_NUM_SIZE, wt, w;
-        for (;;) {
-            wt = size * NUM_WT;
-            w = number_width(b, size, wt, sx);
-            if ((w <= R_NUM_MAXW && XL + w + R_NUM_GAP <= trend_left) || size <= R_NUM_MIN) break;
-            size -= 2.0f;
-        }
-        number(&c, XL, R_NUM_BOTTOM - size - wt, size, wt, sx, COL_WHITE, b);
+        reading_number(c, s, reading_trend(c, s->trend));
 
         /* POOR's block starts its pad left of the margin, so its letters line
            up with the number's at x 16 rather than sitting indented under
            it: the block is not text, and nothing there is near a corner. */
         if (s->series == ENVS_ECO2 && s->state == ENVS_OK)
             /* eCO2 is never GOOD: below its first limit it says where it comes from. */
-            vtext(&c, XL, R_NOTE_TOP, R_NOTE_SIZE, R_NOTE_SIZE * WORD_WT, VFONT_LEFT, COL_GREY, "FROM VOCS");
+            aafont_draw(c, F_WORD, XL, R_WORD_BASE - F_WORD->cap, "FROM VOCs", COL_GREY, AAFONT_LEFT);
         else if (is_gas(s->series))
-            state_word(&c, s->state == ENVS_POOR ? XL - R_WORD_PAD : XL, R_WORD_TOP,
-                       R_WORD_SIZE, s->state, R_WORD_PAD);
+            state_word(c, F_STATE, s->state == ENVS_POOR ? XL - block_side(R_WORD_PAD) : XL, R_WORD_TOP,
+                       s->state, R_WORD_PAD);
     }
 
     plot_t p = { XL, XR, R_STRIP_FLOOR, R_STRIP_H, 1.6f, 2.5f, false };
-    plot(&c, s, &p);
-    text(&c, XL, R_STRIP_LABEL, "-24H", COL_GREY);
-    text(&c, XR - text_w(&c, "NOW"), R_STRIP_LABEL, "NOW", COL_GREY);
-    page_dots(&c, page, pages);
+    plot(c, s, &p);
+    aafont_draw(c, F_LABEL, XL, R_STRIP_LABEL, MINUS "24H", COL_GREY, AAFONT_LEFT);
+    aafont_draw(c, F_LABEL, XR, R_STRIP_LABEL, "NOW", COL_GREY, AAFONT_RIGHT);
+    page_dots(c, page, pages);
 }
 
 /* ---- the full chart ------------------------------------------------------ */
 
+/* The header's number, the state words' size stepping down to the next;
+   and the line that says why there is none, from the chart word's size down
+   to the labels' (NO READING beside HUMIDITY 24H has 153 px). */
+static const aafont_t *const s_head_face[] = { F_STATE, F_WORD };
+static const aafont_t *const s_head_msg_face[] = { F_WORD, F_SUB, F_LABEL };
+
+/*
+ * The header's number, right-aligned by its advance box (see figures_lsb) so
+ * that no figure's ink passes `r`: its ink's left edge.
+ */
+static int head_left(const aafont_t *f, const char *t, int r)
+{
+    return r + figures_rsb(f) - aafont_advance(f, t) + aafont_bearing(f, t);
+}
+
 /*
  * The header's right side: the word at the right edge, then the arrow, then
- * the number, which steps down from 30 to 22 px to keep 12 px clear of the
- * title. If it still cannot, the arrow goes -- the reading page behind this
- * one shows the trend in words anyway.
+ * the number, which steps down a size to keep 12 px clear of the title. If
+ * it still cannot, the arrow goes -- the reading page behind this one shows
+ * the trend in words anyway.
  */
 static void detail_header(canvas_t *c, const envui_series_t *s, int title_r)
 {
@@ -897,61 +969,53 @@ static void detail_header(canvas_t *c, const envui_series_t *s, int title_r)
        "--", which at this size is a 4 px smudge that says nothing. */
     if (gas_waiting(s) || !s->have_now) {
         const char *msg = gas_waiting(s) ? wait_text(s->gas_error) : "NO READING";
-        float size = D_WORD_SIZE;
-        while (size > 12.0f && XR - vwidth(size, size * WORD_WT, msg) < (float)title_r) size -= 1.0f;
-        float wt = size * WORD_WT;
-        vtext(c, XR, D_ARROW_CY - (size + wt) / 2, size, wt, VFONT_RIGHT, COL_GREY, msg);
+        const aafont_t *f = fit(s_head_msg_face, 3, msg, XR - title_r);
+        aafont_draw(c, f, XR, D_BASE - f->cap, msg, COL_GREY, AAFONT_RIGHT);
         return;
     }
 
-    float right = XR;
+    int right = XR;
     bool word = is_gas(s->series) && state_name(s->state) != NULL
              && !(s->series == ENVS_ECO2 && s->state == ENVS_OK);
     if (word) {
-        float pad = s->state == ENVS_POOR ? D_WORD_PAD : 0.0f;
-        float x = XR - state_width(D_WORD_SIZE, s->state, pad);
-        state_word(c, x, D_WORD_TOP, D_WORD_SIZE, s->state, pad);
-        right = x - 10.0f;
+        int pad = s->state == ENVS_POOR ? D_WORD_PAD : 0;
+        int x = XR - state_width(F_WORD, s->state, pad);
+        state_word(c, F_WORD, x, D_BASE - F_WORD->cap, s->state, pad);
+        right = x - 10;
     }
 
-    /* The degree ring stays, being part of how a temperature is written; the
-       percent sign does not, the subtitle beside it already saying "%". */
-    char b[16];
+    /* The degree sign stays, being part of how a temperature is written; the
+       percent sign does not, the unit under the title already saying "%". */
+    char b[16], t[24];
     format_value(s->series, s->now_value, b, sizeof b);
-    suffix_t sx = s->series == ENVS_TEMP ? SUFFIX_DEG : SUFFIX_NONE;
+    snprintf(t, sizeof t, "%s%s", b, s->series == ENVS_TEMP ? DEG : "");
     bool moving = s->trend == ENVS_RISING || s->trend == ENVS_FALLING;
     for (int pass = moving ? 0 : 1; pass < 2; pass++) {
-        float r = pass == 0 ? right - D_ARROW * 0.8f - 10.0f : right;
-        float size = D_NUM_SIZE, wt, w;
-        for (;;) {
-            wt = size * WORD_WT;
-            w = number_width(b, size, wt, sx);
-            if (r - w >= (float)title_r || size <= D_NUM_MIN) break;
-            size -= 2.0f;
-        }
-        if (pass == 0 && r - w < (float)title_r) continue;
+        int r = pass == 0 ? right - (int)(D_ARROW * 0.8f) - 10 : right;
+        const aafont_t *f = s_head_face[0];
+        if (head_left(f, t, r) < title_r) f = s_head_face[1];
+        if (pass == 0 && head_left(f, t, r) < title_r) continue;
         if (pass == 0)
-            arrow(c, right - D_ARROW * 0.4f, D_ARROW_CY, D_ARROW, s->trend == ENVS_RISING, COL_WHITE);
-        number(c, r - w, D_NUM_BOTTOM - size - wt, size, wt, sx, COL_WHITE, b);
+            arrow(c, (float)right - D_ARROW * 0.4f, D_ARROW_CY, D_ARROW, s->trend == ENVS_RISING, COL_WHITE);
+        aafont_draw(c, f, r + figures_rsb(f), D_BASE - f->cap, t, COL_WHITE, AAFONT_RIGHT | AAFONT_ADVANCE);
         break;
     }
 }
 
-void envui_detail(canvas_t *cv, const envui_series_t *s)
+static void detail_page(canvas_t *c, const envui_series_t *s)
 {
-    canvas_t c = at_1x(cv);
-    canvas_clear(&c);
+    canvas_clear(c);
     if (s == NULL || !series_ok(s->series)) return;
     const meta_t *m = &s_meta[s->series];
 
     /* The header's right side keeps 12 px clear of the longer of the two
        title lines: its number is tall enough to span both. */
-    text(&c, XL, 8, m->title, COL_WHITE);
-    int tw = text_w(&c, m->title), sw = unit(&c, XL, 24, m->subtitle, VFONT_LEFT, COL_GREY);
-    detail_header(&c, s, XL + (tw > sw ? tw : sw) + 12);
+    int tw = aafont_draw(c, F_LABEL, XL, D_TITLE_TOP, m->title, COL_WHITE, AAFONT_LEFT);
+    int sw = aafont_draw(c, F_LABEL, XL, D_BASE - F_LABEL->cap, m->subtitle, COL_GREY, AAFONT_LEFT);
+    detail_header(c, s, XL + (tw > sw ? tw : sw) + 12);
 
     plot_t p = { D_X0, D_X1, D_FLOOR, D_H, 2.0f, 3.5f, true };
-    plot(&c, s, &p);
+    plot(c, s, &p);
 }
 
 /* ---- the week ------------------------------------------------------------ */
@@ -962,34 +1026,39 @@ void envui_detail(canvas_t *cv, const envui_series_t *s)
  * blue bar, FAIR half a cell of amber, POOR the whole cell in red -- so the
  * height of a mark says how bad before its colour does.
  */
-void envui_week(canvas_t *cv, const envui_week_t *w, int page, int pages)
+static void week_page(canvas_t *c, const envui_week_t *w, int page, int pages)
 {
-    canvas_t c = at_1x(cv);
-    canvas_clear(&c);
+    canvas_clear(c);
     if (w == NULL) return;
 
-    text(&c, XL, 8, "WEEK", COL_WHITE);
+    aafont_draw(c, F_LABEL, XL, 8, "WEEK", COL_WHITE, AAFONT_LEFT);
 
     bool any = false;
     for (int d = 0; d < 7; d++) {
+        /*
+         * The day in upper and lower case, "Mo" for "MO": in Inter a pair of
+         * capitals is up to 28 px, and the column before the grid has 28; in
+         * lower case the widest, "We", is 26 and leaves the grid a gap.
+         */
         char name[3] = { w->day[d][0], w->day[d][1], '\0' };
-        text(&c, XL, W_GY + d * W_CH, name, d == 6 ? COL_WHITE : COL_GREY);
+        if (name[1] >= 'A' && name[1] <= 'Z') name[1] = (char)(name[1] - 'A' + 'a');
+        aafont_draw(c, F_LABEL, XL, W_GY + d * W_CH, name, d == 6 ? COL_WHITE : COL_GREY, AAFONT_LEFT);
         for (int h = 0; h < 24; h++) {
             int x = W_GX + h * W_CW, y = W_GY + d * W_CH + 1;
             switch (w->cell[d][h]) {
             case ENVUI_CELL_NONE:
-                canvas_fill_rect(&c, x + W_CELL_W / 2 - 1, y + W_CELL_H / 2 - 1, 2, 2, COL_RULE);
+                canvas_fill_rect(c, x + W_CELL_W / 2 - 1, y + W_CELL_H / 2 - 1, 2, 2, COL_RULE);
                 break;
             case ENVUI_CELL_OK:
-                canvas_fill_rect(&c, x, y + W_CELL_H - 3, W_CELL_W, 3, COL_GOOD);
+                canvas_fill_rect(c, x, y + W_CELL_H - 3, W_CELL_W, 3, COL_GOOD);
                 any = true;
                 break;
             case ENVUI_CELL_FAIR:
-                canvas_fill_rect(&c, x, y + W_CELL_H - 7, W_CELL_W, 7, COL_FAIR);
+                canvas_fill_rect(c, x, y + W_CELL_H - 7, W_CELL_W, 7, COL_FAIR);
                 any = true;
                 break;
             case ENVUI_CELL_POOR:
-                canvas_fill_rect(&c, x, y, W_CELL_W, W_CELL_H, COL_POOR);
+                canvas_fill_rect(c, x, y, W_CELL_W, W_CELL_H, COL_POOR);
                 any = true;
                 break;
             default:                         /* still to come: nothing */
@@ -1003,36 +1072,68 @@ void envui_week(canvas_t *cv, const envui_week_t *w, int page, int pages)
     int poor = w->poor_hours < 0 ? 0 : w->poor_hours > 7 * 24 ? 7 * 24 : w->poor_hours;
     int fair = w->fair_hours < 0 ? 0 : w->fair_hours > 7 * 24 ? 7 * 24 : w->fair_hours;
     if (poor == 0 && fair == 0) {
-        const char *t = any ? "ALL GOOD" : "NO DATA";
-        text(&c, XR - text_w(&c, t), 8, t, any ? COL_GOOD : COL_GREY);
+        aafont_draw(c, F_LABEL, XR, 8, any ? "ALL GOOD" : "NO DATA", any ? COL_GOOD : COL_GREY,
+                    AAFONT_RIGHT);
     } else {
         int x = XR;
         if (fair > 0) {
             snprintf(b, sizeof b, "FAIR %dH", fair);
-            x -= text_w(&c, b);
-            text(&c, x, 8, b, COL_FAIR);
-            x -= 24;
+            x -= aafont_draw(c, F_LABEL, x, 8, b, COL_FAIR, AAFONT_RIGHT);
+            x -= 16;
         }
         if (poor > 0) {
             snprintf(b, sizeof b, "POOR %dH", poor);
-            text(&c, x - text_w(&c, b), 8, b, COL_POOR);
+            aafont_draw(c, F_LABEL, x, 8, b, COL_POOR, AAFONT_RIGHT);
         }
     }
 
     /* 00 at the grid's left, 06/12/18 centred on the gaps before those
-       hours, 24 at its right. Their ink is 141..154: 3 px under the last
-       row's cells and 5 px over the page dots, so "12" reads as a label on
-       the grid and not as a caption on the dots under it. */
+       hours, 24 at its right -- ending on the margin, a pixel inside the
+       grid's last column. Their ink is 141..153: 3 px under the last row's
+       cells and 6 px over the page dots, so "12" reads as a label on the
+       grid and not as a caption on the dots under it. */
     int ly = W_GY + 7 * W_CH + 1;
-    text(&c, W_GX, ly, "00", COL_GREY);
+    aafont_draw(c, F_LABEL, W_GX, ly, "00", COL_GREY, AAFONT_LEFT);
     const char *mid[] = { "06", "12", "18" };
     for (int k = 0; k < 3; k++) {
         int x = W_GX + (k + 1) * 6 * W_CW - 1;
-        text(&c, x - text_w(&c, mid[k]) / 2, ly, mid[k], COL_GREY);
+        aafont_draw(c, F_LABEL, x, ly, mid[k], COL_GREY, AAFONT_CENTRE);
     }
-    text(&c, XR + 1 - text_w(&c, "24"), ly, "24", COL_GREY);
+    aafont_draw(c, F_LABEL, XR + 1, ly, "24", COL_GREY, AAFONT_RIGHT);
 
-    page_dots(&c, page, pages);
+    page_dots(c, page, pages);
+}
+
+/* ---- the pages, in linear light ----------------------------------------------- */
+
+/*
+ * The marks -- the trace, the arrows, the peak's triangle, the dots -- blend
+ * their edges in linear light, as the type does, rather than vector.c's
+ * default of mixing the codes: that drew an arrow's stem with edges of 139
+ * and 35 where the type beside it would have 194 and 104, so every mark had a
+ * darker, thinner rim than the letters next to it. vector.c is the watch
+ * face's too, and keeps its default for it; envui turns linear light on for
+ * a page and puts back what it found.
+ */
+void envui_reading(canvas_t *c, const envui_series_t *s, int page, int pages)
+{
+    bool was = vec_linear_light(true);
+    reading_page(c, s, page, pages);
+    vec_linear_light(was);
+}
+
+void envui_detail(canvas_t *c, const envui_series_t *s)
+{
+    bool was = vec_linear_light(true);
+    detail_page(c, s);
+    vec_linear_light(was);
+}
+
+void envui_week(canvas_t *c, const envui_week_t *w, int page, int pages)
+{
+    bool was = vec_linear_light(true);
+    week_page(c, w, page, pages);
+    vec_linear_light(was);
 }
 
 /* ---- the verdict ----------------------------------------------------------- */
@@ -1049,12 +1150,12 @@ static bool verdict_has_word(envs_verdict_t v)
 
 static const char *verdict_who(envs_verdict_t v)
 {
-    return v.state == ENVS_OK ? "AIR" : v.worst == ENVS_ECO2 ? "ECO2" : "VOC";
+    return v.state == ENVS_OK ? "AIR" : v.worst == ENVS_ECO2 ? "eCO2" : "VOC";
 }
 
-/* A size the stroke font can draw, and a place near enough the panel to be
-   worth drawing at; anything else draws nothing rather than a stroke a
-   million pixels long. */
+/* A size worth drawing, and a place near enough the panel to be worth
+   drawing at; anything else draws nothing rather than text a million pixels
+   off, or a float turned to an int it does not fit. */
 static bool verdict_size(float *size)
 {
     if (!isfinite(*size) || *size <= 0.0f) return false;
@@ -1068,32 +1169,49 @@ static bool verdict_place(float x, float y)
         && x >= -5000.0f && x <= 5000.0f && y >= -5000.0f && y <= 5000.0f;
 }
 
-void envui_verdict(canvas_t *cv, float x, float y, float size, envs_verdict_t v)
+/* The face whose capitals are nearest `size`, of those that have letters;
+   a tie goes to the smaller. */
+static const aafont_t *verdict_face(float size)
+{
+    static const aafont_t *const faces[] = { F_LABEL, F_SUB, F_WORD, F_STATE };
+    const aafont_t *best = faces[0];
+    for (int k = 1; k < 4; k++)
+        if (fabsf((float)faces[k]->cap - size) < fabsf((float)best->cap - size)) best = faces[k];
+    return best;
+}
+
+/* The POOR block's reach past the ink above and below, an eighth of the
+   capitals: 4 px round the state words, as on the reading page. */
+static int verdict_pad(const aafont_t *f) { return (f->cap + 4) / 8; }
+
+/* Between the name and the word, or the word's block: a word space. */
+static int verdict_gap(const aafont_t *f) { return aafont_advance(f, " "); }
+
+static int nearest(float v) { return (int)floorf(v + 0.5f); }
+
+void envui_verdict(canvas_t *c, float x, float y, float size, envs_verdict_t v)
 {
     if (!verdict_has_word(v)) {
-        envui_verdict_wait(cv, x, y, size, false);
+        envui_verdict_wait(c, x, y, size, false);
         return;
     }
     if (!verdict_size(&size) || !verdict_place(x, y)) return;
-    canvas_t c = at_1x(cv);
-    float wt = size * WORD_WT;
-    const char *who = verdict_who(v);
-    vtext(&c, x, y, size, wt, VFONT_LEFT, COL_WHITE, who);
-    float pad = v.state == ENVS_POOR ? size * 0.2f : 0.0f;
-    state_word(&c, x + vwidth(size, wt, who) + size * 0.6f - pad, y, size, v.state, pad);
+    const aafont_t *f = verdict_face(size);
+    int ix = nearest(x), iy = nearest(y);
+    int ww = aafont_draw(c, f, ix, iy, verdict_who(v), COL_WHITE, AAFONT_LEFT);
+    int pad = v.state == ENVS_POOR ? verdict_pad(f) : 0;
+    state_word(c, f, ix + ww + verdict_gap(f), iy, v.state, pad);
 }
 
 /* The same line's width, worked out the way envui_verdict lays it out, so the
-   clock can centre it under its digits without knowing the stroke font's
-   metrics. */
+   clock can centre it without knowing the type's metrics. */
 float envui_verdict_width(float size, envs_verdict_t v)
 {
     if (!verdict_has_word(v)) return envui_verdict_wait_width(size, false);
     if (!verdict_size(&size)) return 0.0f;
-    float wt = size * WORD_WT;
-    float pad = v.state == ENVS_POOR ? size * 0.2f : 0.0f;
-    return vwidth(size, wt, verdict_who(v)) + size * 0.6f - pad
-         + state_width(size, v.state, pad);
+    const aafont_t *f = verdict_face(size);
+    int pad = v.state == ENVS_POOR ? verdict_pad(f) : 0;
+    return (float)(aafont_width(f, verdict_who(v)) + verdict_gap(f) + state_width(f, v.state, pad));
 }
 
 /*
@@ -1102,15 +1220,58 @@ float envui_verdict_width(float size, envs_verdict_t v)
  * WARMING UP while the VOC page one swipe away said GAS ERROR would be
  * contradicting it, and warming up promises a verdict an error never brings.
  */
-void envui_verdict_wait(canvas_t *cv, float x, float y, float size, bool gas_error)
+void envui_verdict_wait(canvas_t *c, float x, float y, float size, bool gas_error)
 {
     if (!verdict_size(&size) || !verdict_place(x, y)) return;
-    canvas_t c = at_1x(cv);
-    vtext(&c, x, y, size, size * WORD_WT, VFONT_LEFT, COL_GREY, wait_text(gas_error));
+    aafont_draw(c, verdict_face(size), nearest(x), nearest(y), wait_text(gas_error), COL_GREY, AAFONT_LEFT);
 }
 
 float envui_verdict_wait_width(float size, bool gas_error)
 {
     if (!verdict_size(&size)) return 0.0f;
-    return vwidth(size, size * WORD_WT, wait_text(gas_error));
+    return (float)aafont_width(verdict_face(size), wait_text(gas_error));
+}
+
+/* ---- the clock ------------------------------------------------------------- */
+
+/*
+ * envo's clock page. The time is set in the figure face the clock was cut
+ * for and centred by its advance, not its ink, so the digits hold still as
+ * they change: tabular figures give "11:11:11" and "20:08:00" one advance,
+ * though a 1 has less ink than a 0. The date is the secondary size over it.
+ * The verdict is the state words' size, as on the reading pages; a waiting
+ * line too wide for that (WARMING UP) steps down one.
+ */
+void envui_clock(canvas_t *c, const envui_clock_t *k)
+{
+    canvas_clear(c);
+    if (k == NULL) return;
+    int mid = c->w / 2;
+
+    if (k->date != NULL && k->date[0] != '\0') {
+        const aafont_t *f = aafont_width(F_SUB, k->date) <= XR - XL ? F_SUB : F_LABEL;
+        int top = K_DATE_TOP + F_SUB->cap - f->cap;           /* on the same baseline */
+        if (aafont_width(f, k->date) <= XR - XL)
+            aafont_draw(c, f, mid, top, k->date, COL_WHITE, AAFONT_CENTRE);
+        else
+            aafont_draw(c, f, XL, top, k->date, COL_WHITE, AAFONT_LEFT);
+    }
+
+    if (k->time != NULL)
+        aafont_draw(c, F_NUMBER, mid, K_TIME_TOP, k->time, COL_WHITE, AAFONT_CENTRE | AAFONT_ADVANCE);
+
+    if (!k->air) return;
+    float size = (float)F_STATE->cap;
+    int top = K_VERDICT_TOP;
+    if (verdict_has_word(k->verdict)) {
+        float w = envui_verdict_width(size, k->verdict);
+        envui_verdict(c, ((float)c->w - w) / 2.0f, (float)top, size, k->verdict);
+        return;
+    }
+    if (envui_verdict_wait_width(size, k->gas_error) > (float)(XR - XL)) {
+        size = (float)F_WORD->cap;
+        top += F_STATE->cap - F_WORD->cap;                     /* on the same baseline */
+    }
+    float w = envui_verdict_wait_width(size, k->gas_error);
+    envui_verdict_wait(c, ((float)c->w - w) / 2.0f, (float)top, size, k->gas_error);
 }

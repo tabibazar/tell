@@ -3,6 +3,7 @@
 
 #include "canvas.h"
 
+#include <stdbool.h>
 #include <stdint.h>
 
 /*
@@ -48,6 +49,26 @@
 /* `src` laid over `dst` at `alpha` (0 keeps dst exactly, 255 gives src
    exactly), per channel and rounded. */
 uint16_t vec_blend(uint16_t dst, uint16_t src, uint8_t alpha);
+
+/*
+ * The same in linear light. RGB565 codes are gamma-encoded (the panel's
+ * response is close to a 2.2 power), so mixing the codes, as vec_blend does,
+ * lays a colour over black at half coverage as a quarter of its light, not
+ * half: a bright edge on a dark ground comes out too dark and a stroke looks
+ * thinner than its outline. This decodes each channel to light, mixes, and
+ * encodes back, rounding in the encoded scale. It is what aafont.c blends
+ * its type with, so marks drawn this way have the same edges as the text
+ * beside them.
+ */
+uint16_t vec_blend_linear(uint16_t dst, uint16_t src, uint8_t alpha);
+
+/*
+ * Whether the shapes below blend their edges in linear light (true) or by
+ * vec_blend (false, the default -- the watch face was judged that way and
+ * stays exactly as it was). Returns the setting it replaces, so a caller can
+ * put it back. A setting, not a parameter, as the drawing is single-task.
+ */
+bool vec_linear_light(bool on);
 
 /* A straight stroke `width` pixels wide from (x0,y0) to (x1,y1), with round
    caps: every point within width/2 of the segment. A zero-length line is a

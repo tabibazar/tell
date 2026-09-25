@@ -1,6 +1,7 @@
 #include "vector.h"
 
 #include <float.h>
+#include <stdbool.h>
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -138,6 +139,71 @@ static void test_blend(void)
     expect("blend: moves steadily from dst to src", monotone);
     expect("blend: half of white on black is mid grey",
            vec_blend(0x0000, 0xFFFF, 128) == ((16 << 11) | (32 << 5) | 16));
+}
+
+/* ---- blending in linear light -------------------------------------------- */
+
+static double light(unsigned code, unsigned max) { return pow((double)code / max, 2.2); }
+
+/* The two lights mixed, the result encoded and rounded in the encoded scale. */
+static unsigned ref_linear(unsigned d, unsigned s, unsigned a, unsigned max)
+{
+    double l = light(d, max) * (255 - a) / 255.0 + light(s, max) * a / 255.0;
+    return (unsigned)floor(pow(l, 1 / 2.2) * max + 0.5);
+}
+
+static void test_blend_linear(void)
+{
+    /* Every channel pair at every alpha, red (5 bits) and green (6): within a
+       code of the arithmetic, the odd tie in the tables' rounding aside. */
+    long exact = 0, off1 = 0, worse = 0;
+    for (unsigned a = 0; a <= 255; a++)
+        for (unsigned d = 0; d < 64; d++)
+            for (unsigned s = 0; s < 64; s++) {
+                unsigned g = green(vec_blend_linear((uint16_t)(d << 5), (uint16_t)(s << 5), (uint8_t)a));
+                int diff = (int)g - (int)ref_linear(d, s, a, 63);
+                if (diff == 0) exact++; else if (diff == 1 || diff == -1) off1++; else worse++;
+                if (d < 32 && s < 32) {
+                    unsigned r = vec_blend_linear((uint16_t)(d << 11), (uint16_t)(s << 11), (uint8_t)a) >> 11;
+                    diff = (int)r - (int)ref_linear(d, s, a, 31);
+                    if (diff == 0) exact++; else if (diff == 1 || diff == -1) off1++; else worse++;
+                }
+            }
+    printf("     linear blend: %ld exact, %ld one code off, %ld worse\n", exact, off1, worse);
+    expect("linear blend: linear-light arithmetic, never more than a code out", worse == 0);
+    expect("linear blend: exact but for the odd tie", off1 * 1000 < exact);
+    expect("linear blend: alpha 0 keeps dst, 255 gives src",
+           vec_blend_linear(0x1234, 0xFEDC, 0) == 0x1234 && vec_blend_linear(0x1234, 0xFEDC, 255) == 0xFEDC);
+    /* Half-covered white on black: half the light, 0.5^(1/2.2) = 73 % of
+       full code, where mixing the codes gives 50 %. */
+    expect("linear blend: half of white on black is half the light",
+           (vec_blend_linear(0x0000, 0xFFFF, 128) >> 11) == 23);
+
+    /* Off by default, so the watch face is drawn exactly as it always was;
+       on, a shape's edges are the linear blend's; and the switch hands back
+       what it replaced. */
+    expect("linear light is off unless asked for", vec_linear_light(false) == false);
+    reset(0);
+    vec_disc(&cv, 60.0f, 60.0f, 20.3f, 0xFFFF);
+    uint16_t gamma_edge = px(80, 60);
+    int changed = 0, brighter = 1;
+    static uint16_t before[W * H];
+    memcpy(before, cv.fb, sizeof before);
+    bool was = vec_linear_light(true);
+    reset(0);
+    vec_disc(&cv, 60.0f, 60.0f, 20.3f, 0xFFFF);
+    for (int i = 0; i < W * H; i++) {
+        if (cv.fb[i] != before[i]) changed++;
+        if (green(cv.fb[i]) < green(before[i])) brighter = 0;
+    }
+    uint16_t linear_edge = px(80, 60);
+    expect("the switch hands back the setting it replaced", was == false && vec_linear_light(false) == true);
+    printf("     a disc's edge pixel: %04X mixing codes, %04X in linear light\n", gamma_edge, linear_edge);
+    expect("in linear light a white edge over black is brighter, nowhere darker",
+           changed > 0 && brighter && green(linear_edge) > green(gamma_edge));
+    reset(0);
+    vec_disc(&cv, 60.0f, 60.0f, 20.3f, 0xFFFF);
+    expect("and off again, the same pixels as before", memcmp(before, cv.fb, sizeof before) == 0);
 }
 
 /* ---- the pixel convention ---------------------------------------------- */
@@ -807,6 +873,7 @@ static void test_face(void)
 int main(void)
 {
     test_blend();
+    test_blend_linear();
     test_convention();
     test_disc();
     test_ring();

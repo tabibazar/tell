@@ -2604,32 +2604,27 @@ static void air_draw(canvas_t *c, int64_t now)
 }
 
 /*
- * The clock's line under the digits: the air's verdict, centred, at the
- * reading pages' word size so it carries as far as they do. Nothing at all
- * while the gas sensor has not answered for five minutes or has never given
- * a reading: WARMING UP about a sensor that is not there would be a lie.
+ * envo's clock page, drawn whole by envui in the typeface: the date from the
+ * RTC, the time, and under them the air's verdict, at the reading pages'
+ * word size so it carries as far as they do. No weather: she has no radio
+ * for any to come by. And no verdict line at all while the gas sensor has not
+ * answered for five minutes or has never given a reading: WARMING UP about a
+ * sensor that is not there would be a lie.
  */
-#define AIR_VERDICT_SIZE 28.0f
-
-static void air_verdict(canvas_t *c, int row)
+static void air_clock(canvas_t *c, const char *hms)
 {
     int64_t now = esp_timer_get_time();
-    if (!air_fresh(s_air_gas_us, now)) return;
-    envs_verdict_t v = envs_verdict(&s_air);
-    float y = (float)(row * c->cell_h) + 4.0f;
-    if (v.state == ENVS_WAIT) {
+    envui_clock_t k = { s_data.date, hms, false, { ENVS_VOC, ENVS_WAIT }, false };
+    if (air_fresh(s_air_gas_us, now)) {
+        k.verdict = envs_verdict(&s_air);
         /* No verdict: say why, as the gas pages do. envs_verdict waits alike
            for a chip warming up and one flagging its data invalid, so ask
            which -- the clock must not say WARMING UP while VOC says GAS
            ERROR. */
-        bool error = false;
-        if (!envs_gas_warming(&s_air, NULL, &error, now)) return;
-        float w = envui_verdict_wait_width(AIR_VERDICT_SIZE, error);
-        envui_verdict_wait(c, ((float)c->w - w) / 2.0f, y, AIR_VERDICT_SIZE, error);
-        return;
+        k.air = k.verdict.state != ENVS_WAIT
+             || envs_gas_warming(&s_air, NULL, &k.gas_error, now);
     }
-    float w = envui_verdict_width(AIR_VERDICT_SIZE, v);
-    envui_verdict(c, ((float)c->w - w) / 2.0f, y, AIR_VERDICT_SIZE, v);
+    envui_clock(c, &k);
 }
 #endif /* CONFIG_SCREEN_BOARD_TOUCH_LCD_147 */
 
@@ -3107,6 +3102,11 @@ static void centred(canvas_t *c, int row, const char *s, uint16_t colour)
     canvas_puts(c, col < 0 ? 0 : col, row, s, colour);
 }
 
+#if !CONFIG_SCREEN_BOARD_TOUCH_LCD_147
+/* The 12x24 font's clock page, every board's but envo's: hers is envui's
+   (air_clock, which draw_clock calls in their place), and none of what
+   follows up to the saver is compiled for her. */
+
 /*
  * A panel too narrow to hold the weather on one line. Twenty-six columns is
  * one; the CrowPanel's sixty-four is not, and it keeps the layout it has.
@@ -3156,8 +3156,8 @@ static int clock_face(canvas_t *c, const char *buf)
  */
 /*
  * The room, in one line, from the newest logged reading. Empty on a board
- * with no sensor, which is every board but wave -- and on envo, whose clock
- * shows the air's verdict there instead (air_verdict).
+ * with no sensor, which is every board but wave. (envo's clock shows the
+ * air's verdict there instead, and does not come here: air_clock.)
  */
 static bool clock_room_line(char *out, int size)
 {
@@ -3209,12 +3209,6 @@ static void draw_clock_extras(canvas_t *c, int first_row)
     int top = first_row > 0 ? first_row : c->rows - 2;
     int last = c->rows - 1;
     if (top > last) return;
-#if CONFIG_SCREEN_BOARD_TOUCH_LCD_147
-    /* envo's line under the digits is the air's verdict, in place of the
-       room line (clock_room_line gives her none). She has no radio, so no
-       weather comes to share the space with it. */
-    air_verdict(c, top);
-#endif
 
     char room[40];
     bool have_room = clock_room_line(room, sizeof room);
@@ -3247,6 +3241,7 @@ static void draw_clock_extras(canvas_t *c, int first_row)
     for (size_t i = 0; i < n; i++)
         centred(c, top + (int)i, lines[i], PAL_A0);
 }
+#endif /* !CONFIG_SCREEN_BOARD_TOUCH_LCD_147 */
 
 /* Draws the clock somewhere new each minute. Deliberately not random per
    frame: it must hold still while you read it. */
@@ -3284,7 +3279,11 @@ static void draw_clock(canvas_t *c, int64_t now)
         if (s_drawn_second != -2) {
             s_drawn_second = -2;
             canvas_clear(c);
+#if CONFIG_SCREEN_BOARD_TOUCH_LCD_147
+            air_clock(c, "--:--:--");
+#else
             draw_clock_extras(c, clock_face(c, "--:--:--"));
+#endif
             if (s_pages.available & PAGE_BIT(PAGE_MENU)) vw_menu_tab(c);
             display_blit();
         }
@@ -3310,7 +3309,11 @@ static void draw_clock(canvas_t *c, int64_t now)
        on the rest of the screen while only the time ticks. Double-buffered
        through the rotation, so a full clear each second does not flicker. */
     canvas_clear(c);
+#if CONFIG_SCREEN_BOARD_TOUCH_LCD_147
+    air_clock(c, buf);
+#else
     draw_clock_extras(c, clock_face(c, buf));
+#endif
     if (s_pages.available & PAGE_BIT(PAGE_MENU)) vw_menu_tab(c);
     display_blit();
     s_drawn_second = (int)secs;

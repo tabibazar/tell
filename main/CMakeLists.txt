@@ -111,19 +111,24 @@ if(NOT CONFIG_SCREEN_BOARD_TOUCH_LCD_169)
     # watch's power/battery and PCF85063 clock are hers alone. The pure ones
     # build on the host for the tests.
     list(APPEND BOARD_EXCLUDES "face.c" "moonphase.c" "watch.c" "pcf85063.c")
-    # The vector drawing and its stroke font are the face's, and envo's air
-    # pages (envui.c) draw with them too: their big numbers are vfont, their
-    # traces vec_line. Every other board leaves them out.
+    # The stroke font is the face's alone: its numerals and sub-dial words.
+    # envo's pages set their type in Inter now (aafont.c, below).
+    list(APPEND BOARD_EXCLUDES "vfont.c")
+    # The vector drawing is the face's, and envo's air pages draw their marks
+    # with it too -- traces, arrows, page dots. Every other board leaves it out.
     if(NOT CONFIG_SCREEN_BOARD_TOUCH_LCD_147)
-        list(APPEND BOARD_EXCLUDES "vector.c" "vfont.c")
+        list(APPEND BOARD_EXCLUDES "vector.c")
     endif()
 endif()
 
-# envo's readable air -- the limits, state and trend (envstate.c) and the pages
-# drawn from them (envui.c) -- is hers alone. Both are pure and host-tested;
-# no other board compiles them.
+# envo's readable air -- the limits, state and trend (envstate.c), the pages
+# drawn from them (envui.c) and the anti-aliased Inter they are set in
+# (aafont.c, with its faces in font_inter_*.h) -- is hers alone. All three are
+# pure and host-tested; no other board compiles them. The linker would drop
+# the unused faces anyway, but left out here they cost the other boards not
+# even the compile, and their images stay exactly what they were.
 if(NOT CONFIG_SCREEN_BOARD_TOUCH_LCD_147)
-    list(APPEND BOARD_EXCLUDES "envstate.c" "envui.c")
+    list(APPEND BOARD_EXCLUDES "envstate.c" "envui.c" "aafont.c")
 endif()
 
 # watch's moon-page moon (NASA, public domain -- see assets/watch/CREDITS.md),

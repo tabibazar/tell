@@ -4,12 +4,16 @@
 /*
  * envo's air pages, drawn from plain numbers: one big reading per page with a
  * thin 24 h strip under it, the full 24 h chart a tap opens, the week grid,
- * and the clock's one-line verdict.
+ * and the clock page with its one-line verdict.
  *
  * Every scale here is fixed -- the gas zones from envstate's limits table,
  * 16..30 C, 20..80 % -- because the pages this replaces rescaled until sensor
  * noise filled the chart, and a chart whose axis moves cannot be read at a
  * glance. Colour only ever means a state, and a word always goes with it.
+ *
+ * Every word and number is Inter, anti-aliased (aafont.h), in a handful of
+ * sizes that each have one job; the marks -- traces, arrows, dots -- are
+ * vector.c's, their edges blended in linear light as the type's are.
  *
  * Pure: no clock, no hardware, no globals from main.c. The caller builds the
  * structs below from envstate and the flash log; this only draws them, so
@@ -55,9 +59,9 @@ typedef struct {
 } envui_week_t;
 void envui_week(canvas_t *c, const envui_week_t *w, int page, int pages);
 
-/* The clock page's verdict line ("AIR GOOD", "VOC FAIR", "ECO2 POOR"; "WARMING UP"
-   for a verdict of ENVS_WAIT), left-aligned at (x, y top of capitals), capital
-   height `size` px. */
+/* The clock page's verdict line ("AIR GOOD", "VOC FAIR", "eCO2 POOR"; "WARMING UP"
+   for a verdict of ENVS_WAIT), left-aligned at (x, y top of capitals), in the
+   face whose capitals are nearest `size` px: 13, 17, 25 or 32. */
 void envui_verdict(canvas_t *c, float x, float y, float size, envs_verdict_t v);
 /* Its width in px at that size -- the POOR block included -- for centring it. */
 float envui_verdict_width(float size, envs_verdict_t v);
@@ -68,4 +72,20 @@ float envui_verdict_width(float size, envs_verdict_t v);
    both, so the caller asks envs_gas_warming which it is. */
 void envui_verdict_wait(canvas_t *c, float x, float y, float size, bool gas_error);
 float envui_verdict_wait_width(float size, bool gas_error);
+
+/*
+ * The clock page, whole: the date over the time over the air's verdict, each
+ * centred. main.c decides what to say -- the date from the RTC, the time or
+ * "--:--:--" before the clock is set, and whether there is a verdict line at
+ * all (none while the gas sensor has not answered: WARMING UP about a sensor
+ * that is not there would be a lie) -- and this only draws it.
+ */
+typedef struct {
+    const char *date;            /* "Thu 25 Sep 2026"; NULL or "" for none */
+    const char *time;            /* "21:47:09", or "--:--:--" */
+    bool air;                    /* a verdict line at all */
+    envs_verdict_t verdict;      /* ENVS_WAIT: the waiting line instead */
+    bool gas_error;              /* which waiting line: GAS ERROR, or WARMING UP */
+} envui_clock_t;
+void envui_clock(canvas_t *c, const envui_clock_t *k);
 #endif
