@@ -16,6 +16,12 @@
    ESP_OK if the first mount succeeded. Never formats the user's card. */
 esp_err_t sd_mount(void);
 
+/* Unmounts the card, if mounted, and stops the SDMMC host, so the next
+   sd_mount starts over: how a card that was pulled and pushed back in, which
+   the old mount can no longer reach, is found again. Any file still open on
+   it is lost. */
+void sd_unmount(void);
+
 /* Writes `data` (len bytes) to `path`, a path relative to /sdcard (e.g.
    "envio/IMG_20260919_120000.jpg"). Creates any parent directory under
    /sdcard that does not already exist, then creates or truncates the file.

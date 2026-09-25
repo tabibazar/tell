@@ -16,6 +16,7 @@
 static const char *TAG = "sdcard";
 
 static bool s_mounted = false;
+static sdmmc_card_t *s_card;        /* the mounted card, for sd_unmount */
 
 /*
  * SDMMC pins are per board, 1-bit in every case.
@@ -72,9 +73,22 @@ esp_err_t sd_mount(void)
     }
 
     s_mounted = true;
+    s_card = card;
     ESP_LOGI(TAG, "mounted (%lluMB)",
              ((uint64_t)card->csd.capacity * card->csd.sector_size) >> 20);
     return ESP_OK;
+}
+
+void sd_unmount(void)
+{
+    if (!s_mounted) return;
+    esp_err_t err = esp_vfs_fat_sdcard_unmount("/sdcard", s_card);
+    if (err != ESP_OK) ESP_LOGW(TAG, "unmount: %s", esp_err_to_name(err));
+    /* Whatever unmount said, the card it knew is gone: the next sd_mount
+       starts the host and the card from scratch. */
+    s_mounted = false;
+    s_card = NULL;
+    ESP_LOGI(TAG, "unmounted");
 }
 
 /* mkdir, treating "already there" as success -- the normal case once a

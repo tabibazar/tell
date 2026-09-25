@@ -136,14 +136,32 @@ _Static_assert(CHIME_VOLUME <= 60, "the chime's volume is capped at 60");
 #define CHIME_PEAK      0.5f    /* -6 dBFS, on the sine's peak */
 #define AMP_SETTLE_MS   150     /* NS4150B start-up is 120 ms typical */
 #define CHIME_TAIL_MS   60
-#define GATE_HOLD_MS    150     /* after the amp goes off; its shutdown takes 80 */
 #define CHIME_RED_S     60.0f
 #define CHIME_EVERY_US  (10 * 60 * 1000000LL)
+
+/*
+ * The gate stays on until at least 150 ms of audio CAPTURED after the amp
+ * went off has been fed to the meter (the NS4150B's shutdown takes 80). What
+ * is waited is wall time, so it is longer: when the gate lifts, the audio
+ * task can still hold samples captured up to two reads (32 ms) earlier, one
+ * read in its hands and one DMA buffer done and waiting, and a 10 ms tick
+ * can cut a delay short by one tick. 150 + 32 + 10 is under 200.
+ */
+#define GATE_HOLD_MS    150
+#define GATE_WAIT_MS    200
+_Static_assert(GATE_WAIT_MS >= GATE_HOLD_MS + 2 * READ_FRAMES * 1000 / SOUNDLEVEL_FS + 1000 / CONFIG_FREERTOS_HZ,
+               "the gate's wait must cover 150 ms of captured audio");
 
 /* No sound at all from 21:00 to 06:00, whatever the settings say. Fixed, not a
    setting, so nothing sent over BLE can move it. */
 #define QUIET_FROM_H    21
 #define QUIET_TO_H      6
+
+/* How far ahead a chime looks for the quiet hours. From the check to the amp
+   going off is about a second -- 50 ms queued, 150 of settling, 600 of tones,
+   160 of tail and drain -- so a chime that passed the check at 20:59:59.5
+   would still be sounding at 21:00. Five seconds covers it with room over. */
+#define CHIME_AHEAD_S   5
 
 /* ---- shared state --------------------------------------------------------- */
 
@@ -249,40 +267,82 @@ static bool clock_now(int32_t *day, uint32_t *tod)
 }
 
 /*
+ * The date never steps back across midnight by a little.
+ *
+ * Once our clock has passed midnight the meter has closed the old day and
+ * the card has written its last line. Stepping the date back reopens that day
+ * EMPTY -- soundlevel.c starts a fresh day on any change of date -- and the
+ * next minute's daily_put, which replaces a line by its date, writes the
+ * near-empty day over the finished one. The day's figures are gone, and the
+ * next minutes' detail lines land in the wrong day's file.
+ *
+ * The step back has two ordinary causes. The Mac's `!clock` date is taken
+ * before tools/push-clock.sh fetches the weather and waits for the BLE lock,
+ * so it can be up to a minute old when it lands: a push started at 23:59:55
+ * arrives at 00:00:03 carrying yesterday's date. And a sync that corrects a
+ * clock running a few seconds fast lands just after our midnight with a time
+ * just before it. So within MIDNIGHT_GUARD_S after our midnight, a date one
+ * day behind ours is not taken, and a time just before midnight is held at
+ * 00:00:00 of our day instead. A larger error is still corrected: the next
+ * sync, five minutes later, falls outside the window.
+ */
+#define MIDNIGHT_GUARD_S  (5u * 60u)
+
+/*
  * A new time of day, from a Mac's sync or the chip. It carries no date, so
  * the day it belongs to is worked out from where our own clock is: a
  * correction that crosses midnight (23:59:58 set to 00:00:03, or back) moves
- * the day with it rather than leaving the date a day out.
+ * the day with it rather than leaving the date a day out -- except the small
+ * step back just after midnight, which is held at midnight (see above).
  */
 static void clock_set_time(uint32_t secs, int64_t at_us)
 {
     spk_clock_t c = clock_get();
+    secs %= SECS_PER_DAY;
     if (c.have_time && c.have_date) {
         uint64_t was = clock_secs(&c, at_us);
         int32_t day = c.base_day + (int32_t)(was / SECS_PER_DAY);
         uint32_t tod = (uint32_t)(was % SECS_PER_DAY);
-        if (tod >= 18u * 3600u && secs < 6u * 3600u) day++;
-        else if (tod < 6u * 3600u && secs >= 18u * 3600u) day--;
+        if (tod >= 18u * 3600u && secs < 6u * 3600u) {
+            day++;
+        } else if (tod < MIDNIGHT_GUARD_S && secs >= SECS_PER_DAY - MIDNIGHT_GUARD_S) {
+            char hms[9];
+            timecalc_format_hms(secs, hms);
+            ESP_LOGW(TAG, "clock: %s would step the date back across midnight; held at 00:00:00", hms);
+            secs = 0;
+        } else if (tod < 6u * 3600u && secs >= 18u * 3600u) {
+            day--;
+        }
         c.base_day = day;
     }
-    c.base_secs = secs % SECS_PER_DAY;
+    c.base_secs = secs;
     c.base_us = at_us;
     c.have_time = true;
     clock_put(&c);
 }
 
-/* Today's date, as days since 1970; the time of day carries on as it was. */
-static void clock_set_date(int32_t day)
+/*
+ * Today's date, as days since 1970; the time of day carries on as it was.
+ * False, and nothing changes, for a date one day behind ours while ours is
+ * still within MIDNIGHT_GUARD_S of its midnight: a date sent just before
+ * midnight (see above).
+ */
+static bool clock_set_date(int32_t day)
 {
     spk_clock_t c = clock_get();
     int64_t now = esp_timer_get_time();
     if (c.have_time) {
-        c.base_secs = (uint32_t)(clock_secs(&c, now) % SECS_PER_DAY);
+        uint64_t secs = clock_secs(&c, now);
+        if (c.have_date && day == c.base_day + (int32_t)(secs / SECS_PER_DAY) - 1
+            && secs % SECS_PER_DAY < MIDNIGHT_GUARD_S)
+            return false;
+        c.base_secs = (uint32_t)(secs % SECS_PER_DAY);
         c.base_us = now;
     }
     c.base_day = day;
     c.have_date = true;
     clock_put(&c);
+    return true;
 }
 
 /* Is `tod` in the window from `from` o'clock to `to` o'clock? The window may
@@ -295,14 +355,17 @@ static bool in_hours(uint32_t tod, int from, int to)
     return h >= from || h < to;
 }
 
-/* No sound: in the quiet hours, and also whenever the time is not known,
-   since then nobody can say it is not the quiet hours. */
-static bool quiet_now(void)
+/* No sound: in the quiet hours now or `ahead_s` seconds from now, and also
+   whenever the time is not known, since then nobody can say it is not the
+   quiet hours. The window is one stretch of hours and `ahead_s` is seconds,
+   so testing its two ends tests everything between. */
+static bool quiet_within(uint32_t ahead_s)
 {
     int32_t day;
     uint32_t tod;
     if (!clock_now(&day, &tod)) return true;
-    return in_hours(tod, QUIET_FROM_H, QUIET_TO_H);
+    return in_hours(tod, QUIET_FROM_H, QUIET_TO_H)
+        || in_hours((tod + ahead_s) % SECS_PER_DAY, QUIET_FROM_H, QUIET_TO_H);
 }
 
 static void format_date(int32_t day, char out[11])
@@ -480,12 +543,72 @@ static void expander_start(void)
     s_amp_ok = true;
 }
 
-/* The amp. Only the chime calls this, and only when s_amp_ok. */
-static void amp_set(bool on)
+/*
+ * The amp, switched by writing the whole output latch through the driver's
+ * write_output_reg -- the call the boot sequence uses -- and never through
+ * esp_io_expander_set_level. set_level writes only when the driver's cached
+ * latch differs from what it is asked for, and the cache is updated only
+ * after a write that reported success. So an "on" that reported an error but
+ * reached the chip leaves the cache saying off while EXIO8 is high, and the
+ * "off" after it finds nothing to change, writes nothing, returns ESP_OK and
+ * logs nothing: the amp stays on, hissing, for as long as nothing else writes
+ * the latch. write_output_reg always writes, and one that succeeds puts the
+ * cache back in step. Only EXIO8 is an output, so the other fifteen latch
+ * bits do nothing; they stay high, as the boot left them.
+ *
+ * Off may be written whenever the expander is there: it is the latch the
+ * boot wanted, and writing a latch changes no pin's direction. On only when
+ * the boot proved the expander safe (s_amp_ok). True when a write succeeded.
+ */
+#define AMP_TRIES       3
+
+static bool amp_write(bool on)
 {
-    if (!s_io || !s_amp_ok) return;
-    esp_err_t e = esp_io_expander_set_level(s_io, EXIO_AMP, on ? 1 : 0);
-    if (e != ESP_OK) ESP_LOGE(TAG, "amp: EXIO8 %s failed: %s", on ? "high" : "low", esp_err_to_name(e));
+    if (!s_io || (on && !s_amp_ok)) return false;
+    uint32_t latch = on ? 0xFFFF : 0xFFFF & ~(uint32_t)EXIO_AMP;
+    esp_err_t e = ESP_FAIL;
+    for (int i = 0; i < AMP_TRIES && e != ESP_OK; i++) e = s_io->write_output_reg(s_io, latch);
+    if (e != ESP_OK)
+        ESP_LOGE(TAG, "amp: EXIO8 %s failed %d times: %s", on ? "high" : "low", AMP_TRIES, esp_err_to_name(e));
+    return e == ESP_OK;
+}
+
+/*
+ * The amp off, and proved off: the latch written, then EXIO8 read back from
+ * the chip's input register, which gives the pin's own level whether it is an
+ * input or an output. get_level reads that register over I2C every time; only
+ * the output and direction registers are cached. If the pin will not read
+ * low here, the watch in keys_poll goes on trying every 100 ms.
+ */
+static void amp_off(void)
+{
+    if (!s_io) return;
+    for (int i = 0; i < AMP_TRIES; i++) {
+        uint32_t lv = EXIO_AMP;
+        if (amp_write(false) && esp_io_expander_get_level(s_io, EXIO_AMP, &lv) == ESP_OK && lv == 0) return;
+    }
+    ESP_LOGE(TAG, "amp: EXIO8 not proved low after the chime; the key poll keeps at it");
+}
+
+/*
+ * The watch over EXIO8, from keys_poll's read of all sixteen inputs. The
+ * chime runs start to finish inside one pass of the control task, the same
+ * task that polls the keys, so whenever this runs no chime is playing and the
+ * pin must read low. If it does not, the latch is written low again, and the
+ * log says so: once, then once a second for as long as it stays high.
+ */
+static uint32_t s_amp_high;
+
+static void amp_watch(uint32_t inputs)
+{
+    if (!(inputs & EXIO_AMP)) {
+        s_amp_high = 0;
+        return;
+    }
+    if (s_amp_high++ % 10 == 0)
+        ESP_LOGE(TAG, "amp: EXIO8 reads HIGH with no chime playing (%u polls); forcing it low",
+                 (unsigned)s_amp_high);
+    amp_write(false);
 }
 
 /* ---- boot step 3: the codecs ---------------------------------------------- */
@@ -894,10 +1017,12 @@ static bool rtc_take(const char *why)
     if (secs < 2 || secs > SECS_PER_DAY - 3) return false;
     bool dated = ds3231_read_date(&d);
     clock_set_time(secs, esp_timer_get_time());
-    if (dated) clock_set_date(timecalc_days(d.year, d.month, d.day));
+    bool kept = dated && !clock_set_date(timecalc_days(d.year, d.month, d.day));
     char hms[9];
     timecalc_format_hms(secs, hms);
-    if (dated) ESP_LOGI(TAG, "clock %s: %04d-%02d-%02d %s", why, d.year, d.month, d.day, hms);
+    if (kept) ESP_LOGW(TAG, "clock %s: %s, but its date %04d-%02d-%02d is a day behind ours just after "
+                            "midnight; ours is kept", why, hms, d.year, d.month, d.day);
+    else if (dated) ESP_LOGI(TAG, "clock %s: %04d-%02d-%02d %s", why, d.year, d.month, d.day, hms);
     else ESP_LOGI(TAG, "clock %s: %s, but the chip has no date; the card waits for a Mac", why, hms);
     return true;
 }
@@ -943,11 +1068,16 @@ static void rtc_service(int64_t now)
 #define DAILY_HEADER    "date,laeq_day_so_far,lday_07_19,levening_19_23,lnight_23_07,max,l90,red_minutes,cal\n"
 #define DETAIL_BATCH    10          /* lines held before a write: one write every 10 s */
 #define SD_RETRY_US     (60 * 1000000LL)
+#define SD_BAD_MAX      3           /* failures in a row before the card is let go and mounted again */
+#define SD_RESTORE_TRIES (2 * SD_BAD_MAX)
 
 static bool s_sd;                   /* mounted, with speaker/ there */
 static int64_t s_sd_retry_us;
-static bool s_restored;             /* today.bin has been looked at, once */
-static uint32_t s_sd_errors;
+static bool s_restored;             /* today.bin has been read, or found absent: once per boot */
+static int s_restore_fails;
+static uint32_t s_sd_errors;        /* every failure since boot, for the log's count */
+static int s_sd_bad;                /* failures since the card last did what was asked */
+static bool s_sd_worked;            /* the card has done something since this mount */
 
 static bool exists(const char *path)
 {
@@ -955,36 +1085,75 @@ static bool exists(const char *path)
     return stat(path, &st) == 0;
 }
 
+/* 1 when `path` is there, 0 when it is not, -1 when the card could not say. */
+static int present(const char *path)
+{
+    struct stat st;
+    if (stat(path, &st) == 0) return 1;
+    return errno == ENOENT ? 0 : -1;
+}
+
 /* FAT's rename will not replace a file, so the old one goes first. If power
-   fails between the two, the new one is left under the temporary name, and
-   sd_recover puts it in place at the next mount. */
+   fails between the two, or the rename fails after the remove worked, the new
+   one is left under the temporary name, and sd_recover puts it in place. */
 static bool swap_in(const char *tmp, const char *path)
 {
     if (remove(path) != 0 && errno != ENOENT) return false;
     return rename(tmp, path) == 0;
 }
 
-static void sd_recover(const char *tmp, const char *path)
+/*
+ * A replace cut short. A temporary file with no file of the real name beside
+ * it is the only copy there is, so it is put in place; one WITH the real file
+ * beside it never finished writing, and goes.
+ *
+ * Run at every mount, and again before every replace: the next replace opens
+ * the temporary name with "w", which would empty a lone temporary file -- the
+ * whole of daily.csv, after a swap_in whose remove worked and whose rename did
+ * not. False when that lone file could not be put in place (or the card could
+ * not say whether there is one), and so must not be written over.
+ */
+static bool sd_recover(const char *tmp, const char *path)
 {
-    if (!exists(tmp)) return;
-    if (!exists(path)) {
-        ESP_LOGW(TAG, "sd: %s was mid-replace; finishing it", path);
-        rename(tmp, path);
-    } else {
+    int t = present(tmp);
+    if (t == 0) return true;
+    int p = t < 0 ? -1 : present(path);
+    if (p < 0) return false;
+    if (p > 0) {
         remove(tmp);                /* a replace that never finished writing */
+        return true;
     }
+    ESP_LOGW(TAG, "sd: %s was mid-replace; finishing it", path);
+    return rename(tmp, path) == 0;
 }
 
 static void sd_fail(const char *what)
 {
+    s_sd_bad++;
     if (s_sd_errors++ % 30 == 0)
         ESP_LOGE(TAG, "sd: %s failed: %s (%u so far)", what, strerror(errno), (unsigned)s_sd_errors);
 }
 
+static void sd_ok(void)
+{
+    s_sd_bad = 0;
+    s_sd_worked = true;
+}
+
+/* The card as the serial line shows it: what it last did, not merely that it
+   was mounted once. */
+static const char *sd_state(void)
+{
+    if (!s_sd) return "none";
+    if (s_sd_bad > 0) return "failing";
+    return s_sd_worked ? "ok" : "mounted";
+}
+
 /*
- * The card, mounted once and then left. With no card, sd_mount fails and
- * says so, and saying it every second would fill the log; so a failure is
- * retried once a minute, and a card pushed in later is found then.
+ * The card, mounted when first seen and let go when it stops answering. With
+ * no card, sd_mount fails and says so, and saying it every second would fill
+ * the log; so a failure is retried once a minute, and a card pushed in later
+ * is found then.
  */
 static bool sd_up(int64_t now)
 {
@@ -994,13 +1163,38 @@ static bool sd_up(int64_t now)
     if (sd_mount() != ESP_OK) return false;
     if (mkdir(SD_DIR, 0775) != 0 && errno != EEXIST) {
         sd_fail("mkdir speaker/");
+        sd_unmount();               /* so the next try starts the card over */
         return false;
     }
     sd_recover(DAILY_TMP, DAILY_PATH);
     sd_recover(TODAY_TMP, TODAY_PATH);
     s_sd = true;
+    s_sd_bad = 0;
+    s_sd_worked = false;
     ESP_LOGI(TAG, "sd: logging to %s", SD_DIR);
     return true;
+}
+
+/*
+ * A card that stops answering is unmounted and mounted again, not written to
+ * for ever. Pulling the card is the only way to read the logs -- there is no
+ * Wi-Fi and BLE only listens -- and a card pushed back in is a new card to the
+ * SDMMC host, which the old mount can never reach: every open fails with EIO
+ * until the host starts over. So after SD_BAD_MAX failures in a row the card
+ * is let go, and sd_up's retry a minute later mounts it again and finishes any
+ * replace the pull cut in half.
+ *
+ * today.bin is NOT read again after a remount. The day in memory already
+ * holds all it held and everything since, and soundlevel_restore_day adds into
+ * a day counting the same date, so a second restore would count the morning
+ * twice (soundlevel.h: "twice adds twice").
+ */
+static void sd_down(int64_t now)
+{
+    ESP_LOGW(TAG, "sd: %d failures in a row; unmounting, and mounting again in a minute", s_sd_bad);
+    sd_unmount();
+    s_sd = false;
+    s_sd_retry_us = now + SD_RETRY_US;
 }
 
 /* A level for a CSV field: one decimal, or empty when there is none. */
@@ -1029,6 +1223,7 @@ static void detail_flush(void)
         bool ok = (!fresh || fputs(DETAIL_HEADER, f) >= 0)
                && fwrite(s_detail, 1, s_detail_len, f) == s_detail_len;
         if (fclose(f) != 0 || !ok) sd_fail("detail write");
+        else sd_ok();
     } else {
         sd_fail("detail open");
     }
@@ -1058,9 +1253,12 @@ static void detail_add(const soundlevel_report_t *r, bool calibrated)
  * One day's line in daily.csv, put in place of whatever that date had. The
  * file is copied to daily.tmp with the line replaced (or added at the end),
  * then swapped in, so a power cut leaves either the old file or the new one,
- * never half of each. Past days' lines are copied as they are.
+ * never half of each. Past days' lines are copied as they are -- and if they
+ * cannot be (daily.csv there but not readable, a lone daily.tmp that will not
+ * go back in place), nothing is replaced, since a file of only today's line
+ * put in its place would be every past day gone. True when the line is in.
  */
-static void daily_put(const soundlevel_report_t *r, bool calibrated)
+static bool daily_put(const soundlevel_report_t *r, bool calibrated)
 {
     char date[11], a[12], b[12], c[12], d[12], e[12], f[12], line[160];
     format_date(r->day, date);
@@ -1069,14 +1267,23 @@ static void daily_put(const soundlevel_report_t *r, bool calibrated)
              lvl(r->period[SOUNDLEVEL_NIGHT], d), lvl(r->lmax, e), lvl(r->l90, f),
              (double)(r->red_s / 60.0f), calibrated ? "cal" : "est");
 
+    if (!sd_recover(DAILY_TMP, DAILY_PATH)) {
+        sd_fail("daily.tmp recovery");
+        return false;
+    }
+    FILE *in = fopen(DAILY_PATH, "r");
+    if (!in && errno != ENOENT) {
+        sd_fail("daily.csv open");
+        return false;
+    }
     FILE *out = fopen(DAILY_TMP, "w");
     if (!out) {
         sd_fail("daily.tmp open");
-        return;
+        if (in) fclose(in);
+        return false;
     }
     bool ok = fputs(DAILY_HEADER, out) >= 0;
     bool placed = false;
-    FILE *in = fopen(DAILY_PATH, "r");
     if (in) {
         char row[256];
         char last = '\n';
@@ -1089,14 +1296,23 @@ static void daily_put(const soundlevel_report_t *r, bool calibrated)
                 continue;
             }
             ok = fputs(row, out) >= 0;
-            last = row[strlen(row) - 1];
+            /* A row that starts with a NUL -- the file re-saved as UTF-16, or
+               sectors of zeros after a bad write -- has no last character. */
+            size_t len = strlen(row);
+            if (len) last = row[len - 1];
         }
+        if (ferror(in)) ok = false;         /* a read that failed part way is not the end of the file */
         fclose(in);
         /* A last line cut short by a power failure still ends its line. */
         if (ok && last != '\n') ok = fputc('\n', out) != EOF;
     }
     if (ok && !placed) ok = fputs(line, out) >= 0;
-    if (fclose(out) != 0 || !ok || !swap_in(DAILY_TMP, DAILY_PATH)) sd_fail("daily.csv write");
+    if (fclose(out) != 0 || !ok || !swap_in(DAILY_TMP, DAILY_PATH)) {
+        sd_fail("daily.csv write");
+        return false;
+    }
+    sd_ok();
+    return true;
 }
 
 /* today.bin: the day's totals, so a reboot carries on the day's figures. */
@@ -1104,6 +1320,10 @@ static uint8_t s_save[SOUNDLEVEL_SAVE_BYTES];
 
 static void today_save(size_t n)
 {
+    if (!sd_recover(TODAY_TMP, TODAY_PATH)) {
+        sd_fail("today.tmp recovery");
+        return;
+    }
     FILE *f = fopen(TODAY_TMP, "wb");
     if (!f) {
         sd_fail("today.tmp open");
@@ -1111,6 +1331,7 @@ static void today_save(size_t n)
     }
     bool ok = fwrite(s_save, 1, n, f) == n;
     if (fclose(f) != 0 || !ok || !swap_in(TODAY_TMP, TODAY_PATH)) sd_fail("today.bin write");
+    else sd_ok();
 }
 
 /*
@@ -1119,17 +1340,40 @@ static void today_save(size_t n)
  * date, takes it as it is into an empty one, and refuses one from another
  * date. Nothing is saved before this has run, or the first save would
  * overwrite the file it was about to restore.
+ *
+ * So only two outcomes count as done: the file read to its end (then
+ * restored, or refused as torn or another day's), or no such file. A card
+ * that could not say -- an open failing with EIO, FAT's long-name buffer or
+ * file table running out, a read that errored part way -- leaves s_restored
+ * false for the next pass, with nothing saved meanwhile. After
+ * SD_RESTORE_TRIES of those, across a remount, the day carries on without
+ * it, so one unreadable file cannot stop the log for good.
  */
 static void today_restore(void)
 {
-    s_restored = true;
     FILE *f = fopen(TODAY_PATH, "rb");
-    if (!f) {
+    if (!f && errno == ENOENT) {
+        s_restored = true;
         ESP_LOGI(TAG, "sd: no today.bin; the day's totals start here");
         return;
     }
-    size_t n = fread(s_save, 1, sizeof s_save, f);
-    fclose(f);
+    size_t n = 0;
+    bool failed = !f;
+    if (f) {
+        n = fread(s_save, 1, sizeof s_save, f);
+        failed = ferror(f) != 0;
+        fclose(f);
+    }
+    if (failed) {
+        sd_fail("today.bin read");
+        if (++s_restore_fails >= SD_RESTORE_TRIES) {
+            s_restored = true;
+            ESP_LOGW(TAG, "sd: today.bin unreadable %d times; the day's totals start here", s_restore_fails);
+        }
+        return;
+    }
+    s_restored = true;
+    sd_ok();
     soundlevel_report_t r;
     sl_lock();
     bool ok = soundlevel_restore_day(&s_sl, s_save, n);
@@ -1156,7 +1400,13 @@ static void sd_service(int64_t now)
     if (!sd_up(now)) return;
     spk_clock_t c = clock_get();
     if (!c.have_date) return;                   /* no clock, nothing on the card */
-    if (!s_restored) today_restore();
+    if (!s_restored) {
+        today_restore();
+        if (!s_restored) {                      /* the card could not say; next pass */
+            if (s_sd_bad >= SD_BAD_MAX) sd_down(now);
+            return;
+        }
+    }
 
     soundlevel_report_t sec, min, today, yday;
     size_t saved = 0;
@@ -1176,10 +1426,10 @@ static void sd_service(int64_t now)
         detail_add(&sec, calibrated);
     }
     /* A day that has just closed gets its last line, with its last minute in
-       it, before today's is written. */
+       it, before today's is written; a line that did not go in is tried again
+       next pass, and after a remount if it comes to that. */
     if (have_yday && yday.day >= 0 && yday.day != s_logged_yday) {
-        s_logged_yday = yday.day;
-        daily_put(&yday, calibrated);
+        if (daily_put(&yday, calibrated)) s_logged_yday = yday.day;
     }
     if (new_min) {
         s_logged_min_day = min.day;
@@ -1187,6 +1437,7 @@ static void sd_service(int64_t now)
         if (have_today && today.day >= 0) daily_put(&today, calibrated);
         if (saved) today_save(saved);
     }
+    if (s_sd_bad >= SD_BAD_MAX) sd_down(now);
 }
 
 /* ---- the chime ------------------------------------------------------------ */
@@ -1246,12 +1497,20 @@ static void gate(bool on)
 /*
  * The sequence, from the spec and the amp's datasheet:
  *   gate on -> silence -> EXIO8 high -> 150 ms of silence -> the chime ->
- *   60 ms of silence -> EXIO8 low -> 150 ms more, and the reference back at
- *   its floor -> gate off.
+ *   60 ms of silence -> EXIO8 low, proved low -> 200 ms -> gate off.
  * The DMA holds up to 96 ms of queued audio, so a write returning means its
  * samples are queued, not played. Before the amp goes off, a queue's worth of
  * extra silence is written, so by the time the last write returns the chime
  * and its 60 ms of silence have all gone out.
+ *
+ * The wait after the amp is fixed time (GATE_WAIT_MS), not the reference
+ * slot's say-so. CH3 loops back the ES8311's output, which is BEFORE the amp,
+ * and by amp-off the DAC has been fed silence for over 150 ms, so the
+ * reference is already at its floor and cannot see the amp shutting down. It
+ * is still logged: its peak against its floor is the proof the chime played.
+ *
+ * The quiet hours are checked for the whole of the sequence, not just its
+ * start (CHIME_AHEAD_S), and an amp that will not switch on gets no tones.
  */
 static void chime_play(void)
 {
@@ -1259,27 +1518,24 @@ static void chime_play(void)
     s_ref_peak_dbfs = NAN;
     gate(true);
 
-    bool ok = out_frames(-1, MS_FRAMES(50));
-    if (ok && !quiet_now()) {
-        amp_set(true);
-        ok = out_frames(-1, MS_FRAMES(AMP_SETTLE_MS))
-          && out_frames(0, CHIME_FRAMES)
-          && out_frames(-1, MS_FRAMES(CHIME_TAIL_MS) + DMA_BUFFERS * READ_FRAMES);
-    }
-    amp_set(false);                     /* whatever happened above */
+    const char *how = "played";
+    if (!out_frames(-1, MS_FRAMES(50)))
+        how = "codec write failed";
+    else if (quiet_within(CHIME_AHEAD_S))
+        how = "not played: the quiet hours";
+    else if (!amp_write(true))
+        how = "not played: the amp would not switch on";
+    else if (!(out_frames(-1, MS_FRAMES(AMP_SETTLE_MS))
+               && out_frames(0, CHIME_FRAMES)
+               && out_frames(-1, MS_FRAMES(CHIME_TAIL_MS) + DMA_BUFFERS * READ_FRAMES)))
+        how = "codec write failed";
+    amp_off();                          /* whatever happened above */
 
-    /* The gate holds 150 ms past the amp, and then until the reference slot
-       says the speaker's drive has died away -- up to a second more. */
-    vTaskDelay(pdMS_TO_TICKS(GATE_HOLD_MS));
-    int waited = GATE_HOLD_MS;
-    while (waited < GATE_HOLD_MS + 1000 && !isnan(floor) && s_ref_dbfs > floor + 6.0f) {
-        vTaskDelay(pdMS_TO_TICKS(20));
-        waited += 20;
-    }
+    vTaskDelay(pdMS_TO_TICKS(GATE_WAIT_MS));
     float peak = s_ref_peak_dbfs, after = s_ref_dbfs;
     gate(false);
     ESP_LOGI(TAG, "chime: %s; reference floor %.1f, peak %.1f, %.1f at release, %d ms after amp off",
-             ok ? "played" : "write failed", (double)floor, (double)peak, (double)after, waited);
+             how, (double)floor, (double)peak, (double)after, GATE_WAIT_MS);
 }
 
 static int64_t s_chime_us;              /* the last one; 0 before any */
@@ -1288,7 +1544,7 @@ static void chime_service(int64_t now)
 {
     if (!s_set.chime || !s_amp_ok || !s_out || !s_in) return;
     if (s_chime_us != 0 && now - s_chime_us < CHIME_EVERY_US) return;
-    if (quiet_now()) return;
+    if (quiet_within(CHIME_AHEAD_S)) return;
     soundlevel_now_t n;
     sl_lock();
     soundlevel_now(&s_sl, &n);
@@ -1328,13 +1584,15 @@ static void key_edge(int k, const char *name, bool down, int64_t now)
  * The keys are behind the expander, and its INT# reaches no GPIO, so they are
  * polled. Reading all sixteen inputs at once also clears INT#, as every read
  * of the input ports does, which the pinout doc asks to be done routinely:
- * RTC_INT on EXIO4 changing would otherwise leave it asserted.
+ * RTC_INT on EXIO4 changing would otherwise leave it asserted. The same read
+ * carries EXIO8's level, which the amp's watch checks.
  */
 static void keys_poll(int64_t now)
 {
     if (s_io) {
         uint32_t lv = 0;
         if (esp_io_expander_get_level(s_io, 0xFFFF, &lv) == ESP_OK) {
+            amp_watch(lv);
             for (size_t k = 0; k < NKEYS; k++) {
                 bool down = (lv & KEYS[k].pin) == 0;      /* active low */
                 bool was = (s_keys_down & KEYS[k].pin) != 0;
@@ -1373,7 +1631,7 @@ static void noise_line(void)
              (double)n.red_run_s, s_gated ? " GATED" : "",
              when, have && day < 0 ? " (no date)" : "",
              have && in_hours(tod, s_set.night_from, s_set.night_to) ? " night" : "",
-             s_set.ring ? "on" : "off", s_set.chime ? "on" : "off", s_sd ? "ok" : "none");
+             s_set.ring ? "on" : "off", s_set.chime ? "on" : "off", sd_state());
 }
 
 static void slots_line(void)
@@ -1412,8 +1670,8 @@ static void status_log(void)
              date, when, s_rtc ? "present" : "absent", s_set.ring ? "on" : "off",
              s_set.night_from, s_set.night_to, s_set.chime ? "on" : "off",
              s_amp_ok ? "ready" : "unavailable", QUIET_FROM_H, QUIET_TO_H);
-    ESP_LOGI(TAG, "status: card %s; reference floor %s dBFS; I2S read errors %u", s_sd ? "logging" : "none",
-             lvl(s_ref_floor_dbfs, a), (unsigned)s_read_errors);
+    ESP_LOGI(TAG, "status: card %s (%u failures since boot); reference floor %s dBFS; I2S read errors %u",
+             sd_state(), (unsigned)s_sd_errors, lvl(s_ref_floor_dbfs, a), (unsigned)s_read_errors);
     slots_line();
 }
 
@@ -1506,9 +1764,13 @@ static void handle(const cmd_t *c)
         break;
     case CMD_DATE: {
         char date[11];
-        clock_set_date(c->day);
-        s_rtc_pending = true;
         format_date(c->day, date);
+        if (!clock_set_date(c->day)) {
+            ESP_LOGW(TAG, "clock: the Mac says %s, a day behind us just after midnight: "
+                          "sent before midnight, so ours is kept", date);
+            break;
+        }
+        s_rtc_pending = true;
         ESP_LOGI(TAG, "clock: the Mac says %s", date);
         break;
     }
