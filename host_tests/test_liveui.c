@@ -55,19 +55,32 @@ int main(void)
     /* A 1 kHz sine at -20 dBFS: its band reads -20 (+ offset), the others far below. */
     sine(1000.0f, -20.0f, 0);
     liveui_bands(s_x, 16000.0f, 0.0f, b);
-    printf("     1 kHz -20 dBFS: %.1f %.1f %.1f %.1f %.1f %.1f %.1f %.1f\n", b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]);
-    expect("a 1 kHz sine lands in the 1k band at its level", fabsf(b[4] - (-20.0f)) < 1.0f);
-    expect("and the bands two away are 30 dB under", b[2] < -50.0f && b[6] < -50.0f);
+    expect("a 1 kHz sine lands in the 1k band at its level", fabsf(b[12] - (-20.0f)) < 1.0f);
+    expect("and the bands an octave away are 30 dB under", b[9] < -50.0f && b[15] < -50.0f);
     liveui_bands(s_x, 16000.0f, 114.0f, b);
-    expect("the offset is added", fabsf(b[4] - 94.0f) < 1.0f);
+    expect("the offset is added", fabsf(b[12] - 94.0f) < 1.0f);
 
     /* 63 Hz and 8 kHz, the ends. */
     sine(63.0f, -30.0f, 0);
     liveui_bands(s_x, 16000.0f, 0.0f, b);
     expect("63 Hz lands in the lowest band", fabsf(b[0] + 30.0f) < 2.0f);
-    sine(7000.0f, -30.0f, 0);
+    sine(7600.0f, -30.0f, 0);
     liveui_bands(s_x, 16000.0f, 0.0f, b);
-    expect("7 kHz lands in the 8k band", fabsf(b[7] + 30.0f) < 1.5f);
+    expect("7.6 kHz lands in the 8k band", fabsf(b[21] + 30.0f) < 1.5f);
+    /* Every band hears a tone at its centre: none is left without a bin. The
+       top band's centre, 8 kHz, is the Nyquist frequency itself -- a sine
+       there samples as zeros -- so it is the 7.6 kHz check above instead. */
+    int empty = 0;
+    for (int k = 0; k < LIVEUI_BANDS - 1; k++) {
+        float fc = 1000.0f * powf(2.0f, (float)(k - 12) / 3.0f);
+        sine(fc, -30.0f, 0);
+        liveui_bands(s_x, 16000.0f, 0.0f, b);
+        if (!(b[k] > -36.0f)) {
+            printf("     band %d (%.0f Hz) reads %.1f\n", k, (double)fc, (double)b[k]);
+            empty++;
+        }
+    }
+    expect("each band reads a tone at its own centre", empty == 0);
 
     /* Renders: a voice-like mix, loud, quiet, no signal. */
     static liveui_t s;

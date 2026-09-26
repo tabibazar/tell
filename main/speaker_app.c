@@ -617,7 +617,7 @@ static noiseui_t s_scr;
    audio task after every read, read by the screen task, lock-free -- a
    frame torn by a read in flight is one frame of a picture redrawn 25 times
    a second. */
-#define LIVE_RING 2048
+#define LIVE_RING 4096
 static int16_t *s_live;                 /* LIVE_RING samples, in PSRAM (screen_start) */
 static volatile uint32_t s_live_w;
 /* The days as speaker's Days page takes them, refreshed with every days line. */

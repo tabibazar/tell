@@ -9,11 +9,11 @@
  *   - the waveform: the last LIVEUI_WAVE samples (30 ms at 16 kHz), two to a
  *     column as a min/max envelope about a faint centre line, scaled to the
  *     loudest of the moment so a quiet room still shows its shape;
- *   - eight octave bands, 63 Hz to 8 kHz, as horizontal bars on a fixed
+ *   - 22 third-octave bands, 63 Hz to 8 kHz, as horizontal bars on a fixed
  *     20..90 dB scale, each in the ring's colour for its own level, with a
- *     peak marker that the caller lets fall back.
+ *     peak marker that the caller lets fall back; the octaves labelled.
  *
- * Pure: the spectrum is computed here from samples handed in (a 1024-point
+ * Pure: the spectrum is computed here from samples handed in (a 2048-point
  * FFT, Hann-windowed), and the page drawn from a struct; no clock, no
  * hardware, so both are tested and rendered on the host.
  */
@@ -25,8 +25,9 @@
 #define LIVEUI_WIDTH   240
 #define LIVEUI_HEIGHT  320
 #define LIVEUI_WAVE    480      /* samples in the waveform: 30 ms at 16 kHz */
-#define LIVEUI_FFT     1024     /* samples the spectrum is taken over: 64 ms */
-#define LIVEUI_BANDS   8        /* octaves centred 63, 125, 250, 500, 1k, 2k, 4k, 8k Hz */
+#define LIVEUI_FFT     2048     /* samples the spectrum is taken over: 128 ms, bins 7.8 Hz apart */
+#define LIVEUI_BANDS   22       /* thirds of an octave, centred 1 kHz x 2^(k/3) for k = -12..9:
+                                    62.5 Hz to 8 kHz */
 
 typedef struct {
     bool  have_signal;
@@ -38,7 +39,7 @@ typedef struct {
 } liveui_t;
 
 /*
- * The eight octave bands of LIVEUI_FFT samples at `fs` Hz, in dB: each band's
+ * The third-octave bands of LIVEUI_FFT samples at `fs` Hz, in dB: each band's
  * share of the mean square (samples scaled to +-1, Hann window and its power
  * allowed for), as dBFS plus `offset_db` -- speaker's calibration offset, so
  * the bars stand near the level the page's header shows. Unweighted: the

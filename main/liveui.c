@@ -21,13 +21,13 @@
 #define F_LABEL     (&aafont_inter_label)   /* capitals 13 */
 #define F_SUB       (&aafont_inter_sub)     /* 17 */
 
-/* The waveform's box and the bars' rows. */
-#define W_TOP       40
-#define W_H         100
+/* The waveform's box and the bars' rows: 22 of them, 5 px bars 7 px apart. */
+#define W_TOP       38
+#define W_H         80
 #define W_MID       (W_TOP + W_H / 2)
-#define B_TOP       148
-#define B_PITCH     19
-#define B_BAR_H     12
+#define B_TOP       130
+#define B_PITCH     7
+#define B_BAR_H     5
 #define B_X0        46                     /* bars start right of the labels */
 #define B_X1        230
 #define B_LO        20.0f
@@ -35,7 +35,7 @@
 
 /* ---- the spectrum ---------------------------------------------------------- */
 
-/* The FFT's workspace and tables, 20 KB, allocated on first use as one block
+/* The FFT's workspace and tables, 40 KB, allocated on first use as one block
    rather than kept in .bss: on speaker a block that size goes to PSRAM
    (anything under 16 KB is kept internal), and internal RAM is what her
    Bluetooth stack needs -- as static arrays these left it too little to
@@ -109,12 +109,22 @@ void liveui_bands(const int16_t *x, float fs, float offset_db, float out_db[LIVE
     const float norm = 2.0f / ((float)LIVEUI_FFT * (float)LIVEUI_FFT * 0.375f);
     const float hz = fs / (float)LIVEUI_FFT;
     for (int b = 0; b < LIVEUI_BANDS; b++) {
-        float fc = 62.5f * (float)(1 << b);
-        float lo = fc / 1.41421356f, hi = fc * 1.41421356f;
+        /* 1 kHz x 2^(k/3), edges a sixth of an octave either side. */
+        float fc = 1000.0f * powf(2.0f, (float)(b - 12) / 3.0f);
+        float lo = fc * 0.89089872f, hi = fc * 1.12246205f;
         double e = 0.0;
+        int got = 0;
         for (int k = 1; k < LIVEUI_FFT / 2; k++) {
             float f = (float)k * hz;
-            if (f >= lo && f < hi) e += (double)(s_re[k] * s_re[k] + s_im[k] * s_im[k]);
+            if (f >= lo && f < hi) {
+                e += (double)(s_re[k] * s_re[k] + s_im[k] * s_im[k]);
+                got++;
+            }
+        }
+        if (got == 0) {
+            /* A band narrower than a bin: the bin nearest its centre. */
+            int k = (int)lroundf(fc / hz);
+            if (k >= 1 && k < LIVEUI_FFT / 2) e = (double)(s_re[k] * s_re[k] + s_im[k] * s_im[k]);
         }
         double ms = e * norm;
         out_db[b] = ms > 1e-12 ? (float)(10.0 * log10(ms)) + offset_db : -120.0f + offset_db;
@@ -123,7 +133,12 @@ void liveui_bands(const int16_t *x, float fs, float offset_db, float out_db[LIVE
 
 /* ---- the page ------------------------------------------------------------------ */
 
-static const char *const s_band_label[LIVEUI_BANDS] = { "63", "125", "250", "500", "1k", "2k", "4k", "8k" };
+/* The octaves are labelled, every third band; the thirds between are not. */
+static const char *s_band_label(int b)
+{
+    static const char *const oct[8] = { "63", "125", "250", "500", "1k", "2k", "4k", "8k" };
+    return b % 3 == 0 ? oct[b / 3] : NULL;
+}
 
 static float bar_w(float db)
 {
@@ -185,8 +200,8 @@ static void bars(canvas_t *c, const liveui_t *s)
 {
     for (int b = 0; b < LIVEUI_BANDS; b++) {
         int y = B_TOP + b * B_PITCH;
-        aafont_draw(c, F_LABEL, B_X0 - 8, y + (B_BAR_H - F_LABEL->cap) / 2, s_band_label[b], CREAM_DIM,
-                    AAFONT_RIGHT);
+        const char *lab = s_band_label(b);
+        if (lab) aafont_draw(c, F_LABEL, B_X0 - 8, y + (B_BAR_H - F_LABEL->cap) / 2, lab, CREAM_DIM, AAFONT_RIGHT);
         canvas_fill_rect(c, B_X0, y, B_X1 - B_X0, B_BAR_H, TRACK);
         float v = s->band[b];
         if (s->have_signal && isfinite(v)) {
@@ -201,7 +216,7 @@ static void bars(canvas_t *c, const liveui_t *s)
         }
     }
     /* The scale under the bars: its ends and the middle, in dB. */
-    int ly = B_TOP + LIVEUI_BANDS * B_PITCH;
+    int ly = B_TOP + LIVEUI_BANDS * B_PITCH + 6;
     aafont_draw(c, F_LABEL, B_X0, ly, "20", CREAM_DIM, AAFONT_LEFT);
     aafont_draw(c, F_LABEL, (B_X0 + B_X1) / 2, ly, "55 dB", CREAM_DIM, AAFONT_CENTRE);
     aafont_draw(c, F_LABEL, B_X1, ly, "90", CREAM_DIM, AAFONT_RIGHT);
