@@ -111,6 +111,10 @@ if(NOT CONFIG_SCREEN_BOARD_TOUCH_LCD_169)
         list(APPEND BOARD_EXCLUDES "noiseui.c" "daysui.c")
     endif()
 endif()
+# speaker's Live page (the waveform and the octave bars) is hers alone.
+if(NOT CONFIG_SCREEN_BOARD_AUDIO_S3)
+    list(APPEND BOARD_EXCLUDES "liveui.c")
+endif()
 
 # One touch driver per board -- both define the same touch_* interface, so
 # exactly one is compiled. gt911 on the CrowPanel, axs_touch on envio, and on a

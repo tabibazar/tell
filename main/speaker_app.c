@@ -3,6 +3,7 @@
 #include "canvas.h"
 #include "noiseui.h"
 #include "daysui.h"
+#include "liveui.h"
 
 #include "ble_uart.h"
 #include "ds3231.h"
@@ -612,6 +613,13 @@ static void touch_identify(void)
  * middle 280 rows of the 240x320 panel, the page's own size.
  */
 static noiseui_t s_scr;
+/* The last LIVE_RING samples of MIC1, for the Live page: written by the
+   audio task after every read, read by the screen task, lock-free -- a
+   frame torn by a read in flight is one frame of a picture redrawn 25 times
+   a second. */
+#define LIVE_RING 2048
+static int16_t *s_live;                 /* LIVE_RING samples, in PSRAM (screen_start) */
+static volatile uint32_t s_live_w;
 /* The days as speaker's Days page takes them, refreshed with every days line. */
 #define SCREEN_DAYS     30
 static daysui_t s_days_scr;
@@ -661,7 +669,7 @@ static bool touch_read(int *x, int *y)
  * page is up in the time of one transfer. The Sound page, which moves every
  * second, is drawn in place each second.
  */
-typedef enum { SCR_SOUND = 0, SCR_DAYS, SCR_PAGES } scr_page_t;
+typedef enum { SCR_SOUND = 0, SCR_LIVE, SCR_DAYS, SCR_PAGES } scr_page_t;
 
 static void screen_task(void *arg)
 {
@@ -686,6 +694,16 @@ static void screen_task(void *arg)
     int bucket_n = 0, ticks = 0, polls = 0;
     scr_page_t at = SCR_SOUND;
     bool redraw = true, down = false, turned = false;
+    /* The Live page's state in PSRAM, like the ring it reads: internal RAM is
+       Bluetooth's. */
+    liveui_t *lp = heap_caps_calloc(1, sizeof(liveui_t), MALLOC_CAP_SPIRAM);
+    int16_t *snap = heap_caps_malloc(LIVEUI_FFT * sizeof(int16_t), MALLOC_CAP_SPIRAM);
+    if (lp == NULL || snap == NULL || s_live == NULL) ESP_LOGW(TAG, "screen: no memory for the Live page");
+    static liveui_t none;
+    liveui_t *livep = lp ? lp : &none;
+#define live (*livep)
+    for (int i = 0; i < LIVEUI_BANDS; i++) live.band[i] = live.peak[i] = NAN;
+    int live_tick = 0;
     int x0 = 0, y0 = 0;
     TickType_t wake = xTaskGetTickCount();
     for (;;) {
@@ -749,9 +767,35 @@ static void screen_task(void *arg)
             if (at == SCR_DAYS) redraw = true;
         }
 
+        /* The Live page: every other poll, 25 times a second. The bars rise at
+           once and fall 1.5 dB a frame; the peaks hold and fall 0.6 dB a frame. */
+        if (at == SCR_LIVE && ++live_tick >= 2 && lp && snap && s_live) {
+            live_tick = 0;
+            uint32_t w = s_live_w;
+            for (int i = 0; i < LIVEUI_FFT; i++)
+                snap[i] = s_live[(w - LIVEUI_FFT + (uint32_t)i) & (LIVE_RING - 1)];
+            memcpy(live.wave, snap + LIVEUI_FFT - LIVEUI_WAVE, sizeof live.wave);
+            float b[LIVEUI_BANDS];
+            liveui_bands(snap, (float)SOUNDLEVEL_FS, s_scr.calibrated ? s_sl.cal_offset : SOUNDLEVEL_CAL_EST_DB, b);
+            for (int i = 0; i < LIVEUI_BANDS; i++) {
+                float was = live.band[i];
+                live.band[i] = isfinite(was) && b[i] < was - 1.5f ? was - 1.5f : b[i];
+                float pk = live.peak[i];
+                live.peak[i] = isfinite(pk) && pk - 0.6f > live.band[i] ? pk - 0.6f : live.band[i];
+            }
+            live.have_signal = s_scr.have_signal;
+            live.laf = s_scr.laf;
+            live.calibrated = s_scr.calibrated;
+            liveui_draw(c, &live);
+            display_blit();
+            redraw = false;
+        }
+
         if (redraw) {
             redraw = false;
-            if (at == SCR_DAYS) {
+            if (at == SCR_LIVE) {
+                /* drawn above, on its own clock */
+            } else if (at == SCR_DAYS) {
                 if (days_fb) memcpy(c->fb, days_fb, frame);
                 else { canvas_clear(c); daysui_draw(&page, &days); }
             } else {
@@ -763,6 +807,7 @@ static void screen_task(void *arg)
         vTaskDelayUntil(&wake, pdMS_TO_TICKS(20));
     }
 }
+#undef live
 
 /*
  * The 2.8" module on the LCD FPC: its reset is EXIO0, made an output only
@@ -790,6 +835,7 @@ static void screen_start(void)
         return;
     }
     display_set_brightness(40);            /* no need for full glare, or its heat */
+    s_live = heap_caps_calloc(LIVE_RING, sizeof(int16_t), MALLOC_CAP_SPIRAM);
     s_screen_ok = true;          /* its task starts once the meter and its lock exist */
 }
 
@@ -1166,6 +1212,12 @@ static void audio_task(void *arg)
                settles in a second or two and stays put. */
             float f = s_ref_floor_dbfs;
             s_ref_floor_dbfs = isnan(f) ? ref : f + 0.02f * (ref - f);
+        }
+        {
+            uint32_t w = s_live_w;
+            if (s_live)
+                for (int i = 0; i < READ_FRAMES; i++) s_live[(w + (uint32_t)i) & (LIVE_RING - 1)] = buf[i * SLOTS + SLOT_MIC1];
+            s_live_w = w + READ_FRAMES;
         }
         for (int k = 0; k < SLOTS; k++) slot_e[k] += e[k];
         slot_n += READ_FRAMES;

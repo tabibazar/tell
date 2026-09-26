@@ -4,7 +4,7 @@ CFLAGS = -std=c11 -Wall -Wextra -Werror -g -I../main
 VIEW_SRCS = $(wildcard ../main/view_*.c)
 UD_SRCS = ../main/usagedata.c $(wildcard ../main/ud_*.c)
 
-all: test_textwrap test_font test_font_clock test_timecalc test_canvas test_usagedata test_pages test_views test_drift test_envstore test_envpage test_ens160 test_settings test_ds3231 test_level test_levelbig test_particles test_pip test_maze test_bubblelevel test_vector test_moonphase test_pcf85063 test_face test_envstate test_envui test_aafont test_soundlevel test_ring test_noiseui test_daysui
+all: test_textwrap test_font test_font_clock test_timecalc test_canvas test_usagedata test_pages test_views test_drift test_envstore test_envpage test_ens160 test_settings test_ds3231 test_level test_levelbig test_particles test_pip test_maze test_bubblelevel test_vector test_moonphase test_pcf85063 test_face test_envstate test_envui test_aafont test_soundlevel test_ring test_noiseui test_daysui test_liveui
 
 test_textwrap: test_textwrap.c ../main/textwrap.c
 	cc $(CFLAGS) -o $@ $^
@@ -131,3 +131,7 @@ test_maze: test_maze.c ../main/maze.c ../main/maze_levels.c ../main/canvas.c ../
 
 test_bubblelevel: test_bubblelevel.c ../main/bubblelevel.c ../main/canvas.c ../main/textwrap.c
 	$(CC) $(CFLAGS) -o $@ $^ -lm
+
+LIVEUI_SRCS = test_liveui.c ../main/liveui.c ../main/noiseui.c ../main/ring.c ../main/aafont.c ../main/vector.c ../main/canvas.c ../main/textwrap.c
+test_liveui: $(LIVEUI_SRCS) ../main/liveui.h ../main/noiseui.h ../main/aafont.h $(wildcard ../main/font_inter_*.h)
+	$(CC) $(CFLAGS) -o $@ $(LIVEUI_SRCS) -lm
