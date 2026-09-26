@@ -61,6 +61,7 @@ typedef enum {
     PAGE_FACE,       /* watch: the grand-complication analog face. Appended,
                         like the two above, so no saved mask reindexes. */
     PAGE_MOON,       /* watch: the big moon, its age and the next full/new */
+    PAGE_SOUND,      /* watch: speaker's sound level, relayed by the Mac */
     PAGE_COUNT
 } page_t;
 

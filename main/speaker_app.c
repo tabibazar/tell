@@ -1630,14 +1630,21 @@ static void noise_line(void)
     char when[9] = "--:--:--";
     bool have = clock_now(&day, &tod);
     if (have) timecalc_format_hms(tod, when);
-    char a[12], b[12], c[12];
-    ESP_LOGI(TAG, "noise: LAF %s LAeq3 %s dBA (%s) LAeq1 %s | red %.0fs%s | %s%s%s ring %s chime %s sd %s",
+    char a[12], b[12], c[12], t[12];
+    /* Today's running LAeq since midnight, for watch's Sound page (the Mac
+       relays this line); "--" until the day has a reading. */
+    soundlevel_report_t today;
+    sl_lock();
+    bool have_today = soundlevel_today(&s_sl, &today) && today.blocks > 0;
+    sl_unlock();
+    ESP_LOGI(TAG, "noise: LAF %s LAeq3 %s dBA (%s) LAeq1 %s | red %.0fs%s | %s%s%s ring %s chime %s sd %s today %s",
              n.have ? lvl(n.laf, a) : "--.-", n.have ? lvl(n.laeq3s, b) : "--.-",
              n.calibrated ? "cal" : "est", n.have ? lvl(n.laeq1s, c) : "--.-",
              (double)n.red_run_s, s_gated ? " GATED" : "",
              when, have && day < 0 ? " (no date)" : "",
              have && in_hours(tod, s_set.night_from, s_set.night_to) ? " night" : "",
-             s_set.ring ? "on" : "off", s_set.chime ? "on" : "off", sd_state());
+             s_set.ring ? "on" : "off", s_set.chime ? "on" : "off", sd_state(),
+             have_today ? lvl(today.laeq, t) : "--");
 }
 
 static void slots_line(void)

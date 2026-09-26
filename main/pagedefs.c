@@ -60,4 +60,5 @@ const page_def_t page_defs[PAGE_COUNT] = {
     [PAGE_GALLERY]  = { "Gallery",       0,                             NULL,           false, 0,        PG_BOTH,  false, false },
     [PAGE_FACE]     = { "Face",          0,                             NULL,           false, 0,        PG_SMALL, false, false },
     [PAGE_MOON]     = { "Moon",          0,                             NULL,           false, 0,        PG_SMALL, false, false },
+    [PAGE_SOUND]    = { "Sound",         0,                             NULL,           false, 0,        PG_SMALL, false, false },
 };

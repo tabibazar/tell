@@ -1462,9 +1462,15 @@ static uint32_t now_secs(int64_t now)
     return timecalc_since(s_base_secs, s_base_us, now);
 }
 
+#if CONFIG_SCREEN_BOARD_TOUCH_LCD_169
+static bool watch_noise_line(const char *text, size_t len);   /* the watch block, below */
+#endif
 static void on_message(const char *text, size_t len)
 {
     int64_t now = esp_timer_get_time();
+#if CONFIG_SCREEN_BOARD_TOUCH_LCD_169
+    if (watch_noise_line(text, len)) return;
+#endif
 
     ud_kind_t kind = usagedata_parse(&s_data, text, now);
     if (kind == UD_CLOCK) {
@@ -3360,6 +3366,10 @@ static void draw_forecast(canvas_t *c)
 #include "face.h"
 #include "moonphase.h"
 #include "watch.h"
+#include "noiseui.h"
+#include "aafont.h"
+#include "driver/usb_serial_jtag.h"
+#include "driver/usb_serial_jtag_vfs.h"
 
 /* The moon page's moon: NASA's full-Moon photograph, raw RGB565 240x280
    (assets/watch/moon.bin). The dial itself is the navy sunburst -- the photo
@@ -3433,9 +3443,150 @@ static void watch_fill_state(face_state_t *st, uint32_t secs)
     st->charging = false;
 }
 
+/*
+ * speaker's sound level, relayed by the Mac (tools/noise-relay.py) as
+ * "!noise <laf> <laeq3> <today|--> <est|cal>" -- over USB, read by the task
+ * below, or over BLE through on_message; both land in watch_noise_line. The
+ * reader task only stores the latest line; the main loop owns the history.
+ */
+static noiseui_t s_noise;
+static portMUX_TYPE s_noise_mux = portMUX_INITIALIZER_UNLOCKED;
+static struct { float laf, laeq3, today; bool cal; int64_t at_us; uint32_t seq; } s_noise_in;
+static uint32_t s_noise_seen_seq;
+static int64_t s_noise_bucket_us;     /* start of the 10 s history point being filled */
+static double  s_noise_bucket_e;      /* its energy sum, and how many lines */
+static int     s_noise_bucket_n;
+static int     s_noise_drawn_second = -1;
+
+static bool watch_noise_line(const char *text, size_t len)
+{
+    if (len < 6 || strncmp(text, "!noise", 6) != 0) return false;
+    char buf[96];
+    size_t n = len < sizeof buf - 1 ? len : sizeof buf - 1;
+    memcpy(buf, text, n);
+    buf[n] = '\0';
+    float laf, laeq3;
+    char today[16], cal[8];
+    if (sscanf(buf, "!noise %f %f %15s %7s", &laf, &laeq3, today, cal) != 4) return true;
+    if (!isfinite(laf) || !isfinite(laeq3) || laf < 0.0f || laf > 150.0f
+        || laeq3 < 0.0f || laeq3 > 150.0f) return true;
+    float td = NAN;
+    if (strcmp(today, "--") != 0) {
+        char *end;
+        float v = strtof(today, &end);
+        if (end != today && isfinite(v) && v >= 0.0f && v <= 150.0f) td = v;
+    }
+    int64_t now = esp_timer_get_time();
+    portENTER_CRITICAL(&s_noise_mux);
+    s_noise_in.laf = laf;
+    s_noise_in.laeq3 = laeq3;
+    s_noise_in.today = td;
+    s_noise_in.cal = strcmp(cal, "cal") == 0;
+    s_noise_in.at_us = now;
+    s_noise_in.seq++;
+    portEXIT_CRITICAL(&s_noise_mux);
+    return true;
+}
+
+/* The Mac writes lines to watch's own USB serial port; ESP_LOG keeps working
+   through the driver, which drops output after 50 ms when nothing reads it,
+   so a watch on a charger never blocks on its log. */
+static void watch_usb_task(void *arg)
+{
+    (void)arg;
+    char line[128];
+    int len = 0;
+    uint8_t in[64];
+    for (;;) {
+        int n = usb_serial_jtag_read_bytes(in, sizeof in, pdMS_TO_TICKS(1000));
+        for (int i = 0; i < n; i++) {
+            if (in[i] == '\n' || in[i] == '\r') {
+                if (len > 0) { line[len] = '\0'; watch_noise_line(line, (size_t)len); }
+                len = 0;
+            } else if (len < (int)sizeof line - 1) {
+                line[len++] = (char)in[i];
+            } else {
+                len = 0;                    /* overlong: drop the whole line */
+            }
+        }
+    }
+}
+
+static void watch_usb_start(void)
+{
+    usb_serial_jtag_driver_config_t cfg = { .rx_buffer_size = 1024, .tx_buffer_size = 1024 };
+    if (usb_serial_jtag_driver_install(&cfg) != ESP_OK) {
+        ESP_LOGW(TAG, "usb: serial driver not installed; no relay input");
+        return;
+    }
+    usb_serial_jtag_vfs_use_driver();
+    xTaskCreate(watch_usb_task, "usbline", 3072, NULL, 3, NULL);
+    ESP_LOGI(TAG, "usb: listening for the noise relay");
+}
+
+/* Folds new lines into the hour's 10 s points; every 10 s the strip moves on
+   by one, a point with no line in it a gap. */
+static void watch_noise_tick(int64_t now)
+{
+    portENTER_CRITICAL(&s_noise_mux);
+    uint32_t seq = s_noise_in.seq;
+    float laf = s_noise_in.laf, laeq3 = s_noise_in.laeq3, today = s_noise_in.today;
+    bool cal = s_noise_in.cal;
+    int64_t at = s_noise_in.at_us;
+    portEXIT_CRITICAL(&s_noise_mux);
+    if (s_noise_bucket_us == 0) s_noise_bucket_us = now;
+    if (seq != s_noise_seen_seq) {
+        s_noise_seen_seq = seq;
+        s_noise.laf = laf;
+        s_noise.laeq3 = laeq3;
+        s_noise.today = today;
+        s_noise.calibrated = cal;
+        s_noise_bucket_e += pow(10.0, laeq3 / 10.0);
+        s_noise_bucket_n++;
+        s_noise_drawn_second = -1;          /* show it at once */
+    }
+    s_noise.have_signal = at != 0 && now - at < 10LL * 1000 * 1000;
+    for (int steps = 0; now - s_noise_bucket_us >= 10LL * 1000 * 1000 && steps < NOISEUI_POINTS; steps++) {
+        memmove(s_noise.hist, s_noise.hist + 1, (NOISEUI_POINTS - 1) * sizeof s_noise.hist[0]);
+        memmove(s_noise.hist_valid, s_noise.hist_valid + 1, (NOISEUI_POINTS - 1) * sizeof s_noise.hist_valid[0]);
+        bool ok = s_noise_bucket_n > 0;
+        s_noise.hist[NOISEUI_POINTS - 1] = ok ? (float)(10.0 * log10(s_noise_bucket_e / s_noise_bucket_n)) : NAN;
+        s_noise.hist_valid[NOISEUI_POINTS - 1] = ok;
+        s_noise_bucket_e = 0.0;
+        s_noise_bucket_n = 0;
+        s_noise_bucket_us += 10LL * 1000 * 1000;
+    }
+    if (now - s_noise_bucket_us >= 10LL * 1000 * 1000) s_noise_bucket_us = now;   /* a very long gap */
+}
+
+/* No time yet -- the clock chip's backup cell is flat, so after a power cut
+   watch knows nothing until a Mac pushes the clock. Say so, rather than show
+   a blank face (2026-09-25: "the watch is broken"). */
+static void watch_no_time(canvas_t *c, int64_t now)
+{
+    int sec = (int)(now / 1000000);
+    if (sec == s_drawn_second) return;
+    s_drawn_second = sec;
+    canvas_clear(c);
+    aafont_draw(c, &aafont_inter_word, c->w / 2, 104, "NO TIME", 0xFFFF, AAFONT_CENTRE);
+    aafont_draw(c, &aafont_inter_label, c->w / 2, 150, "Waiting for the Mac", 0x9CD3, AAFONT_CENTRE);
+    aafont_draw(c, &aafont_inter_label, c->w / 2, 172, "to set the clock", 0x9CD3, AAFONT_CENTRE);
+    display_blit();
+}
+
 static void watch_draw(canvas_t *c, int64_t now)
 {
-    if (!s_synced) return;
+    if (s_pages.current == PAGE_SOUND) {
+        int sec = (int)(now / 1000000);
+        /* s_drawn_second is reset on every page change and wake: draw then. */
+        if (sec == s_noise_drawn_second && s_drawn_second != -1) return;
+        s_noise_drawn_second = sec;
+        s_drawn_second = sec;
+        noiseui_draw(c, &s_noise);
+        display_blit();
+        return;
+    }
+    if (!s_synced) { watch_no_time(c, now); return; }
     uint32_t secs = timecalc_advance(s_base_secs, (uint64_t)(now - s_base_us));
     /* Midnight: the calendar comes from the clock chip, so ask it again. */
     if (s_watch_last_secs >= 0 && (int)secs < s_watch_last_secs) rtc_refresh_date();
@@ -3485,7 +3636,7 @@ static void watch_idle(int64_t now)
             }
         }
     }
-    bool dark = s_pages.current != PAGE_PARTICLES
+    bool dark = s_pages.current != PAGE_PARTICLES && s_pages.current != PAGE_SOUND
              && now - s_pages.last_activity_us > WATCH_IDLE_US;
     if (dark == s_watch_dark) return;
     s_watch_dark = dark;
@@ -3507,8 +3658,15 @@ static void watch_function_key(int64_t now)
     }
     s_pages.last_activity_us = now;
     if (k == WATCH_KEY_SHORT) {
-        page_t to = s_pages.current == PAGE_PARTICLES ? PAGE_FACE : PAGE_PARTICLES;
-        if (s_pages.available & PAGE_BIT(to)) pages_show(&s_pages, to, now);
+        /* Face -> Sand -> Sound -> Face; a page the board lacks (no IMU, no
+           sand) is stepped over. */
+        static const page_t order[] = { PAGE_FACE, PAGE_PARTICLES, PAGE_SOUND };
+        int at = 0;
+        for (int i = 0; i < 3; i++) if (order[i] == s_pages.current) at = i;
+        for (int k = 1; k <= 3; k++) {
+            page_t to = order[(at + k) % 3];
+            if (s_pages.available & PAGE_BIT(to)) { pages_show(&s_pages, to, now); break; }
+        }
         ESP_LOGI(TAG, "function key -> page %d", (int)s_pages.current);
     } else {
         ESP_LOGI(TAG, "function key held: power off");
@@ -3772,9 +3930,9 @@ void app_main(void)
        the function button (when the IMU answered). Nothing else -- the timer,
        stopwatch and chip pages ride in with the sand and the RTC elsewhere. */
     available = (available & PAGE_BIT(PAGE_PARTICLES))
-              | PAGE_BIT(PAGE_FACE) | PAGE_BIT(PAGE_MOON);
+              | PAGE_BIT(PAGE_FACE) | PAGE_BIT(PAGE_MOON) | PAGE_BIT(PAGE_SOUND);
 #else
-    available &= ~(PAGE_BIT(PAGE_FACE) | PAGE_BIT(PAGE_MOON));
+    available &= ~(PAGE_BIT(PAGE_FACE) | PAGE_BIT(PAGE_MOON) | PAGE_BIT(PAGE_SOUND));
 #endif
 
     uint32_t rtc_secs;
@@ -3797,6 +3955,7 @@ void app_main(void)
     canvas_t *c = display_canvas();
 #if CONFIG_SCREEN_BOARD_TOUCH_LCD_169
     watch_face_init(c->w, c->h);
+    watch_usb_start();
 #endif
 
 #if CONFIG_SCREEN_BOARD_TOUCH_LCD_147
@@ -3955,6 +4114,7 @@ void app_main(void)
 #if CONFIG_SCREEN_BOARD_TOUCH_LCD_169
         watch_function_key(now);
         watch_idle(now);
+        watch_noise_tick(now);          /* the hour's strip fills even while dark */
 #endif
 
         if (s_zone_dirty) {

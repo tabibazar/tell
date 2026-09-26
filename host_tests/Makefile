@@ -4,7 +4,7 @@ CFLAGS = -std=c11 -Wall -Wextra -Werror -g -I../main
 VIEW_SRCS = $(wildcard ../main/view_*.c)
 UD_SRCS = ../main/usagedata.c $(wildcard ../main/ud_*.c)
 
-all: test_textwrap test_font test_font_clock test_timecalc test_canvas test_usagedata test_pages test_views test_drift test_envstore test_envpage test_ens160 test_settings test_ds3231 test_level test_levelbig test_particles test_pip test_maze test_bubblelevel test_vector test_moonphase test_pcf85063 test_face test_envstate test_envui test_aafont test_soundlevel test_ring
+all: test_textwrap test_font test_font_clock test_timecalc test_canvas test_usagedata test_pages test_views test_drift test_envstore test_envpage test_ens160 test_settings test_ds3231 test_level test_levelbig test_particles test_pip test_maze test_bubblelevel test_vector test_moonphase test_pcf85063 test_face test_envstate test_envui test_aafont test_soundlevel test_ring test_noiseui
 
 test_textwrap: test_textwrap.c ../main/textwrap.c
 	cc $(CFLAGS) -o $@ $^
@@ -105,8 +105,15 @@ test_soundlevel: test_soundlevel.c ../main/soundlevel.c
 test_ring: test_ring.c ../main/ring.c
 	$(CC) $(CFLAGS) -o $@ $^ -lm
 
+# watch's Sound page: the type (aafont and its faces), the marks (vector),
+# canvas for canvas_init, and ring.c for the ring's colours, which the page
+# takes rather than copies.
+NOISEUI_SRCS = test_noiseui.c ../main/noiseui.c ../main/ring.c ../main/aafont.c ../main/vector.c ../main/canvas.c ../main/textwrap.c
+test_noiseui: $(NOISEUI_SRCS) ../main/noiseui.h ../main/ring.h ../main/aafont.h ../main/vector.h $(wildcard ../main/font_inter_*.h)
+	$(CC) $(CFLAGS) -o $@ $(NOISEUI_SRCS) -lm
+
 clean:
-	rm -f test_aafont test_soundlevel test_ring test_vector test_moonphase test_pcf85063 test_face test_ens160 test_envpage test_envstate test_envui test_envstore test_drift test_textwrap test_font test_font_clock test_timecalc test_canvas test_usagedata test_pages test_views test_settings test_ds3231 test_level test_levelbig test_particles test_pip test_maze
+	rm -f test_noiseui test_aafont test_soundlevel test_ring test_vector test_moonphase test_pcf85063 test_face test_ens160 test_envpage test_envstate test_envui test_envstore test_drift test_textwrap test_font test_font_clock test_timecalc test_canvas test_usagedata test_pages test_views test_settings test_ds3231 test_level test_levelbig test_particles test_pip test_maze
 
 .PHONY: all clean
 

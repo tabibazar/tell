@@ -95,7 +95,16 @@ endif()
 # speaker's alone. soundlevel.c and ring.c are pure and host-tested; no other
 # board compiles any of the four.
 if(NOT CONFIG_SCREEN_BOARD_AUDIO_S3)
-    list(APPEND BOARD_EXCLUDES "soundlevel.c" "ring.c" "speaker_app.c" "display_none.c")
+    list(APPEND BOARD_EXCLUDES "soundlevel.c" "speaker_app.c" "display_none.c")
+    # ring.c's colours are also watch's: her Sound page tints speaker's level
+    # exactly as speaker's ring does.
+    if(NOT CONFIG_SCREEN_BOARD_TOUCH_LCD_169)
+        list(APPEND BOARD_EXCLUDES "ring.c")
+    endif()
+endif()
+# watch's Sound page (noiseui.c) is hers alone.
+if(NOT CONFIG_SCREEN_BOARD_TOUCH_LCD_169)
+    list(APPEND BOARD_EXCLUDES "noiseui.c")
 endif()
 
 # One touch driver per board -- both define the same touch_* interface, so
@@ -155,7 +164,11 @@ endif()
 # the unused faces anyway, but left out here they cost the other boards not
 # even the compile, and their images stay exactly what they were.
 if(NOT CONFIG_SCREEN_BOARD_TOUCH_LCD_147)
-    list(APPEND BOARD_EXCLUDES "envstate.c" "envui.c" "aafont.c")
+    list(APPEND BOARD_EXCLUDES "envstate.c" "envui.c")
+    # The Inter faces also set watch's Sound page.
+    if(NOT CONFIG_SCREEN_BOARD_TOUCH_LCD_169)
+        list(APPEND BOARD_EXCLUDES "aafont.c")
+    endif()
 endif()
 
 # watch's moon-page moon (NASA, public domain -- see assets/watch/CREDITS.md),
