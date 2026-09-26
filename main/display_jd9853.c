@@ -29,6 +29,7 @@
 #include "sdkconfig.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/semphr.h"
 
 #include <string.h>
 
@@ -49,10 +50,14 @@
 #define LCD_GAP_Y 34
 #define LCD_MIRROR_X false
 #define LCD_MIRROR_Y true
-/* The JD9853 wants the same colour order and inversion the vendor BSP sets;
-   if a test pattern ever shows red/green/blue rotated, flip this to 1 (see the
-   NiceMCU note in display_st7789.c for why a byte swap and not a BGR order). */
-#define LCD_SWAP_COLOR_BYTES 0
+/* The JD9853 takes each RGB565 pixel high byte first, and the framebuffer
+   holds it little-endian, so the bytes are swapped for the wire. Without it
+   every colour but black and white arrived as another (grey 0x8410 as all
+   but black, amber as blue), and the anti-aliased edges of small text as
+   dark specks -- measured on the glass on 2026-09-26 with a card of
+   red/green/blue/amber/grey drawn both ways. The vendor BSP gets the same
+   effect from LVGL's 16-bit swap. */
+#define LCD_SWAP_COLOR_BYTES 1
 
 #define LCD_HOST SPI2_HOST
 static const char *TAG = "display";
@@ -61,6 +66,12 @@ static uint16_t *s_fb;
 static canvas_t s_canvas;
 
 static void backlight_init(void);
+
+#if LCD_SWAP_COLOR_BYTES
+static SemaphoreHandle_t s_blit_done;
+static bool blit_done(esp_lcd_panel_io_handle_t io,
+                      esp_lcd_panel_io_event_data_t *ev, void *ctx);
+#endif
 
 
 esp_err_t display_init(void)
@@ -94,6 +105,12 @@ esp_err_t display_init(void)
     };
     ESP_ERROR_CHECK(esp_lcd_new_panel_io_spi(
         (esp_lcd_spi_bus_handle_t)LCD_HOST, &io_cfg, &io_handle));
+
+#if LCD_SWAP_COLOR_BYTES
+    s_blit_done = xSemaphoreCreateBinary();
+    const esp_lcd_panel_io_callbacks_t cbs = { .on_color_trans_done = blit_done };
+    ESP_ERROR_CHECK(esp_lcd_panel_io_register_event_callbacks(io_handle, &cbs, NULL));
+#endif
 
     esp_lcd_panel_dev_config_t panel_cfg = {
         .reset_gpio_num = PIN_TFT_RST,
@@ -185,6 +202,8 @@ void display_sleep(bool asleep)
 canvas_t *display_canvas(void) { return &s_canvas; }
 
 #if LCD_SWAP_COLOR_BYTES
+/* Swapped in place, sent, and swapped back -- after the transfer is done:
+   draw_bitmap only queues it (display_st7789.c has the whole story). */
 static void swap_in_place(void)
 {
     uint16_t *p = s_fb;
@@ -192,10 +211,20 @@ static void swap_in_place(void)
         p[i] = (uint16_t)((p[i] >> 8) | (p[i] << 8));
 }
 
+static bool IRAM_ATTR blit_done(esp_lcd_panel_io_handle_t io,
+                                esp_lcd_panel_io_event_data_t *ev, void *ctx)
+{
+    (void)io; (void)ev; (void)ctx;
+    BaseType_t woken = pdFALSE;
+    xSemaphoreGiveFromISR(s_blit_done, &woken);
+    return woken == pdTRUE;
+}
+
 void display_blit(void)
 {
     swap_in_place();
     esp_lcd_panel_draw_bitmap(s_panel, 0, 0, LCD_W, LCD_H, s_fb);
+    xSemaphoreTake(s_blit_done, pdMS_TO_TICKS(200));
     swap_in_place();
 }
 #else
