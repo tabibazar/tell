@@ -32,14 +32,21 @@ The first `tell` run asks for Bluetooth permission for the terminal -- allow it.
 
 Check: `tail /tmp/push-clock.watch.log /tmp/push-clock.speaker.log`.
 Once these run at work, the same agents on the home Mac can be removed:
-`launchctl bootout gui/$(id -u)/com.tabibazar.push-clock.watch` (and `.speaker`).
+`launchctl bootout gui/$(id -u)/com.tabibazar.push-clock.watch` (and `.speaker`,
+and `com.tabibazar.noise-relay`).
 
 ## 4. speaker's level on watch (both on this Mac's USB)
 
-    python3 tools/noise-relay.py      # see its --help and --self-test
+    tools/install-agent.sh noise-relay
 
-It finds both boards by MAC and forwards speaker's level to watch's Sound
-page (side button: Face -> Sand -> Sound).
+A background agent: it starts at login, runs all the time, and launchd
+restarts it if it ever exits; unplugged boards are picked up again when they
+come back. It finds both boards by MAC and forwards speaker's level to
+watch's Sound page (side button: Face -> Sand -> Sound).
+Log: `tail -f /tmp/noise-relay.log`. To run it by hand instead (for
+debugging), stop the agent first -- both would want the same USB ports:
+`launchctl bootout gui/$(id -u)/com.tabibazar.noise-relay`, then
+`python3 tools/noise-relay.py --verbose`.
 
 ## 5. Flashing at work (only if you change firmware)
 

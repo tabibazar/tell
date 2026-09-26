@@ -20,6 +20,11 @@
 #
 #   other   push-clock  date and weather every 5 min
 #
+#   tools/install-agent.sh noise-relay
+#           noise-relay speaker's level to watch's Sound page, over USB.
+#                       Not on a timer: it runs all the time, starts at
+#                       login, and launchd restarts it if it ever exits.
+#
 # A board gets the usage agents only if it has pages to draw them on. envo
 # does not: she shows the clock and, once her sensor is wired, the room.
 # Sending her the limits and the year would be a minute of parsing every
@@ -78,7 +83,52 @@ install_one() {         # name, script, interval
     fi
 }
 
+install_relay() {
+    # launchd starts agents with a bare PATH, so the interpreter is fixed
+    # here, at install time: the first python3 that can import pyserial.
+    py=""
+    for cand in "$(command -v python3 2>/dev/null)" /usr/bin/python3 \
+                "$HOME/.espressif/python_env/idf5.5_py3.13_env/bin/python"; do
+        [ -x "$cand" ] && "$cand" -c "import serial" 2>/dev/null && { py="$cand"; break; }
+    done
+    if [ -z "$py" ]; then
+        echo "no python3 with pyserial: python3 -m pip install --user pyserial" >&2
+        exit 1
+    fi
+    label="com.tabibazar.noise-relay"
+    plist="$HOME/Library/LaunchAgents/$label.plist"
+    cat > "$plist" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key><string>$label</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>$py</string>
+        <string>$ROOT/tools/noise-relay.py</string>
+    </array>
+    <key>RunAtLoad</key><true/>
+    <key>KeepAlive</key><true/>
+    <key>ThrottleInterval</key><integer>10</integer>
+    <key>StandardOutPath</key><string>/tmp/noise-relay.log</string>
+    <key>StandardErrorPath</key><string>/tmp/noise-relay.err</string>
+</dict>
+</plist>
+PLIST
+    launchctl bootout "gui/$(id -u)/$label" 2>/dev/null || true
+    launchctl bootstrap "gui/$(id -u)" "$plist"
+    echo "installed $label -> $py $ROOT/tools/noise-relay.py"
+    echo "log:    /tmp/noise-relay.log"
+    echo "remove: launchctl bootout gui/$(id -u)/$label"
+    exit 0
+}
+
 case "$DEVICE" in
+noise-relay)
+    install_relay
+    ;;
 big)
     install_one tell-stats  push-stats.sh  300
     install_one push-now    push-now.sh     60
