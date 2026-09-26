@@ -75,6 +75,7 @@ static const aafont_t *knockout(const aafont_t *f)
 #define R_NUM_BASE   90
 #define R_NUM_MAXW   200
 #define R_NUM_GAP    10     /* between the number and the trend word */
+#define R_SUFFIX_GAP 4      /* a degree or percent sign above the word: kept off it sideways too */
 /* The state word under it, capitals 98..129 and baseline 130; POOR's block
    reaches 4 px above and below, 94..133, clear of the number above and the
    strip below, and 6 px either side (block_side). FROM VOCs and NO READING, a
@@ -361,6 +362,19 @@ static void arrow(canvas_t *c, float cx, float cy, float s, bool up, uint16_t co
         cx - s * 0.4f,  cy + sg * s * 0.02f, cx, cy + sg * s / 2,
         cx + s * 0.4f,  cy + sg * s * 0.02f, cx + s * 0.13f, cy + sg * s * 0.02f,
         cx + s * 0.13f, cy - sg * s / 2,
+    };
+    vec_polygon(c, xy, 7, col);
+}
+
+/* The same arrow lying down, pointing right: STEADY's, so the three trends
+   are one shape in three directions rather than two arrows and a lone word. */
+static void arrow_flat(canvas_t *c, float cx, float cy, float s, uint16_t col)
+{
+    float xy[] = {
+        cx - s / 2,        cy - s * 0.13f, cx + s * 0.02f, cy - s * 0.13f,
+        cx + s * 0.02f,    cy - s * 0.4f,  cx + s / 2,     cy,
+        cx + s * 0.02f,    cy + s * 0.4f,  cx + s * 0.02f, cy + s * 0.13f,
+        cx - s / 2,        cy + s * 0.13f,
     };
     vec_polygon(c, xy, 7, col);
 }
@@ -863,6 +877,8 @@ static int reading_trend(canvas_t *c, envs_trend_t tr)
     float top = (float)(R_NUM_BASE - F_READING->cap);
     if (moving)
         arrow(c, XR - 0.4f * R_ARROW, top + R_ARROW / 2, R_ARROW, tr == ENVS_RISING, COL_WHITE);
+    else
+        arrow_flat(c, XR - 0.5f * R_ARROW, top + R_ARROW / 2, R_ARROW, COL_GREY);
     aafont_draw(c, F_SUB, XR, R_NUM_BASE - F_SUB->cap, w, moving ? COL_WHITE : COL_GREY, AAFONT_RIGHT);
     return XR - aafont_width(F_SUB, w);
 }
@@ -887,7 +903,8 @@ static void reading_number(canvas_t *c, const envui_series_t *s, int trend_left)
         figure(&g, s_num_face[k], s_pct_face[k], b, sx);
         int top = R_NUM_BASE - g.f->cap;
         int low = top + g.hang + 3 <= word_top ? g.digits : g.whole;
-        if (g.whole - g.left <= R_NUM_MAXW && XL + low + R_NUM_GAP <= trend_left) break;
+        if (g.whole - g.left <= R_NUM_MAXW && XL + low + R_NUM_GAP <= trend_left
+            && XL + g.whole + R_SUFFIX_GAP <= trend_left) break;
     }
     figure_draw(c, &g, XL, R_NUM_BASE - g.f->cap, COL_WHITE);
 }

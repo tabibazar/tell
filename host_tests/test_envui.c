@@ -376,26 +376,28 @@ static void test_reading_pages(void)
         expect("and keeps 10 px clear of the word", right >= 0 && right + 10 < left);
     }
 
-    /* A temperature keeps its full size beside STEADY: its degree sign hangs
-       from the top of the digits, above the word, so only the digits need to
-       clear it. */
+    /* A temperature beside STEADY: the degree sign hangs from the top of the
+       digits, above the word, but may not reach over it sideways -- "26.8°"
+       touching "STEADY" read as one word -- so the number steps down a size
+       rather than crowd it. STEADY has its flat arrow over it, as RISING and
+       FALLING have theirs. */
     make_day(0);
     fb = draw(DRAW_READING, series(ENVS_TEMP, 2687, ENVS_OK, ENVS_STEADY), 2, "temp_steady");
     {
-        int nt, nb, digits = -1, deg = -1;
+        int nt, nb, right = -1, left = W, arrow = 0;
         ink_rows(fb, 16, 20, 200, 96, &nt, &nb);
-        for (int y = 33; y <= 89; y++)
-            for (int x = 16; x < 304; x++)
-                if (fb[y * W + x] == WHITE) {
-                    if (y >= 66 && x > digits) digits = x;   /* below the degree sign */
-                    if (y < 66 && x > deg) deg = x;
-                }
-        printf("     26.8 beside STEADY: rows %d..%d, digits to x %d, degree sign to x %d\n",
-               nt, nb, digits, deg);
-        expect("a temperature beside STEADY keeps the full size", nb - nt + 1 >= 56);
-        expect("its degree sign stands over the word's shoulder, not in it",
-               deg > digits && dark(fb, digits + 2, 61, 304, 72)
-               && count(fb, 200, 73, 304, 89, GREY) > 50);
+        for (int y = 20; y <= 96; y++)
+            for (int x = 16; x < 304; x++) {
+                uint16_t p = fb[y * W + x];
+                if (p == WHITE && x > right) right = x;
+                if (p == GREY && y >= 70 && x < left) left = x;
+                if (p == GREY && y < 60 && x > 260) arrow++;
+            }
+        printf("     26.8 beside STEADY: rows %d..%d, its ink to x %d, STEADY's from x %d, arrow %d px\n",
+               nt, nb, right, left, arrow);
+        expect("a temperature beside STEADY steps down a size", nb - nt + 1 < 56 && nb - nt + 1 >= 46);
+        expect("its degree sign stays clear of the word sideways", right >= 0 && right + 4 <= left);
+        expect("STEADY has its flat arrow over it", arrow > 40);
     }
 
     /*
