@@ -107,9 +107,8 @@ endif()
 # watch's Sound and Days pages (noiseui.c, daysui.c); speaker's own screen
 # shows the Sound page too.
 if(NOT CONFIG_SCREEN_BOARD_TOUCH_LCD_169)
-    list(APPEND BOARD_EXCLUDES "daysui.c")
     if(NOT CONFIG_SCREEN_BOARD_AUDIO_S3)
-        list(APPEND BOARD_EXCLUDES "noiseui.c")
+        list(APPEND BOARD_EXCLUDES "noiseui.c" "daysui.c")
     endif()
 endif()
 

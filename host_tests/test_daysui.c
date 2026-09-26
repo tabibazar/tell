@@ -475,6 +475,16 @@ static void test_pages(void)
         expect("each bar is in its day's colour", bad == 0);
     }
 
+    /* speaker's 30 days: narrow bars, today's figure only, and the day's
+       name under today and each same weekday before it. */
+    s = month(35, 52.4f, false);
+    s->bars = 30;
+    fb = draw(s, "month_30");
+    expect("30 days: the bars are drawn", ink(fb, 15, BARS_Y0, 224, BARS_Y1) > 1000);
+    s = month(35, 50.3f, true);
+    s->bars = 30;
+    draw(s, "month_30_sparse");
+
     /* The same, quieter: the minus path. */
     draw(month(35, 44.1f, false), "full_month_quieter");
     /* About the same. */

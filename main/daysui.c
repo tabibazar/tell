@@ -467,6 +467,17 @@ static int day_on(const daysui_t *s, long dn)
 static void bars(canvas_t *c, const daysui_t *s)
 {
     int top = B_FLOOR - B_ROWS;
+    /* A week by default, each bar with its figure and name; more than a week
+       and the bars narrow to fill the same width, with only today's figure
+       over them and a name under today and each same weekday before it --
+       the days the comparison draws on. */
+    const int nb = s->bars > DAYSUI_BARS && s->bars <= DAYSUI_DAYS ? s->bars : DAYSUI_BARS;
+    const bool week = nb == DAYSUI_BARS;
+    /* Narrow bars stop 12 px short, so today's name and lozenge under the
+       last one keep out of watch's rounded corner. */
+    const int cols = week ? B_COLS : B_COLS - 12;
+    int bw = week ? B_BAR_W : cols / nb - 2;
+    if (bw < 2) bw = 2;
 
     /* The ring's four stops, faint and dotted in their own colours as on
        the Sound page, but only in the gutters between the bars: across a
@@ -475,10 +486,10 @@ static void bars(canvas_t *c, const daysui_t *s)
     for (int k = 0; k < 4; k++) {
         int y = B_FLOOR - (int)lroundf(bar_h(stop[k]));
         uint16_t col = colour_dim(stop[k], 0.30f);
-        for (int x = B_X0; x < B_X0 + B_COLS; x += 3) {
-            float at = ((float)(x - B_X0) + 0.5f) * (float)DAYSUI_BARS / (float)B_COLS;
-            float off = fabsf(at - floorf(at) - 0.5f) * (float)B_COLS / (float)DAYSUI_BARS;
-            if (off > (float)B_BAR_W / 2.0f + 1.0f) pixel(c, x, y, col);
+        for (int x = B_X0; x < B_X0 + cols; x += 3) {
+            float at = ((float)(x - B_X0) + 0.5f) * (float)nb / (float)cols;
+            float off = fabsf(at - floorf(at) - 0.5f) * (float)cols / (float)nb;
+            if (off > (float)bw / 2.0f + 1.0f) pixel(c, x, y, col);
         }
     }
     canvas_fill_rect(c, B_X0, B_FLOOR, B_COLS, 1, RAIL);
@@ -499,10 +510,11 @@ static void bars(canvas_t *c, const daysui_t *s)
         if (day_dated(d) && level_ok(d->laeq) && day_dn(d) <= last && day_dn(d) < first) first = day_dn(d);
     }
 
-    for (int k = 0; k < DAYSUI_BARS; k++) {
-        long dn = last - (DAYSUI_BARS - 1) + k;
-        float cx = (float)B_X0 + ((float)k + 0.5f) * (float)B_COLS / (float)DAYSUI_BARS;
-        int x0 = (int)lroundf(cx - (float)B_BAR_W / 2.0f);
+    for (int k = 0; k < nb; k++) {
+        long dn = last - (nb - 1) + k;
+        float cx = (float)B_X0 + ((float)k + 0.5f) * (float)cols / (float)nb;
+        int x0 = (int)lroundf(cx - (float)bw / 2.0f);
+        bool named = week || (nb - 1 - k) % 7 == 0;
         bool is_today = t >= 0 && dn == last;
         bool dim = is_today && s->stale;
         int i = day_on(s, dn);
@@ -525,24 +537,33 @@ static void bars(canvas_t *c, const daysui_t *s)
                 float wash = fminf(hi, h) - lo;
                 float cap = fminf(hi, h) - fmaxf(lo, h - B_CAP);
                 float a = 0.22f + 0.40f * (lo + 0.5f) / (float)B_ROWS;
-                for (int x = x0; x < x0 + B_BAR_W; x++) {
+                for (int x = x0; x < x0 + bw; x++) {
                     tint(c, x, y, col, wash * a);
                     if (cap > 0.0f) tint(c, x, y, col, cap);
                 }
             }
-            char b[8];
-            snprintf(b, sizeof b, "%d", whole_db(d->laeq));
-            int fy = B_FLOOR - (int)ceilf(h) - B_FIG_GAP - F_LABEL->cap;
-            uint16_t fc = is_today ? (dim ? CREAM_DIM : CREAM) : CREAM_SOFT;
-            aafont_draw(c, F_LABEL, (int)lroundf(cx), fy, b, fc, AAFONT_CENTRE);
+            if (week || is_today) {
+                char b[8];
+                snprintf(b, sizeof b, "%d", whole_db(d->laeq));
+                int fy = B_FLOOR - (int)ceilf(h) - B_FIG_GAP - F_LABEL->cap;
+                uint16_t fc = is_today ? (dim ? CREAM_DIM : CREAM) : CREAM_SOFT;
+                /* Over narrow bars today's figure keeps inside the plot's right edge. */
+                int fx = (int)lroundf(cx);
+                if (!week) {
+                    int half = aafont_width(F_LABEL, b) / 2;
+                    if (fx + half > B_X0 + cols) fx = B_X0 + cols - half;
+                }
+                aafont_draw(c, F_LABEL, fx, fy, b, fc, AAFONT_CENTRE);
+            }
         } else if (!is_today && dn > first) {
-            for (int x = x0; x < x0 + B_BAR_W; x++)
+            for (int x = x0; x < x0 + bw; x++)
                 for (int y = top; y < B_FLOOR; y++)
                     if ((x + y) % 5 == 0) pixel(c, x, y, HATCH);
         }
 
         /* The day's name under it; today's lit, in gold, over a small
            lozenge like the one in the Sound page's rule. */
+        if (!named) continue;
         uint16_t lc = is_today ? (s->stale ? CREAM_DIM : GOLD) : CREAM_DIM;
         aafont_draw(c, F_LABEL, (int)lroundf(cx), B_LABEL_TOP, s_weekday_short[wd], lc, AAFONT_CENTRE);
         if (is_today) {

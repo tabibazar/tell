@@ -2,6 +2,7 @@
 #include "display.h"
 #include "canvas.h"
 #include "noiseui.h"
+#include "daysui.h"
 
 #include "ble_uart.h"
 #include "ds3231.h"
@@ -567,6 +568,8 @@ static void touch_wake(void)
  * D1F4, the IC type at D204, the firmware at D208; then back to normal
  * reporting at D109. Only this chip is written to, and only its mode.
  */
+static i2c_master_dev_handle_t s_tp;       /* the touch controller at 0x58, if it answered */
+
 static void touch_identify(void)
 {
     i2c_master_bus_handle_t bus = i2cbus_handle(I2CBUS_MAIN);
@@ -588,7 +591,7 @@ static void touch_identify(void)
              "D208 %02X %02X %02X %02X (%s)", esp_err_to_name(e0),
              sz[0], sz[1], sz[2], sz[3], esp_err_to_name(e1), ic[0], ic[1], ic[2], ic[3], esp_err_to_name(e2),
              fw[0], fw[1], fw[2], fw[3], esp_err_to_name(e3));
-    i2c_master_bus_rm_device(tp);
+    s_tp = tp;                  /* kept: the screen task reads touches through it */
 }
 
 /*
@@ -598,8 +601,41 @@ static void touch_identify(void)
  * middle 280 rows of the 240x320 panel, the page's own size.
  */
 static noiseui_t s_scr;
+/* The days as speaker's Days page takes them, refreshed with every days line. */
+#define SCREEN_DAYS     30
+static daysui_t s_days_scr;
+static uint32_t s_days_seq;
+static portMUX_TYPE s_days_mux = portMUX_INITIALIZER_UNLOCKED;
 static bool s_screen_ok;     /* the panel came up */
 
+/*
+ * One touch, read the CST328's way (its protocol, at 0x58 on this module):
+ * the seven bytes from D000 -- finger 1's state, x and y packed in three
+ * bytes, then the count at [5] and a fixed 0xAB at [6] that says the frame is
+ * real -- and 0xAB written back to D000 so the next report is fresh. False
+ * with no finger down, or nothing to be read.
+ */
+static bool touch_read(int *x, int *y)
+{
+    if (s_tp == NULL) return false;
+    uint8_t b[7];
+    if (i2c_master_transmit_receive(s_tp, (const uint8_t[]){ 0xD0, 0x00 }, 2, b, sizeof b, 30) != ESP_OK)
+        return false;
+    if (b[6] != 0xAB) return false;
+    i2c_master_transmit(s_tp, (const uint8_t[]){ 0xD0, 0x00, 0xAB }, 3, 30);
+    if ((b[5] & 0x0F) == 0 || (b[0] & 0x0F) != 0x06) return false;
+    *x = (b[1] << 4) | (b[3] >> 4);
+    *y = (b[2] << 4) | (b[3] & 0x0F);
+    return true;
+}
+
+/*
+ * The two pages, Sound and Days, and a swipe either way between them: a
+ * touch that travels 40 px or more before it lifts, along either axis (the
+ * panel's touch axes are not yet known against the glass, so either counts).
+ * Touches polled at 20 Hz; the Sound page drawn once a second, the Days page
+ * when its data moves or the page is turned to it.
+ */
 static void screen_task(void *arg)
 {
     (void)arg;
@@ -609,39 +645,75 @@ static void screen_task(void *arg)
     page.fb = c->fb + (size_t)top * (size_t)c->w;
     page.h = NOISEUI_HEIGHT;
     for (int i = 0; i < NOISEUI_POINTS; i++) { s_scr.hist[i] = NAN; s_scr.hist_valid[i] = false; }
+    static daysui_t days;
+    uint32_t days_seen = 0;
     double bucket_e = 0.0;
-    int bucket_n = 0, ticks = 0;
+    int bucket_n = 0, ticks = 0, polls = 0;
+    bool on_days = false, redraw = true, down = false;
+    int x0 = 0, y0 = 0, xl = 0, yl = 0;
     TickType_t wake = xTaskGetTickCount();
     for (;;) {
-        soundlevel_now_t n;
-        soundlevel_report_t t;
-        sl_lock();
-        soundlevel_now(&s_sl, &n);
-        bool have_today = soundlevel_today(&s_sl, &t) && t.blocks > 0;
-        sl_unlock();
-        s_scr.have_signal = n.have;
-        s_scr.laf = n.laf;
-        s_scr.laeq3 = n.laeq3s;
-        s_scr.today = have_today ? t.laeq : NAN;
-        s_scr.calibrated = n.calibrated;
-        if (n.have && isfinite(n.laeq3s)) {
-            bucket_e += pow(10.0, n.laeq3s / 10.0);
-            bucket_n++;
+        int tx, ty;
+        if (touch_read(&tx, &ty)) {
+            if (!down) { x0 = tx; y0 = ty; down = true; }
+            xl = tx;
+            yl = ty;
+        } else if (down) {
+            down = false;
+            int dx = xl - x0, dy = yl - y0;
+            ESP_LOGI(TAG, "touch: %d,%d -> %d,%d", x0, y0, xl, yl);
+            if (abs(dx) >= 40 || abs(dy) >= 40) {
+                on_days = !on_days;
+                redraw = true;
+                ESP_LOGI(TAG, "screen: swipe, now %s", on_days ? "Days" : "Sound");
+            }
         }
-        if (++ticks >= 10) {
-            memmove(s_scr.hist, s_scr.hist + 1, (NOISEUI_POINTS - 1) * sizeof s_scr.hist[0]);
-            memmove(s_scr.hist_valid, s_scr.hist_valid + 1, (NOISEUI_POINTS - 1) * sizeof s_scr.hist_valid[0]);
-            bool ok = bucket_n > 0;
-            s_scr.hist[NOISEUI_POINTS - 1] = ok ? (float)(10.0 * log10(bucket_e / bucket_n)) : NAN;
-            s_scr.hist_valid[NOISEUI_POINTS - 1] = ok;
-            bucket_e = 0.0;
-            bucket_n = 0;
-            ticks = 0;
+
+        if (++polls >= 20) {                   /* a second: the meter */
+            polls = 0;
+            soundlevel_now_t n;
+            soundlevel_report_t t;
+            sl_lock();
+            soundlevel_now(&s_sl, &n);
+            bool have_today = soundlevel_today(&s_sl, &t) && t.blocks > 0;
+            sl_unlock();
+            s_scr.have_signal = n.have;
+            s_scr.laf = n.laf;
+            s_scr.laeq3 = n.laeq3s;
+            s_scr.today = have_today ? t.laeq : NAN;
+            s_scr.calibrated = n.calibrated;
+            if (n.have && isfinite(n.laeq3s)) {
+                bucket_e += pow(10.0, n.laeq3s / 10.0);
+                bucket_n++;
+            }
+            if (++ticks >= 10) {
+                memmove(s_scr.hist, s_scr.hist + 1, (NOISEUI_POINTS - 1) * sizeof s_scr.hist[0]);
+                memmove(s_scr.hist_valid, s_scr.hist_valid + 1, (NOISEUI_POINTS - 1) * sizeof s_scr.hist_valid[0]);
+                bool ok = bucket_n > 0;
+                s_scr.hist[NOISEUI_POINTS - 1] = ok ? (float)(10.0 * log10(bucket_e / bucket_n)) : NAN;
+                s_scr.hist_valid[NOISEUI_POINTS - 1] = ok;
+                bucket_e = 0.0;
+                bucket_n = 0;
+                ticks = 0;
+            }
+            if (!on_days) redraw = true;
         }
-        canvas_clear(c);
-        noiseui_draw(&page, &s_scr);
-        display_blit();
-        vTaskDelayUntil(&wake, pdMS_TO_TICKS(1000));
+        portENTER_CRITICAL(&s_days_mux);
+        if (s_days_seq != days_seen) {
+            days = s_days_scr;
+            days_seen = s_days_seq;
+            if (on_days) redraw = true;
+        }
+        portEXIT_CRITICAL(&s_days_mux);
+
+        if (redraw) {
+            redraw = false;
+            canvas_clear(c);
+            if (on_days) daysui_draw(&page, &days);
+            else noiseui_draw(&page, &s_scr);
+            display_blit();
+        }
+        vTaskDelayUntil(&wake, pdMS_TO_TICKS(50));
     }
 }
 
@@ -1771,6 +1843,28 @@ static void days_line(void)
         len += (size_t)k;
     }
     ESP_LOGI(TAG, "days: %s", line);
+
+    /* The same days for speaker's own Days page. */
+    static daysui_t d;
+    memset(&d, 0, sizeof d);
+    d.have_data = true;
+    d.calibrated = n.calibrated;
+    d.bars = SCREEN_DAYS;
+    for (int i = from; i < DAYS_BACK && d.n < DAYSUI_DAYS; i++) {
+        int y, m, dd;
+        timecalc_civil(first + i, &y, &m, &dd);
+        daysui_day_t *e = &d.day[d.n++];
+        e->year = (uint16_t)y;
+        e->month = (uint8_t)m;
+        e->day = (uint8_t)dd;
+        e->laeq = laeq[i];
+        e->l90 = l90[i];
+        e->today = i == DAYS_BACK - 1;
+    }
+    portENTER_CRITICAL(&s_days_mux);
+    s_days_scr = d;
+    s_days_seq++;
+    portEXIT_CRITICAL(&s_days_mux);
 }
 
 /* ---- the chime ------------------------------------------------------------ */

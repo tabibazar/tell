@@ -80,6 +80,8 @@ typedef struct {
     bool have_data;     /* a days line has arrived since boot */
     bool stale;         /* ...but not lately, or not for today: drawn dimmed */
     bool calibrated;    /* false: speaker's levels are estimates, "est" */
+    int  bars;          /* how many days the bars show: 0 is DAYSUI_BARS (watch's week);
+                           up to DAYSUI_DAYS (speaker shows 30) */
     int  n;             /* days in day[], oldest first; clamped to 0..DAYSUI_DAYS */
     daysui_day_t day[DAYSUI_DAYS];
 } daysui_t;
