@@ -471,8 +471,11 @@ static void figure_draw(canvas_t *c, const figure_t *g, int x, int top, uint16_t
    cannot know how long its own warm-up will take. */
 static void so_far(char *out, size_t size, int minutes)
 {
-    if (minutes < 0) minutes = 0;
-    if (minutes < 1000) snprintf(out, size, "%d MIN SO FAR", minutes);
+    /* "0 MIN SO FAR" read as nothing happening: the first minute says so in
+       words. Past the hour, hours and minutes: "75 MIN" is arithmetic. */
+    if (minutes < 1) snprintf(out, size, "JUST STARTED");
+    else if (minutes < 60) snprintf(out, size, "%d MIN SO FAR", minutes);
+    else if (minutes < 24 * 60) snprintf(out, size, "%d H %d MIN SO FAR", minutes / 60, minutes % 60);
     else if (minutes / 60 < 10000) snprintf(out, size, "%d H SO FAR", minutes / 60);
     else snprintf(out, size, "9999+ H SO FAR");
 }

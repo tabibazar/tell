@@ -468,6 +468,19 @@ static void test_reading_pages(void)
            count(fb, 0, 0, W - 1, 134, GOOD) == 0 && count(fb, 0, 0, W - 1, 134, POOR) == 0
            && count(fb, 0, 0, W - 1, 134, FAIR) == 0);
     expect("and no white number", ink_rows(fb, 16, 24, 300, 96, &top, &bottom) == 0);
+    /* The first minute says JUST STARTED, not "0 MIN SO FAR"; past the hour,
+       hours and minutes -- the longest, 23 H 59 MIN, still inside the margins. */
+    static const struct { int min; const char *name; } warm[] = {
+        { 0, "voc_warming_0" }, { 75, "voc_warming_75" }, { 24 * 60 - 1, "voc_warming_long" },
+    };
+    for (size_t k = 0; k < sizeof warm / sizeof warm[0]; k++) {
+        s->warm_minutes = warm[k].min;
+        fb = draw(DRAW_READING, s, 0, warm[k].name);
+        expect("the warm-up caption stays inside the margins",
+               dark(fb, 0, 76, 15, 134) && dark(fb, 305, 76, W - 1, 134)
+               && count(fb, 16, 76, 304, 134, GREY) > 50);
+    }
+    s->warm_minutes = 12;
     s->warming = false;
     s->gas_error = true;
     fb = draw(DRAW_READING, s, 0, "voc_gas_error");
