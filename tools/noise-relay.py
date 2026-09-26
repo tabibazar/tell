@@ -65,6 +65,7 @@ GAP_S = 1.0         # at most one line a second to watch
 FRESH_S = 1.5       # a reading this old is not worth sending
 SILENT_S = 5.0      # speaker connected but no noise line for this long
 LOOK_S = 1.0        # how often to look for a board that is not there
+CLOCK_EVERY_S = 120.0   # at most one plug-in clock push per board in this long
 HOLD_OFF_S = 5.0    # after watch stops taking lines, before trying again
 TRUST_S = 60.0      # without a timeout, before watch is said to be taking lines again
 STALL_S = 5.0       # a loop this late means the Mac slept, or we did
@@ -322,6 +323,7 @@ class Board:
         self.lines = Lines()
         self.state = None
         self.next_look = 0.0
+        self.clock_at = -1e9     # when this board's clock was last pushed
 
     def note(self, state, msg):
         if state != self.state:
@@ -342,7 +344,35 @@ class Board:
         self.device = device
         self.lines.restart()
         self.note("open", "on %s" % device)
+        self.push_clock(now)
         return True
+
+    def push_clock(self, now):
+        """Set the board's clock over BLE the moment it turns up on USB.
+
+        The boards travel between home and work and their clock chips have
+        flat backup cells, so one that lost power on the way arrives with no
+        time: watch shows NO TIME and speaker logs nothing until a Mac says
+        what time it is. The 5-minute push-clock agent would get there; this
+        gets there as soon as the board is plugged in. Eight seconds' grace for
+        it to boot and advertise, at most once in two minutes per board, and
+        never waited on -- tools/push-clock.sh goes through tell-locked, so it
+        cannot collide with the agent's own push.
+        """
+        if now - self.clock_at < CLOCK_EVERY_S:
+            return
+        self.clock_at = now
+        script = os.path.join(HERE, "push-clock.sh")
+        if not os.access(script, os.X_OK):
+            return
+        import subprocess
+        try:
+            subprocess.Popen(["/bin/sh", "-c", 'sleep 8; exec "$0" "$1"', script, self.name],
+                             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                             stderr=subprocess.DEVNULL, start_new_session=True)
+            log("%s: pushing its clock (it may have lost it on the way)" % self.name)
+        except OSError as e:
+            log("%s: could not start push-clock: %s" % (self.name, e))
 
     def close(self):
         if self.port is not None:

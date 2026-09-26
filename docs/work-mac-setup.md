@@ -1,6 +1,9 @@
-# Moving watch, speaker and envo to the work Mac
+# watch, speaker and envo on two Macs (home and work)
 
-The firmware is already on the boards; the work Mac only has to keep them fed.
+The boards travel between home and work, so BOTH Macs get the same setup and
+keep it: whichever Mac the boards are plugged into serves them, and the other
+simply finds nothing (its clock pushes give up quietly, its relay waits).
+The firmware is already on the boards; a Mac only has to keep them fed.
 Everything identifies boards by MAC (USB serial number), so port names never
 matter.
 
@@ -31,9 +34,9 @@ The first `tell` run asks for Bluetooth permission for the terminal -- allow it.
     tools/install-agent.sh speaker
 
 Check: `tail /tmp/push-clock.watch.log /tmp/push-clock.speaker.log`.
-Once these run at work, the same agents on the home Mac can be removed:
-`launchctl bootout gui/$(id -u)/com.tabibazar.push-clock.watch` (and `.speaker`,
-and `com.tabibazar.noise-relay`).
+Keep them on both Macs. The relay (below) also pushes a board's clock the
+moment it is plugged in, so a board that lost power on the way is right
+within seconds rather than at the next 5-minute push.
 
 ## 4. speaker's level on watch (both on this Mac's USB)
 
