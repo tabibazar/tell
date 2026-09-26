@@ -104,7 +104,7 @@ if(NOT CONFIG_SCREEN_BOARD_AUDIO_S3)
 endif()
 # watch's Sound page (noiseui.c) is hers alone.
 if(NOT CONFIG_SCREEN_BOARD_TOUCH_LCD_169)
-    list(APPEND BOARD_EXCLUDES "noiseui.c")
+    list(APPEND BOARD_EXCLUDES "noiseui.c" "daysui.c")
 endif()
 
 # One touch driver per board -- both define the same touch_* interface, so

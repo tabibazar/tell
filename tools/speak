@@ -1,0 +1,270 @@
+#!/usr/bin/env python3
+"""Say something out of speaker.
+
+    tools/speak "The kettle has boiled."
+    tools/speak --test "Testing, one two."        plays even in quiet hours
+    tools/speak --voice Daniel --rate 170 "..."    any voice `say -v '?'` lists
+    tools/speak --self-test                        check the WAV reader; no socket
+
+macOS `say` renders the words to a WAV at speaker's own format, 16-bit mono
+at 16 kHz, and the samples go to the noise relay on ~/.tell/speaker.sock,
+which holds speaker's USB port and passes them on ("PLAY <nbytes> 16000
+<normal|test>" and then the bytes). Nothing here opens a port: two programs
+on one port would take turns at one stream of bytes, and the relay is the
+one that is always there.
+
+speaker plays a "normal" utterance only between 06:00 and 21:00 by its own
+clock, and not at all when it does not know the time; --test plays at any
+hour, for trying it out. At most 30 seconds: anything longer is refused here,
+before it is sent.
+
+Exit status: 0 speaker played it (or has started to), 1 speaker or the relay
+refused it, 2 the words could not be rendered or were too long, 3 the relay
+is not running.
+"""
+
+import argparse
+import os
+import socket
+import struct
+import subprocess
+import sys
+import tempfile
+
+# $SPEAKER_SOCK moves it, for trying a relay out beside the real one.
+SOCK_PATH = os.environ.get("SPEAKER_SOCK") or os.path.expanduser("~/.tell/speaker.sock")
+RATE = 16000
+MAX_BYTES = 960000          # 30 s of 16-bit mono at 16 kHz
+
+
+class WavError(ValueError):
+    pass
+
+
+def read_wav(blob):
+    """A WAV file's bytes -> (rate, channels, bits, sample bytes).
+
+    Read chunk by chunk, not from a fixed offset: `say` puts a 4 KB FLLR
+    chunk between "fmt " and "data" (so the samples start at 4096), and other
+    writers put LIST or fact chunks there. A chunk of odd size is followed by
+    a pad byte. A data chunk that claims more than the file holds -- a
+    writer that never went back to fill the size in -- is taken as far as
+    the file goes.
+    """
+    if len(blob) < 12 or blob[:4] != b"RIFF" or blob[8:12] != b"WAVE":
+        raise WavError("not a WAV file")
+    fmt = None
+    at = 12
+    while at + 8 <= len(blob):
+        cid, size = blob[at:at + 4], struct.unpack_from("<I", blob, at + 4)[0]
+        body = at + 8
+        if cid == b"fmt ":
+            if size < 16:
+                raise WavError("fmt chunk too short")
+            tag, channels, rate, _, _, bits = struct.unpack_from("<HHIIHH", blob, body)
+            if tag == 0xFFFE and size >= 40:     # WAVE_FORMAT_EXTENSIBLE: the real tag is the GUID's first two bytes
+                tag = struct.unpack_from("<H", blob, body + 24)[0]
+            if tag != 1:
+                raise WavError("not integer PCM (format %#x)" % tag)
+            fmt = (rate, channels, bits)
+        elif cid == b"data":
+            if fmt is None:
+                raise WavError("data before fmt")
+            return fmt + (blob[body:body + size],)
+        at = body + size + (size & 1)
+    raise WavError("no data chunk")
+
+
+def to_mono16(rate, channels, bits, data):
+    """16-bit samples of any channel count -> 16-bit mono, the channels averaged."""
+    if bits != 16:
+        raise WavError("%d-bit samples; want 16" % bits)
+    if rate != RATE:
+        raise WavError("%d Hz; want %d" % (rate, RATE))
+    if channels < 1:
+        raise WavError("no channels")
+    frame = 2 * channels
+    data = data[:len(data) - len(data) % frame]
+    if channels == 1:
+        return data
+    n = len(data) // 2
+    s = struct.unpack("<%dh" % n, data)
+    mono = [sum(s[i:i + channels]) // channels for i in range(0, n, channels)]
+    return struct.pack("<%dh" % len(mono), *mono)
+
+
+def render(text, voice=None, rate=None):
+    """Words -> 16 kHz 16-bit mono PCM, by way of `say` and a temporary WAV."""
+    with tempfile.TemporaryDirectory(prefix="speak") as d:
+        words, wav = os.path.join(d, "words.txt"), os.path.join(d, "words.wav")
+        with open(words, "w", encoding="utf-8") as f:
+            f.write(text)
+        # From a file rather than the command line, so words that begin with
+        # a dash are words and not options.
+        cmd = ["say", "--file-format=WAVE", "--data-format=LEI16@%d" % RATE, "-o", wav, "-f", words]
+        if voice:
+            cmd[1:1] = ["-v", voice]
+        if rate:
+            cmd[1:1] = ["-r", str(rate)]
+        p = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
+        if p.returncode != 0 or not os.path.exists(wav):
+            raise WavError("say failed: %s" % (p.stderr.strip() or "exit %d" % p.returncode))
+        with open(wav, "rb") as f:
+            return to_mono16(*read_wav(f.read()))
+
+
+def seconds(pcm):
+    return len(pcm) / 2.0 / RATE
+
+
+def play(pcm, mode, path=SOCK_PATH, out=sys.stdout):
+    """PCM to the relay; the relay's lines printed as they come. The exit status."""
+    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        s.connect(path)
+    except (FileNotFoundError, ConnectionRefusedError):
+        print("speak: the noise relay is not running (no one on %s),\n"
+              "or it is one from before the socket. (Re)start it with:\n"
+              "    tools/install-agent.sh noise-relay" % path, file=sys.stderr)
+        return 3
+    except OSError as e:
+        print("speak: cannot reach the relay on %s: %s" % (path, e), file=sys.stderr)
+        return 3
+    status, heard = 1, False
+    try:
+        s.settimeout(90)        # 30 s of sound, the writing of it, and the relay's own waits
+        s.sendall(("PLAY %d %d %s\n" % (len(pcm), RATE, mode)).encode("ascii") + pcm)
+        f = s.makefile("r", encoding="utf-8", errors="replace")
+        for line in f:
+            line = line.rstrip("\n")
+            if line == "END":
+                break
+            print(line, file=out, flush=True)
+            heard = heard or line.startswith("play:") or line.startswith("ERR")
+            if line.startswith("ERR") or line.startswith("play: refused") or line.startswith("play: timeout"):
+                status = 1
+            elif line.startswith("play: started") or line.startswith("play: done"):
+                status = 0
+    except socket.timeout:
+        print("speak: no answer from the relay", file=sys.stderr)
+        return 1
+    except OSError as e:
+        print("speak: lost the relay: %s" % e, file=sys.stderr)
+        return 1
+    finally:
+        s.close()
+    if not heard:
+        print("speak: speaker said nothing about it (its firmware may predate !play)", file=sys.stderr)
+    return status
+
+
+# ---- the self-test ------------------------------------------------------------
+
+def wav(chunks):
+    body = b"WAVE" + b"".join(cid + struct.pack("<I", len(data)) + data + (b"\0" if len(data) & 1 else b"")
+                              for cid, data in chunks)
+    return b"RIFF" + struct.pack("<I", len(body)) + body
+
+
+def fmt_chunk(rate=RATE, channels=1, bits=16):
+    return b"fmt ", struct.pack("<HHIIHH", 1, channels, rate, rate * channels * bits // 8, channels * bits // 8, bits)
+
+
+def self_test():
+    fails, count = [], [0]
+
+    def check(what, got, want):
+        count[0] += 1
+        if got != want:
+            fails.append("%s: got %r, want %r" % (what, got, want))
+
+    pcm = struct.pack("<4h", 1, -2, 300, -32768)
+    # Laid out as `say` lays it out: fmt, a filler, then data.
+    check("say's layout", read_wav(wav([fmt_chunk(), (b"FLLR", b"\0" * 4044), (b"data", pcm)])),
+          (RATE, 1, 16, pcm))
+    # An odd-sized chunk before data, and its pad byte.
+    check("odd chunk", read_wav(wav([fmt_chunk(), (b"LIST", b"abc"), (b"data", pcm)]))[3], pcm)
+    # A data size the writer never filled in.
+    blob = wav([fmt_chunk(), (b"data", pcm)])
+    blob = blob[:-len(pcm) - 4] + struct.pack("<I", 0xFFFFFFFF) + pcm
+    check("unfilled size", read_wav(blob)[3], pcm)
+    check("mono as is", to_mono16(RATE, 1, 16, pcm), pcm)
+    stereo = struct.pack("<4h", 100, 300, -100, -301)
+    check("stereo averaged", to_mono16(RATE, 2, 16, stereo), struct.pack("<2h", 200, -201))
+    for what, blob in (("not RIFF", b"RIFX" + b"\0" * 40),
+                       ("no data", wav([fmt_chunk()])),
+                       ("data first", wav([(b"data", pcm), fmt_chunk()])),
+                       ("float", wav([(b"fmt ", struct.pack("<HHIIHH", 3, 1, RATE, RATE * 4, 4, 32)), (b"data", pcm)]))):
+        try:
+            read_wav(blob)
+            check(what, "read", "refused")
+        except WavError:
+            check(what, "refused", "refused")
+    for what, args in (("44.1 kHz", (44100, 1, 16, pcm)), ("8-bit", (RATE, 1, 8, pcm))):
+        try:
+            to_mono16(*args)
+            check(what, "taken", "refused")
+        except WavError:
+            check(what, "refused", "refused")
+    check("30 s is the most", MAX_BYTES, 30 * RATE * 2)
+    check("seconds", seconds(b"\0" * 32000), 1.0)
+    check("too long is refused", main_checks_length(b"\0" * (MAX_BYTES + 2)), 2)
+    check("30 s exactly is not", main_checks_length(b"\0" * MAX_BYTES), 0)
+
+    # No relay: says so, and exits 3.
+    with tempfile.TemporaryDirectory(prefix="spk") as d:
+        devnull = open(os.devnull, "w")
+        old, sys.stderr = sys.stderr, devnull
+        try:
+            check("no relay", play(pcm, "test", os.path.join(d, "none.sock")), 3)
+        finally:
+            sys.stderr = old
+            devnull.close()
+
+    # And `say` itself, where there is one: a real rendering reads back.
+    if subprocess.run(["which", "say"], stdout=subprocess.DEVNULL).returncode == 0:
+        try:
+            got = render("Test.")
+            check("say renders", 0 < len(got) < MAX_BYTES and len(got) % 2 == 0, True)
+        except WavError as e:
+            check("say renders", str(e), None)
+
+    for f in fails:
+        print("FAIL " + f)
+    print("self-test: %d of %d checks passed" % (count[0] - len(fails), count[0]))
+    return 1 if fails else 0
+
+
+def main_checks_length(pcm):
+    """The length rule main() applies: 2 for too long, 0 for fine."""
+    return 2 if len(pcm) > MAX_BYTES else 0
+
+
+def main():
+    ap = argparse.ArgumentParser(description="Say something out of speaker, through the noise relay.")
+    ap.add_argument("text", nargs="?", help="what to say")
+    ap.add_argument("--test", action="store_true", help="play even in quiet hours (21:00-06:00)")
+    ap.add_argument("--voice", metavar="NAME", help="a voice `say -v '?'` lists")
+    ap.add_argument("--rate", metavar="WPM", type=int, help="words a minute")
+    ap.add_argument("--self-test", action="store_true", help="check the WAV reader, then exit")
+    args = ap.parse_args()
+    if args.self_test:
+        return self_test()
+    if not args.text or not args.text.strip():
+        ap.error("say what?")
+    try:
+        pcm = render(args.text, args.voice, args.rate)
+    except (WavError, OSError) as e:
+        print("speak: %s" % e, file=sys.stderr)
+        return 2
+    if main_checks_length(pcm):
+        print("speak: %.1f s is too long; speaker plays at most 30 s" % seconds(pcm), file=sys.stderr)
+        return 2
+    if not pcm:
+        print("speak: say rendered no sound", file=sys.stderr)
+        return 2
+    return play(pcm, "test" if args.test else "normal")
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -1,0 +1,611 @@
+#!/usr/bin/env python3
+"""Calibrate speaker's sound level against a meter, and read back its days.
+
+    tools/cal-speaker            guided: pink noise from the Mac, a phone meter, !cal
+    tools/cal-speaker 55.5       the room is 55.5 dBA now: send "!cal 55.5"
+    tools/cal-speaker --status   what speaker last said, and its days as a table
+    tools/cal-speaker --self-test
+
+speaker measures in dBFS and reports dBA through one offset. Until it is told
+what the room reads on a real meter that offset is an estimate (the "est" on
+every line); "!cal NN" says "the room is NN dBA now", and speaker sets the
+offset so that its LAeq over the last three seconds reads NN. So the room has
+to hold still for those seconds, which a room seldom does by itself -- hence
+the pink noise: a steady sound, loud enough to drown the room, spread over
+the octaves the way the room's own sounds are, so the meter and the mics
+agree on what they are hearing.
+
+Everything goes through the noise relay's socket, ~/.tell/speaker.sock; the
+relay holds speaker's port and nothing here opens it.
+
+--status prints the baseline the watch's Days page (main/daysui.c) works out
+from the same "days:" line, by the same rules: each day's LAeq (the day's
+energy mean) and L90 (the level it was above 90% of the time); today so far
+against a usual day -- the energy mean of up to the 4 latest earlier days on
+today's weekday that have a level, or with none of those yet, of up to the 7
+latest earlier days of any weekday -- and "about the same" within 1 dB; the
+recent days' energy mean, up to the 7 latest earlier days with a level; and
+the background, the median L90 of up to the 7 latest earlier days that have
+one (today's own when none has). "Latest earlier days that have one" walks
+back past days with no data rather than stopping at a calendar week.
+
+Exit status: 0 done, 1 speaker or the relay said no, 2 bad input, 3 the relay
+is not running.
+"""
+
+import argparse
+import cmath
+import datetime as dt
+import math
+import os
+import random
+import re
+import socket
+import subprocess
+import sys
+import tempfile
+import threading
+import time
+import wave
+from array import array
+
+# $SPEAKER_SOCK moves it, for trying a relay out beside the real one.
+SOCK_PATH = os.environ.get("SPEAKER_SOCK") or os.path.expanduser("~/.tell/speaker.sock")
+NOISE_RATE = 48000
+NOISE_S = 60.0
+FADE_S = 1.0
+NOISE_RMS_DBFS = -18.0
+
+
+# ---- the relay ------------------------------------------------------------------
+
+class NoRelay(Exception):
+    pass
+
+
+def ask(request, path=SOCK_PATH, timeout=15.0):
+    """One request to the relay -> its lines, END left off."""
+    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        s.connect(path)
+    except (FileNotFoundError, ConnectionRefusedError):
+        raise NoRelay("the noise relay is not running (no one on %s),\n"
+                      "or it is one from before the socket. (Re)start it with:\n"
+                      "    tools/install-agent.sh noise-relay" % path)
+    except OSError as e:
+        raise NoRelay("cannot reach the relay on %s: %s" % (path, e))
+    lines = []
+    try:
+        s.settimeout(timeout)
+        s.sendall((request + "\n").encode("ascii"))
+        for line in s.makefile("r", encoding="utf-8", errors="replace"):
+            line = line.rstrip("\n")
+            if line == "END":
+                break
+            lines.append(line)
+    except socket.timeout:
+        lines.append("ERR no answer from the relay in %.0f s" % timeout)
+    finally:
+        s.close()
+    return lines
+
+
+def send_cal(level, path=SOCK_PATH):
+    """"!cal <level>" to speaker; its answer printed. The exit status."""
+    lines = ask("CMD !cal %s" % level, path)
+    for line in lines:
+        print("  " + line)
+    if any(l.startswith("cal: the room is") for l in lines):
+        return 0
+    if not any(l.startswith("cal:") or l.startswith("ERR") for l in lines):
+        print("  (speaker said nothing about it: is it running firmware that reads its USB port?)")
+    return 1
+
+
+# ---- pink noise ------------------------------------------------------------------
+
+def pink(n, seed=None, rows=16):
+    """n samples of pink noise, Voss-McCartney: `rows` random values, row k
+    renewed every 2^k samples, summed with a fresh white one each sample. Each
+    row is white noise held for 2^k samples, whose power sits below
+    fs/2^(k+1); together they fall at 3 dB an octave from fs/2 down to about
+    fs/2^(rows+1), under 1 Hz here."""
+    r = random.Random(seed).random
+    vals = [r() - 0.5 for _ in range(rows)]
+    total = sum(vals)
+    out = [0.0] * n
+    for i in range(n):
+        k = ((i + 1) & -(i + 1)).bit_length() - 1
+        if k < rows:
+            new = r() - 0.5
+            total += new - vals[k]
+            vals[k] = new
+        out[i] = total + r() - 0.5
+    return out
+
+
+def noise_samples(seconds=NOISE_S, rate=NOISE_RATE, seed=None):
+    """Pink noise as 16-bit samples: RMS at NOISE_RMS_DBFS, faded in and out
+    over FADE_S so the loop's seam is a dip and not a click."""
+    x = pink(int(seconds * rate), seed)
+    mean = sum(x) / len(x)
+    rms = math.sqrt(sum((v - mean) ** 2 for v in x) / len(x))
+    gain = 32767.0 * 10 ** (NOISE_RMS_DBFS / 20.0) / rms
+    fade = int(FADE_S * rate)
+    n = len(x)
+    out = array("h", bytes(2 * n))
+    for i in range(n):
+        g = gain
+        if i < fade:
+            g *= i / fade
+        elif i >= n - fade:
+            g *= (n - 1 - i) / fade
+        v = int(round((x[i] - mean) * g))
+        out[i] = 32767 if v > 32767 else -32768 if v < -32768 else v
+    return out
+
+
+def write_wav(path, samples, rate=NOISE_RATE):
+    if sys.byteorder == "big":
+        samples = array("h", samples)
+        samples.byteswap()
+    with wave.open(path, "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(rate)
+        w.writeframes(samples.tobytes())
+
+
+class Loop:
+    """A WAV played over and over by afplay until stop()."""
+
+    def __init__(self, path):
+        self.path = path
+        self.halt = threading.Event()
+        self.lock = threading.Lock()
+        self.proc = None
+        self.error = None
+        self.thread = threading.Thread(target=self.run, daemon=True)
+
+    def start(self):
+        self.thread.start()
+
+    def run(self):
+        while not self.halt.is_set():
+            with self.lock:
+                if self.halt.is_set():
+                    return
+                began = time.monotonic()
+                self.proc = subprocess.Popen(["afplay", self.path], stdin=subprocess.DEVNULL,
+                                             stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+            _, err = self.proc.communicate()
+            if self.proc.returncode != 0 and not self.halt.is_set() and time.monotonic() - began < 1.0:
+                self.error = (err or b"").decode("utf-8", "replace").strip() or "afplay failed"
+                return
+
+    def stop(self):
+        self.halt.set()
+        with self.lock:
+            if self.proc is not None and self.proc.poll() is None:
+                self.proc.terminate()
+        self.thread.join(3)
+
+
+# ---- the days and their baseline --------------------------------------------------
+
+LEVEL = r"(--(?:\.-)?|\d{1,3}(?:\.\d+)?)"
+ENTRY = re.compile(r"^(\d{4}-\d\d-\d\d)=" + LEVEL + r"(?:/" + LEVEL + r")?(\*?)$")
+
+
+def level(s):
+    if s is None or s.startswith("--"):
+        return None
+    v = float(s)
+    return v if 0.0 <= v <= 150.0 else None
+
+
+def parse_days(msg):
+    """"days: <cal|est> <date>=<LAeq>/<L90>[*] ..." -> (calibrated, {date: (laeq, l90, partial)})."""
+    words = msg.split()
+    if len(words) < 2 or words[0] != "days:" or words[1] not in ("cal", "est"):
+        return None
+    days = {}
+    for w in words[2:]:
+        m = ENTRY.match(w)
+        if m is None:
+            continue
+        try:
+            d = dt.date.fromisoformat(m.group(1))
+        except ValueError:
+            continue
+        days[d] = (level(m.group(2)), level(m.group(3)), m.group(4) == "*")
+    return words[1] == "cal", days
+
+
+def energy_mean(levels):
+    """The level whose energy is the mean of theirs: 40 and 50 dBA make 47.4, not 45."""
+    levels = [l for l in levels if l is not None]
+    if not levels:
+        return None
+    return 10.0 * math.log10(sum(10.0 ** (l / 10.0) for l in levels) / len(levels))
+
+
+def median(xs):
+    xs = sorted(x for x in xs if x is not None)
+    if not xs:
+        return None
+    mid = len(xs) // 2
+    return xs[mid] if len(xs) % 2 else (xs[mid - 1] + xs[mid]) / 2.0
+
+
+def baseline(days):
+    """main/daysui.c's daysui_baseline and daysui_background, on the days.
+
+    Today is the latest day flagged running ("*"); with none, there is no
+    today and every day counts as earlier. The earlier days are walked back
+    from the latest, and each figure takes the first that have what it
+    needs, so a day with no data is passed over rather than counted.
+    """
+    running = [d for d, v in days.items() if v[2]]
+    today = max(running) if running else None
+    earlier = sorted((d for d in days if today is None or d < today), reverse=True)
+
+    def latest(k, pick, keep=lambda d: True):
+        vals = [pick(days[d]) for d in earlier if keep(d) and pick(days[d]) is not None]
+        return vals[:k]
+
+    now = days.get(today, (None, None, False))
+    recent = latest(7, lambda v: v[0])
+    same = [] if today is None else latest(4, lambda v: v[0], lambda d: d.weekday() == today.weekday())
+    if same:
+        kind, usual = "weekday", same
+    elif recent:
+        kind, usual = "recent", recent
+    else:
+        kind, usual = None, []
+    bg = latest(7, lambda v: v[1])
+    level = energy_mean(usual)
+    return {
+        "today": today,
+        "today_laeq": now[0],
+        "today_l90": now[1],
+        "recent": energy_mean(recent),
+        "recent_n": len(recent),
+        "kind": kind,               # "weekday", "recent", or None: nothing earlier
+        "usual": level,
+        "usual_n": len(usual),
+        "vs_usual": None if level is None or now[0] is None else now[0] - level,
+        "background": median(bg) if bg else now[1],
+        "background_n": len(bg),    # 0: today's own L90, or nothing
+    }
+
+
+def fmt(v, width=5):
+    return ("%.1f" % v if v is not None else "--").rjust(width)
+
+
+def ago(s):
+    s = int(s)
+    if s < 120:
+        return "%d s ago" % s
+    if s < 7200:
+        return "%d min ago" % (s // 60)
+    return "%.1f h ago" % (s / 3600.0)
+
+
+def show_status(lines, out=sys.stdout):
+    """STATUS's lines, readably. The exit status."""
+    def say(text=""):
+        print(text, file=out)
+
+    if lines and lines[0].startswith("ERR"):
+        say(lines[0])
+        return 1
+    seen = []
+    for line in lines:
+        m = re.match(r"^(\d+) (.*)$", line)
+        if m:
+            seen.append((int(m.group(1)), m.group(2)))
+        else:
+            say(line)
+    days_line = None
+    for age, msg in seen:
+        if msg.startswith("days:"):
+            days_line = (age, msg)
+        else:
+            say("%-60s %s" % (msg, "(" + ago(age) + ")"))
+    if not seen:
+        say("(speaker has said nothing yet since the relay started)")
+    if days_line is None:
+        say("\nNo days line from speaker yet (it prints one a minute).")
+        return 0
+    got = parse_days(days_line[1])
+    if got is None or not got[1]:
+        say("\nThe days line had no days in it: %s" % days_line[1])
+        return 0
+    calibrated, days = got
+    say("\nDays, %s (%s):" % ("calibrated" if calibrated else "ESTIMATED -- speaker has not been calibrated",
+                              ago(days_line[0])))
+    say("  %-10s  %-3s  %5s  %5s" % ("date", "", "LAeq", "L90"))
+    dates = sorted(days)
+    have = [d for d in dates if days[d][0] is not None or days[d][1] is not None]
+    for d in dates:
+        if have and d < have[0]:
+            continue            # the empty days before speaker's first
+        laeq, l90, partial = days[d]
+        say("  %s  %s  %s  %s%s" % (d.isoformat(), d.strftime("%a"), fmt(laeq), fmt(l90),
+                                     "  so far" if partial else ""))
+    b = baseline(days)
+    say("")
+    plural = lambda n, w: "%d %s%s" % (n, w, "" if n == 1 else "s")
+    if b["recent"] is not None:
+        say("  recent days    LAeq %s dBA  (energy mean of the latest %s with a level)" % (
+            fmt(b["recent"], 0), plural(b["recent_n"], "earlier day")))
+    if b["background"] is not None:
+        say("  background     L90  %s dBA  (%s)" % (
+            fmt(b["background"], 0), "median of the latest %s with one" % plural(b["background_n"], "earlier day")
+            if b["background_n"] else "today's own; no earlier day has one"))
+    if b["today"] is None:
+        say("  today          not in the line")
+        return 0
+    wd = b["today"].strftime("%A")
+    than = ("a usual %s (%d)" % (wd, b["usual_n"]) if b["kind"] == "weekday"
+            else "recent days (%d)" % b["usual_n"])
+    if b["kind"] is None:
+        say("  today so far   LAeq %s dBA  (first day: the baseline starts tomorrow)" % fmt(b["today_laeq"], 0))
+    elif b["today_laeq"] is None:
+        say("  today          nothing yet; %s is %s dBA" % (than, fmt(b["usual"], 0)))
+    else:
+        d = b["vs_usual"]
+        how = "about the same as" if abs(d) < 1.0 else "%+.1f dB %s than" % (d, "louder" if d > 0 else "quieter")
+        say("  today so far   LAeq %s dBA  %s %s: %s dBA" % (fmt(b["today_laeq"], 0), how, than, fmt(b["usual"], 0)))
+    return 0
+
+
+# ---- guided ------------------------------------------------------------------------
+
+GUIDE = """\
+Calibrating speaker's sound level.
+
+You need a sound meter on your phone -- NIOSH SLM (free, iOS) is a good one --
+set to A-weighting (dBA), and the Mac.
+
+  1. Put the Mac about 50 cm from speaker, speakers facing it.
+  2. Hold the phone beside speaker's two mic holes, at the same distance from
+     the Mac, its own mic pointing the same way. Keep still, and keep quiet.
+  3. Pink noise will play from the Mac. Turn the Mac's volume up until the
+     phone reads well above the room without it -- 65-75 dBA is right.
+  4. Wait for the phone's reading to settle (10 seconds or so; NIOSH SLM's
+     LAeq, or its level with slow response), then type it in.
+
+speaker sets itself to read what you typed, from its last three seconds, while
+the noise is still playing.
+"""
+
+
+def guided(path=SOCK_PATH):
+    status = ask("STATUS", path)
+    if not any(l.startswith("speaker: connected") for l in status):
+        print("speaker is not connected to the relay:")
+        for l in status[:2]:
+            print("  " + l)
+        return 1
+    print(GUIDE)
+    try:
+        input("Press Enter to start the noise (Ctrl-C to give up) ")
+    except (EOFError, KeyboardInterrupt):
+        print()
+        return 1
+    print("Making a minute of pink noise ...", end=" ", flush=True)
+    with tempfile.TemporaryDirectory(prefix="cal-speaker") as d:
+        wav_path = os.path.join(d, "pink.wav")
+        write_wav(wav_path, noise_samples())
+        print("playing.")
+        loop = Loop(wav_path)
+        loop.start()
+        try:
+            while True:
+                try:
+                    text = input("The phone's steady reading, in dBA (Enter to give up): ").strip()
+                except EOFError:
+                    text = ""
+                if loop.error:
+                    print("The noise stopped: %s" % loop.error)
+                    return 1
+                if not text:
+                    print("Nothing sent.")
+                    return 1
+                try:
+                    nn = float(text)
+                except ValueError:
+                    print("  %r is not a number." % text)
+                    continue
+                if not 10.0 <= nn <= 130.0:
+                    print("  %.1f dBA is not a room; 10-130." % nn)
+                    continue
+                break
+            print("Sending !cal %s with the noise still playing ..." % text)
+            rc = send_cal(text, path)
+            if rc == 0:
+                time.sleep(3.5)         # three seconds of LAeq3 on the new offset
+                for l in ask("STATUS", path):
+                    m = re.match(r"^\d+ noise: .*?\bLAeq3 (\S+)", l)
+                    if m:
+                        print("speaker now reads LAeq3 %s dBA; the phone said %s." % (m.group(1), text))
+            return rc
+        except KeyboardInterrupt:
+            print("\nGiven up; nothing sent.")
+            return 1
+        finally:
+            loop.stop()
+            print("Noise stopped.")
+
+
+# ---- the self-test --------------------------------------------------------------
+
+def fft(x):
+    """Radix-2, in place on a copy; len(x) a power of two."""
+    a = [complex(v) for v in x]
+    n = len(a)
+    j = 0
+    for i in range(1, n):
+        bit = n >> 1
+        while j & bit:
+            j ^= bit
+            bit >>= 1
+        j |= bit
+        if i < j:
+            a[i], a[j] = a[j], a[i]
+    size = 2
+    while size <= n:
+        half = size // 2
+        tw = [cmath.exp(-2j * math.pi * k / size) for k in range(half)]
+        for start in range(0, n, size):
+            for k in range(half):
+                t = tw[k] * a[start + k + half]
+                u = a[start + k]
+                a[start + k] = u + t
+                a[start + k + half] = u - t
+        size *= 2
+    return a
+
+
+def octave_slope(x, rate, frame=4096, centres=(125, 250, 500, 1000, 2000, 4000, 8000)):
+    """The spectrum's slope in dB an octave: the mean power density in each
+    octave band, averaged over Hann-windowed half-overlapping frames, and a
+    least-squares line through them against log2 of the band's centre."""
+    win = [0.5 - 0.5 * math.cos(2 * math.pi * i / frame) for i in range(frame)]
+    psd = [0.0] * (frame // 2)
+    frames = 0
+    for at in range(0, len(x) - frame + 1, frame // 2):
+        spec = fft([x[at + i] * win[i] for i in range(frame)])
+        for k in range(frame // 2):
+            psd[k] += abs(spec[k]) ** 2
+        frames += 1
+    xs, ys = [], []
+    for fc in centres:
+        lo, hi = fc / math.sqrt(2), fc * math.sqrt(2)
+        bins = [psd[k] for k in range(1, frame // 2) if lo <= k * rate / frame < hi]
+        xs.append(math.log2(fc))
+        ys.append(10 * math.log10(sum(bins) / len(bins) / frames))
+    mx, my = sum(xs) / len(xs), sum(ys) / len(ys)
+    return sum((a - mx) * (b - my) for a, b in zip(xs, ys)) / sum((a - mx) ** 2 for a in xs)
+
+
+def self_test():
+    fails, count = [], [0]
+
+    def check(what, got, want):
+        count[0] += 1
+        if got != want:
+            fails.append("%s: got %r, want %r" % (what, got, want))
+
+    def near(what, got, want, tol):
+        count[0] += 1
+        if got is None or abs(got - want) > tol:
+            fails.append("%s: got %r, want %r +- %r" % (what, got, want, tol))
+
+    # Pink noise falls 3 dB an octave; white noise does not fall at all.
+    x = pink(1 << 16, seed=1)
+    near("pink slope", octave_slope(x, NOISE_RATE), -3.0, 0.75)
+    r = random.Random(2).random
+    near("white slope", octave_slope([r() - 0.5 for _ in range(1 << 16)], NOISE_RATE), 0.0, 0.75)
+
+    # The file: 48 kHz 16-bit mono, the right length, faded at both ends,
+    # its level where it was put, and not clipped.
+    s = noise_samples(seconds=4.0, seed=3)
+    with tempfile.TemporaryDirectory(prefix="cal") as d:
+        p = os.path.join(d, "pink.wav")
+        write_wav(p, s)
+        with wave.open(p, "rb") as w:
+            check("wav format", (w.getnchannels(), w.getsampwidth(), w.getframerate(), w.getnframes()),
+                  (1, 2, NOISE_RATE, 4 * NOISE_RATE))
+    check("fades in from nothing", s[0], 0)
+    check("fades out to nothing", s[-1], 0)
+    mid = s[NOISE_RATE:3 * NOISE_RATE]
+    near("level", 20 * math.log10(math.sqrt(sum(v * v for v in mid) / len(mid)) / 32767.0),
+         NOISE_RMS_DBFS, 1.0)
+    check("not clipped", max(abs(v) for v in s) < 32767, True)
+
+    # The arithmetic.
+    near("energy mean, equal", energy_mean([50.0, 50.0]), 50.0, 1e-9)
+    near("energy mean, 40 and 50", energy_mean([40.0, 50.0]), 47.40, 0.01)
+    check("energy mean, nothing", energy_mean([None]), None)
+    check("median, odd", median([30.0, 32.0, 31.0]), 31.0)
+    check("median, even", median([30.0, 32.0, None]), 31.0)
+
+    line = ("days: cal 2026-08-28=50.0/35.0 2026-09-04=50.0/35.0 2026-09-11=56.0/35.0 "
+            "2026-09-17=--/-- 2026-09-18=50.0/40.0 2026-09-19=40.0/30.0 2026-09-20=-- "
+            "2026-09-21=40.0/31.0 2026-09-22=40.0/32.0 2026-09-23=40.0/33.0 2026-09-24=40.0/34.0 "
+            "2026-09-25=53.0/38.0* bad 2026-13-01=1/1")
+    cal, days = parse_days(line)
+    check("parsed", (cal, len(days), days[dt.date(2026, 9, 25)]), (True, 12, (53.0, 38.0, True)))
+    check("an empty day", days[dt.date(2026, 9, 20)], (None, None, False))
+    b = baseline(days)
+    check("today is the running day", b["today"], dt.date(2026, 9, 25))
+    # Walking back from the 24th past the empty 20th and 17th: 24, 23, 22,
+    # 21, 19, 18 and 11 are the latest seven with a level.
+    near("recent LAeq", b["recent"], energy_mean([40, 40, 40, 40, 40, 50, 56]), 1e-9)
+    check("recent days counted", b["recent_n"], 7)
+    check("background, median L90", (b["background"], b["background_n"]), (33.0, 7))
+    # Fridays before the 25th: 18th, 11th, 4th, 28 Aug.
+    check("against Fridays", (b["kind"], b["usual_n"]), ("weekday", 4))
+    near("usual Friday", b["usual"], energy_mean([50, 56, 50, 50]), 1e-9)
+    near("today vs usual", b["vs_usual"], 53.0 - energy_mean([50, 56, 50, 50]), 1e-9)
+    d = dt.date
+    b = baseline({d(2026, 9, 24): (40.0, 30.0, False), d(2026, 9, 25): (45.0, 33.0, True)})
+    check("no Friday yet: recent days", (b["kind"], b["usual"], b["usual_n"], b["vs_usual"]),
+          ("recent", 40.0, 1, 5.0))
+    b = baseline({d(2026, 9, 25): (45.0, 33.0, True)})
+    check("first day", (b["kind"], b["usual"], b["recent"], b["vs_usual"]), (None, None, None, None))
+    check("first day's background is its own", (b["background"], b["background_n"]), (33.0, 0))
+    b = baseline({d(2026, 9, 24): (40.0, 30.0, False), d(2026, 9, 23): (50.0, 31.0, False)})
+    check("no today: every day is earlier", (b["today"], b["kind"], b["usual_n"], b["background"]),
+          (None, "recent", 2, 30.5))
+    check("not days", parse_days("noise: LAF 40"), None)
+
+    # And the table, from a STATUS reply.
+    class Out:
+        text = ""
+
+        def write(self, s):
+            Out.text += s
+
+    rc = show_status(["speaker: connected (/dev/cu.usbmodem1101)", "watch: not connected",
+                      "jobs: idle, 0 waiting", "2 noise: LAF 47.1 LAeq3 45.8 dBA (cal)", "30 " + line], Out())
+    check("table shown", rc, 0)
+    check("table has today", "2026-09-25  Fri   53.0   38.0  so far" in Out.text, True)
+    check("table says the Fridays", "about the same as a usual Friday (4): 52.4 dBA" in Out.text, True)
+    check("table leaves out the empty start", "2026-08-27" in Out.text, False)
+    check("relay down", show_status(["ERR speaker not connected"], Out()), 1)
+
+    for f in fails:
+        print("FAIL " + f)
+    print("self-test: %d of %d checks passed" % (count[0] - len(fails), count[0]))
+    return 1 if fails else 0
+
+
+def main():
+    ap = argparse.ArgumentParser(description="Calibrate speaker's sound level, or show its days.")
+    ap.add_argument("level", nargs="?", help="the room's level in dBA now, from a meter beside speaker")
+    ap.add_argument("--status", action="store_true", help="what speaker last said, and its days")
+    ap.add_argument("--self-test", action="store_true", help="check the noise and the arithmetic, then exit")
+    args = ap.parse_args()
+    if args.self_test:
+        return self_test()
+    try:
+        if args.status:
+            return show_status(ask("STATUS"))
+        if args.level is not None:
+            if not re.match(r"^\d{1,3}(?:\.\d+)?$", args.level):
+                print("cal-speaker: %r is not a level in dBA" % args.level, file=sys.stderr)
+                return 2
+            return send_cal(args.level)
+        return guided()
+    except NoRelay as e:
+        print("cal-speaker: %s" % e, file=sys.stderr)
+        return 3
+
+
+if __name__ == "__main__":
+    sys.exit(main())

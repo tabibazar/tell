@@ -3367,6 +3367,7 @@ static void draw_forecast(canvas_t *c)
 #include "moonphase.h"
 #include "watch.h"
 #include "noiseui.h"
+#include "daysui.h"
 #include "aafont.h"
 #include "driver/usb_serial_jtag.h"
 #include "driver/usb_serial_jtag_vfs.h"
@@ -3458,8 +3459,105 @@ static double  s_noise_bucket_e;      /* its energy sum, and how many lines */
 static int     s_noise_bucket_n;
 static int     s_noise_drawn_second = -1;
 
+/*
+ * speaker's days, relayed once a minute as
+ * "!noisedays <k>/<n> <cal|est> <YYYY-MM-DD>=<laeq>/<l90>[*] ...", at most
+ * four days a line. Each line's days are merged by date into s_days_in, so a
+ * set that arrives in pieces, or with a piece lost, is still whole where it
+ * got through; the oldest go when there are more than DAYSUI_DAYS. The main
+ * loop copies it into s_days when the sequence moves.
+ */
+static daysui_t s_days_in;              /* under s_noise_mux */
+static int64_t  s_days_at_us;
+static uint32_t s_days_seq, s_days_seen_seq;
+static daysui_t s_days;                 /* the main loop's copy */
+static int      s_days_drawn_minute = -1;
+
+static float watch_days_level(const char *t)
+{
+    if (strcmp(t, "--") == 0) return NAN;
+    char *end;
+    float v = strtof(t, &end);
+    return end != t && *end == '\0' && isfinite(v) && v >= 0.0f && v <= 150.0f ? v : NAN;
+}
+
+static bool watch_days_entry(char *tok, daysui_day_t *d)
+{
+    int y, m, dd, used = 0;
+    if (sscanf(tok, "%4d-%2d-%2d=%n", &y, &m, &dd, &used) != 3 || used == 0) return false;
+    if (daysui_weekday(y, m, dd) < 0) return false;
+    char *rest = tok + used;
+    size_t rl = strlen(rest);
+    d->today = rl > 0 && rest[rl - 1] == '*';
+    if (d->today) rest[--rl] = '\0';
+    char *slash = strchr(rest, '/');
+    if (slash) *slash = '\0';
+    d->year = (uint16_t)y;
+    d->month = (uint8_t)m;
+    d->day = (uint8_t)dd;
+    d->laeq = watch_days_level(rest);
+    d->l90 = slash ? watch_days_level(slash + 1) : NAN;
+    return true;
+}
+
+static long watch_days_key(const daysui_day_t *d)
+{
+    return (long)d->year * 10000L + d->month * 100L + d->day;
+}
+
+static void watch_days_line(const char *text, size_t len)
+{
+    char buf[200];
+    size_t n = len < sizeof buf - 1 ? len : sizeof buf - 1;
+    memcpy(buf, text, n);
+    buf[n] = '\0';
+    int k, total;
+    char cal[8];
+    int used = 0;
+    if (sscanf(buf, "!noisedays %d/%d %7s %n", &k, &total, cal, &used) != 3 || used == 0) return;
+    daysui_day_t got[8];
+    int ng = 0;
+    char *save = NULL;
+    for (char *tok = strtok_r(buf + used, " ", &save); tok && ng < 8; tok = strtok_r(NULL, " ", &save))
+        if (watch_days_entry(tok, &got[ng])) ng++;
+    if (ng == 0) return;
+    int64_t now = esp_timer_get_time();
+    portENTER_CRITICAL(&s_noise_mux);
+    daysui_t *t = &s_days_in;
+    for (int g = 0; g < ng; g++) {
+        if (got[g].today)
+            for (int i = 0; i < t->n; i++) t->day[i].today = false;
+        long key = watch_days_key(&got[g]);
+        int i = 0;
+        while (i < t->n && watch_days_key(&t->day[i]) < key) i++;
+        if (i < t->n && watch_days_key(&t->day[i]) == key) {
+            t->day[i] = got[g];
+            continue;
+        }
+        if (t->n == DAYSUI_DAYS) {                  /* full: the oldest goes */
+            if (i == 0) continue;                   /* older than everything kept */
+            memmove(&t->day[0], &t->day[1], sizeof t->day[0] * (size_t)(i - 1));
+            t->day[i - 1] = got[g];
+        } else {
+            memmove(&t->day[i + 1], &t->day[i], sizeof t->day[0] * (size_t)(t->n - i));
+            t->day[i] = got[g];
+            t->n++;
+        }
+    }
+    t->have_data = true;
+    t->calibrated = strcmp(cal, "cal") == 0;
+    s_days_at_us = now;
+    s_days_seq++;
+    portEXIT_CRITICAL(&s_noise_mux);
+}
+
 static bool watch_noise_line(const char *text, size_t len)
 {
+    /* "!noisedays" first: "!noise" is its prefix too. */
+    if (len >= 10 && strncmp(text, "!noisedays", 10) == 0) {
+        watch_days_line(text, len);
+        return true;
+    }
     if (len < 6 || strncmp(text, "!noise", 6) != 0) return false;
     char buf[96];
     size_t n = len < sizeof buf - 1 ? len : sizeof buf - 1;
@@ -3494,7 +3592,7 @@ static bool watch_noise_line(const char *text, size_t len)
 static void watch_usb_task(void *arg)
 {
     (void)arg;
-    char line[128];
+    char line[192];                     /* the days lines are under 128 */
     int len = 0;
     uint8_t in[64];
     for (;;) {
@@ -3574,8 +3672,38 @@ static void watch_no_time(canvas_t *c, int64_t now)
     display_blit();
 }
 
+/* The main loop's copy of the days, and whether it is still news. */
+static bool watch_days_tick(int64_t now)
+{
+    bool changed = false;
+    portENTER_CRITICAL(&s_noise_mux);
+    if (s_days_seq != s_days_seen_seq) {
+        s_days = s_days_in;
+        s_days_seen_seq = s_days_seq;
+        changed = true;
+    }
+    int64_t at = s_days_at_us;
+    portEXIT_CRITICAL(&s_noise_mux);
+    bool stale = s_days.have_data && now - at > 180LL * 1000 * 1000;
+    if (stale != s_days.stale) {
+        s_days.stale = stale;
+        changed = true;
+    }
+    return changed;
+}
+
 static void watch_draw(canvas_t *c, int64_t now)
 {
+    if (s_pages.current == PAGE_DAYS) {
+        bool changed = watch_days_tick(now);
+        int minute = (int)(now / 60000000);
+        if (!changed && minute == s_days_drawn_minute && s_drawn_second != -1) return;
+        s_days_drawn_minute = minute;
+        s_drawn_second = (int)(now / 1000000);
+        daysui_draw(c, &s_days);
+        display_blit();
+        return;
+    }
     if (s_pages.current == PAGE_SOUND) {
         int sec = (int)(now / 1000000);
         /* s_drawn_second is reset on every page change and wake: draw then. */
@@ -3637,6 +3765,7 @@ static void watch_idle(int64_t now)
         }
     }
     bool dark = s_pages.current != PAGE_PARTICLES && s_pages.current != PAGE_SOUND
+             && s_pages.current != PAGE_DAYS
              && now - s_pages.last_activity_us > WATCH_IDLE_US;
     if (dark == s_watch_dark) return;
     s_watch_dark = dark;
@@ -3658,13 +3787,14 @@ static void watch_function_key(int64_t now)
     }
     s_pages.last_activity_us = now;
     if (k == WATCH_KEY_SHORT) {
-        /* Face -> Sand -> Sound -> Face; a page the board lacks (no IMU, no
-           sand) is stepped over. */
-        static const page_t order[] = { PAGE_FACE, PAGE_PARTICLES, PAGE_SOUND };
+        /* Face -> Sand -> Sound -> Days -> Face; a page the board lacks (no
+           IMU, no sand) is stepped over. */
+        static const page_t order[] = { PAGE_FACE, PAGE_PARTICLES, PAGE_SOUND, PAGE_DAYS };
+        enum { N_ORDER = sizeof order / sizeof order[0] };
         int at = 0;
-        for (int i = 0; i < 3; i++) if (order[i] == s_pages.current) at = i;
-        for (int k = 1; k <= 3; k++) {
-            page_t to = order[(at + k) % 3];
+        for (int i = 0; i < N_ORDER; i++) if (order[i] == s_pages.current) at = i;
+        for (int k = 1; k <= N_ORDER; k++) {
+            page_t to = order[(at + k) % N_ORDER];
             if (s_pages.available & PAGE_BIT(to)) { pages_show(&s_pages, to, now); break; }
         }
         ESP_LOGI(TAG, "function key -> page %d", (int)s_pages.current);
@@ -3930,9 +4060,11 @@ void app_main(void)
        the function button (when the IMU answered). Nothing else -- the timer,
        stopwatch and chip pages ride in with the sand and the RTC elsewhere. */
     available = (available & PAGE_BIT(PAGE_PARTICLES))
-              | PAGE_BIT(PAGE_FACE) | PAGE_BIT(PAGE_MOON) | PAGE_BIT(PAGE_SOUND);
+              | PAGE_BIT(PAGE_FACE) | PAGE_BIT(PAGE_MOON) | PAGE_BIT(PAGE_SOUND)
+              | PAGE_BIT(PAGE_DAYS);
 #else
-    available &= ~(PAGE_BIT(PAGE_FACE) | PAGE_BIT(PAGE_MOON) | PAGE_BIT(PAGE_SOUND));
+    available &= ~(PAGE_BIT(PAGE_FACE) | PAGE_BIT(PAGE_MOON) | PAGE_BIT(PAGE_SOUND)
+                   | PAGE_BIT(PAGE_DAYS));
 #endif
 
     uint32_t rtc_secs;

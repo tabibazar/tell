@@ -11,8 +11,11 @@
 #include "driver/gpio.h"
 #include "driver/i2s_std.h"
 #include "driver/i2s_tdm.h"
+#include "driver/usb_serial_jtag.h"
+#include "driver/usb_serial_jtag_vfs.h"
 #include "esp_codec_dev.h"
 #include "esp_codec_dev_defaults.h"
+#include "esp_heap_caps.h"
 #include "esp_io_expander_tca95xx_16bit.h"
 #include "esp_log.h"
 #include "esp_timer.h"
@@ -25,6 +28,7 @@
 #include "nvs_flash.h"
 #include "sdkconfig.h"
 
+#include <ctype.h>
 #include <errno.h>
 #include <math.h>
 #include <stdio.h>
@@ -45,11 +49,18 @@
  *     (ring.c) and sends them down GPIO38.
  *   - The control task, every 100 ms, does everything slow: the BLE commands,
  *     the clock chip, the side keys, the card, the chime and the line on the
- *     serial console once a second.
+ *     serial console once a second, and the "days:" line once a minute.
+ *   - The USB reader takes lines from the Mac's relay on the console's own USB
+ *     serial port: "!" commands, queued exactly as BLE's are, and "!play",
+ *     whose speech it parks in PSRAM as fast as it arrives.
+ *   - The player plays that speech through the chime's amp sequence, from its
+ *     own task, so a 30 s clip never holds up the control task.
  *
- * The BLE callbacks run on NimBLE's own task and only queue what arrived, so
- * the clock chip, NVS and the card are only ever driven from the control task
- * -- the rule main.c keeps for the clock chip too.
+ * The BLE callbacks and the USB reader only queue what arrived, so the clock
+ * chip, NVS and the card are only ever driven from the control task -- the
+ * rule main.c keeps for the clock chip too -- and two commands never run at
+ * once. The speaker itself is one at a time too: the chime and a play each
+ * claim it (sound_claim) or do not sound.
  *
  * All of it is SAFE ORDER FIRST. The expander has a pin that takes USB away
  * and another that switches the amplifier on, and the ring latches whatever
@@ -121,11 +132,11 @@ static const char *const SLOT_NAME[SLOTS] = { "MIC1", "REF", "MIC2", "spare" };
 /*
  * The chime, and the rules around the amplifier.
  *
- * The amp is on only while a chime plays. The NS4150B needs 120 ms after its
- * enable goes high before it passes sound cleanly, so the codec streams
- * silence for 150 ms first, and 60 ms of silence follow the tones before the
- * amp goes off. An enabled amp with an idle DAC hisses, which is the other
- * reason it stays off between chimes.
+ * The amp is on only while a chime (or a play, below) sounds. The NS4150B
+ * needs 120 ms after its enable goes high before it passes sound cleanly, so
+ * the codec streams silence for 150 ms first, and 60 ms of silence follow the
+ * tones before the amp goes off. An enabled amp with an idle DAC hisses, which
+ * is the other reason it stays off between chimes.
  *
  * Volume is esp_codec_dev's 0-100, where 60 is -20 dB. No figure for the
  * speaker's safe level exists, 60 is what the factory firmware uses, and the
@@ -224,6 +235,33 @@ static esp_codec_dev_handle_t s_in, s_out;
 static bool s_rtc;
 
 static ring_t s_ring;
+
+/*
+ * The speaker, one sound at a time. The chime claims it on the control task,
+ * a play on the USB reader (and the player releases it when the amp is off
+ * and the gate has lifted). A claim that fails is not waited for: the chime
+ * tries again on the next pass, a play is refused as busy. While it is held,
+ * the amp may be on from a task other than the control task, so amp_watch
+ * leaves EXIO8 alone.
+ */
+static volatile bool s_sound_busy;
+static portMUX_TYPE s_sound_mux = portMUX_INITIALIZER_UNLOCKED;
+
+static bool sound_claim(void)
+{
+    bool got = false;
+    portENTER_CRITICAL(&s_sound_mux);
+    if (!s_sound_busy) s_sound_busy = got = true;
+    portEXIT_CRITICAL(&s_sound_mux);
+    return got;
+}
+
+static void sound_release(void)
+{
+    portENTER_CRITICAL(&s_sound_mux);
+    s_sound_busy = false;
+    portEXIT_CRITICAL(&s_sound_mux);
+}
 
 /* ---- the clock ------------------------------------------------------------ */
 
@@ -593,9 +631,10 @@ static void amp_off(void)
 /*
  * The watch over EXIO8, from keys_poll's read of all sixteen inputs. The
  * chime runs start to finish inside one pass of the control task, the same
- * task that polls the keys, so whenever this runs no chime is playing and the
- * pin must read low. If it does not, the latch is written low again, and the
- * log says so: once, then once a second for as long as it stays high.
+ * task that polls the keys, and keys_poll does not call this while a play
+ * holds the speaker (s_sound_busy), so whenever this runs nothing is playing
+ * and the pin must read low. If it does not, the latch is written low again,
+ * and the log says so: once, then once a second for as long as it stays high.
  */
 static uint32_t s_amp_high;
 
@@ -954,7 +993,7 @@ static QueueHandle_t s_cmds;
 
 static void post(const cmd_t *c)
 {
-    if (xQueueSend(s_cmds, c, 0) != pdTRUE) ESP_LOGW(TAG, "ble: command queue full; dropped");
+    if (xQueueSend(s_cmds, c, 0) != pdTRUE) ESP_LOGW(TAG, "cmd: queue full; dropped");
 }
 
 /* The Mac's sync: seconds since local midnight, written before any message.
@@ -1446,6 +1485,137 @@ static void sd_service(int64_t now)
     if (s_sd_bad >= SD_BAD_MAX) sd_down(now);
 }
 
+/* ---- the days line -------------------------------------------------------- */
+
+/*
+ * "days: cal 2026-09-23=49.8/36.0 2026-09-24=-- 2026-09-25=52.4/38.1*": each
+ * day's LAeq and L90 in dBA, oldest first, up to DAYS_BACK days ending today,
+ * for the relay to hand on to watch. It goes out once a minute and straight
+ * after a !cal that was taken, from the control task, which owns the card.
+ *
+ * Past days come from daily.csv, today from the meter (the running figures,
+ * marked "*"). A row written before the first !cal says "est" and was worked
+ * out with the estimated offset; once speaker is calibrated such a row has
+ * (offset - estimate) added to both levels, so the whole history is on the
+ * calibration as it is now. Rows that say "cal" are taken as they are, and
+ * so is everything while speaker is still on the estimate. The first token
+ * says which speaker is now.
+ *
+ * The line starts at the oldest day in the window with anything to show, and
+ * a day between with nothing is "=--". No date, no line: nobody could say
+ * which day is today. No card, only today.
+ */
+#define DAYS_BACK       35
+
+/* The start of field `k` (0-based) of a CSV row, or NULL when it has fewer. */
+static const char *csv_field(const char *row, int k)
+{
+    while (k-- > 0) {
+        row = strchr(row, ',');
+        if (!row) return NULL;
+        row++;
+    }
+    return row;
+}
+
+/* A level from a CSV field: NAN when it is empty or not a number. */
+static float csv_level(const char *f)
+{
+    if (!f) return NAN;
+    char *end;
+    float v = strtof(f, &end);
+    if (end == f || (*end != ',' && *end != '\r' && *end != '\n' && *end != '\0')) return NAN;
+    return isfinite(v) ? v : NAN;
+}
+
+/* A level for the days line: one decimal, or "--". */
+static const char *dlvl(float v, char buf[12])
+{
+    if (isfinite(v)) snprintf(buf, 12, "%.1f", (double)v);
+    else strcpy(buf, "--");
+    return buf;
+}
+
+static bool s_days_due;                 /* a !cal was taken: send the line on this pass */
+
+static void days_line(void)
+{
+    int32_t today;
+    uint32_t tod;
+    if (!clock_now(&today, &tod) || today < 0) return;
+    const int32_t first = today - (DAYS_BACK - 1);
+    float laeq[DAYS_BACK], l90[DAYS_BACK];
+    bool seen[DAYS_BACK] = { false };
+    for (int i = 0; i < DAYS_BACK; i++) laeq[i] = l90[i] = NAN;
+
+    soundlevel_now_t n;
+    soundlevel_report_t td, yd;
+    sl_lock();
+    soundlevel_now(&s_sl, &n);
+    bool have_td = soundlevel_today(&s_sl, &td) && td.blocks > 0 && td.day == today;
+    bool have_yd = soundlevel_yesterday(&s_sl, &yd) && yd.blocks > 0 && yd.day >= first && yd.day < today;
+    sl_unlock();
+    const float rebase = n.calibrated ? n.cal_offset - SOUNDLEVEL_CAL_EST_DB : 0.0f;
+
+    FILE *f = s_sd ? fopen(DAILY_PATH, "r") : NULL;
+    if (s_sd && !f && errno != ENOENT) sd_fail("daily.csv read");
+    if (f) {
+        char row[256];
+        while (fgets(row, sizeof row, f)) {
+            int y, m, d;
+            if (sscanf(row, "%4d-%2d-%2d", &y, &m, &d) != 3 || row[10] != ','
+                || m < 1 || m > 12 || d < 1 || d > 31) continue;
+            int32_t day = timecalc_days(y, m, d);
+            if (day < first || day > today) continue;
+            int i = (int)(day - first);
+            laeq[i] = csv_level(csv_field(row, 1));
+            l90[i] = csv_level(csv_field(row, 6));
+            const char *cal = csv_field(row, 8);
+            if (cal && strncmp(cal, "est", 3) == 0) {
+                laeq[i] += rebase;
+                l90[i] += rebase;
+            }
+            seen[i] = true;
+        }
+        fclose(f);
+    }
+    /* Yesterday from the meter, if its line has not reached the card yet: it
+       reads out with the offset as it is now, so it needs no rebasing. */
+    if (have_yd && !seen[yd.day - first]) {
+        laeq[yd.day - first] = yd.laeq;
+        l90[yd.day - first] = yd.l90;
+        seen[yd.day - first] = true;
+    }
+    /* Today from the meter, over whatever the card's last minute said. */
+    if (have_td) {
+        laeq[DAYS_BACK - 1] = td.laeq;
+        l90[DAYS_BACK - 1] = td.l90;
+    }
+
+    int from = DAYS_BACK - 1;
+    for (int i = 0; i < DAYS_BACK - 1; i++) {
+        if (seen[i]) {
+            from = i;
+            break;
+        }
+    }
+    static char line[DAYS_BACK * 24 + 8];
+    size_t len = (size_t)snprintf(line, sizeof line, "%s", n.calibrated ? "cal" : "est");
+    for (int i = from; i < DAYS_BACK && len < sizeof line; i++) {
+        char date[11], a[12], b[12];
+        format_date(first + i, date);
+        const char *star = i == DAYS_BACK - 1 ? "*" : "";
+        int k;
+        if (!isfinite(laeq[i]) && !isfinite(l90[i]))
+            k = snprintf(line + len, sizeof line - len, " %s=--%s", date, star);
+        else
+            k = snprintf(line + len, sizeof line - len, " %s=%s/%s%s", date, dlvl(laeq[i], a), dlvl(l90[i], b), star);
+        if (k < 0) break;
+        len += (size_t)k;
+    }
+    ESP_LOGI(TAG, "days: %s", line);
+}
+
 /* ---- the chime ------------------------------------------------------------ */
 
 /*
@@ -1556,9 +1726,11 @@ static void chime_service(int64_t now)
     soundlevel_now(&s_sl, &n);
     sl_unlock();
     if (!n.have || n.red_run_s < CHIME_RED_S) return;
+    if (!sound_claim()) return;         /* a play has the speaker; the next pass tries again */
     s_chime_us = now;
     ESP_LOGI(TAG, "chime: red for %.0f s (LAeq3 %.1f dBA)", (double)n.red_run_s, (double)n.laeq3s);
     chime_play();
+    sound_release();
 }
 
 /* ---- the keys ------------------------------------------------------------- */
@@ -1596,9 +1768,13 @@ static void key_edge(int k, const char *name, bool down, int64_t now)
 static void keys_poll(int64_t now)
 {
     if (s_io) {
+        /* A play switches the amp from its own task, so the watch holds off
+           unless the speaker was free both before the read and after it: a
+           play cannot start and finish inside one I2C read. */
+        bool free_before = !s_sound_busy;
         uint32_t lv = 0;
         if (esp_io_expander_get_level(s_io, 0xFFFF, &lv) == ESP_OK) {
-            amp_watch(lv);
+            if (free_before && !s_sound_busy) amp_watch(lv);
             for (size_t k = 0; k < NKEYS; k++) {
                 bool down = (lv & KEYS[k].pin) == 0;      /* active low */
                 bool was = (s_keys_down & KEYS[k].pin) != 0;
@@ -1731,6 +1907,7 @@ static void command(const char *text)
         s_set.calibrated = true;
         settings_save();
         ESP_LOGI(TAG, "cal: the room is %.1f dBA: offset %.2f dB (was %.2f)", (double)nn, (double)off, (double)was);
+        s_days_due = true;              /* the history, on the new calibration, straight away */
         return;
     }
     if (word_is(text, "!chime") || word_is(text, "!ring")) {
@@ -1765,7 +1942,7 @@ static void command(const char *text)
         status_log();
         return;
     }
-    ESP_LOGI(TAG, "ble: \"%s\" means nothing here", text);
+    ESP_LOGI(TAG, "cmd: \"%s\" means nothing here", text);
 }
 
 static void handle(const cmd_t *c)
@@ -1793,6 +1970,331 @@ static void handle(const cmd_t *c)
     }
 }
 
+/* ---- the USB serial line: commands and speech ----------------------------- */
+
+/*
+ * The Mac's relay (tools/noise-relay.py) holds speaker's USB serial port: it
+ * reads the log, and writes lines back.
+ *
+ *   "!cal NN", "!chime on", "!status" ... -- any "!" line but !play goes to
+ *   on_message, the way a BLE write does, and so into the control task's
+ *   queue: one consumer, so a command from USB and one from BLE never run at
+ *   once.
+ *
+ *   "!play <nbytes> <rate> <normal|test>\n" and straight after it exactly
+ *   <nbytes> bytes of little-endian int16 mono PCM at 16000 Hz, at most 30 s.
+ *   The answer is on the log: "play: started (N bytes, mode)", then "play:
+ *   done" or "play: timeout"; or at once "play: refused (why)". A refused
+ *   play's bytes are read and thrown away all the same, so the next line is
+ *   found where it should be. "normal" is refused in the quiet hours and when
+ *   the time is not known; "test" plays at any hour.
+ *
+ * The driver (IDF 5.5) has no flow control: its interrupt empties the USB
+ * FIFO into the RX ring and drops the packet when the ring is full, and the
+ * Mac writes the whole clip far faster than it plays. So the reader never
+ * waits on the codec. It copies the clip into PSRAM as it comes, 960 kB of it
+ * at most, and the player task plays from there at the codec's pace.
+ */
+#define PLAY_RATE       SOUNDLEVEL_FS                   /* the only rate: TX and RX share the clocks */
+#define PLAY_BYTES_S    (PLAY_RATE * 2)                 /* mono int16 */
+#define PLAY_MAX_BYTES  (30 * PLAY_BYTES_S)             /* 960000: 30 s */
+#define PLAY_GAP_MS     2000u                           /* no bytes for this long: the clip is given up */
+#define PLAY_SLACK_US   (10 * 1000000LL)                /* beyond its own length, the most a play may take */
+#define USB_RX_RING     (12 * 1024)                     /* the driver's ring; under 16 kB, so internal RAM */
+#define USB_LINE_MAX    128
+
+static uint8_t *s_pcm;                  /* PLAY_MAX_BYTES in PSRAM; NULL if it could not be had */
+static TaskHandle_t s_player;
+
+/* One play, set by the reader before it wakes the player. The reader alone
+   writes s_play_wr and s_play_arrived_ms while the clip comes in. */
+static size_t s_play_total;
+static bool s_play_test;
+static size_t s_play_wr;                        /* bytes of the clip in s_pcm so far (atomic) */
+static volatile uint32_t s_play_arrived_ms;     /* when the last of them came */
+
+static uint32_t ms_now(void)
+{
+    return (uint32_t)(esp_timer_get_time() / 1000);
+}
+
+/* How a play ended, as the log says it. Every ending starts "play: done" or
+   "play: timeout", the words the relay waits for; the ones the protocol does
+   not name say what went wrong in brackets after "done". */
+typedef enum { PLAYED, PLAY_TIMEOUT, PLAY_QUIET, PLAY_NO_AMP, PLAY_CODEC } play_end_t;
+
+static const char *const PLAY_END[] = {
+    [PLAYED]       = "play: done",
+    [PLAY_TIMEOUT] = "play: timeout",
+    [PLAY_QUIET]   = "play: done (cut short: the quiet hours)",
+    [PLAY_NO_AMP]  = "play: done (not heard: the amp would not switch on)",
+    [PLAY_CODEC]   = "play: done (cut short: codec write failed)",
+};
+
+/*
+ * The clip, from s_pcm to the codec as it arrives: each mono sample to both
+ * slots, as out_frames writes the chime, READ_FRAMES at a time. The write
+ * blocks until the DMA takes it, which is what paces this in real time; when
+ * the bytes come slower than that, the DMA runs dry and plays silence
+ * (auto_clear_after_cb) until they catch up.
+ */
+static play_end_t play_stream(size_t total, bool test, int64_t deadline)
+{
+    static int16_t st[READ_FRAMES * 2];
+    size_t rd = 0;
+    while (rd < total) {
+        size_t wr = __atomic_load_n(&s_play_wr, __ATOMIC_ACQUIRE);
+        if (esp_timer_get_time() > deadline) return PLAY_TIMEOUT;
+        if (!test && quiet_within(0)) return PLAY_QUIET;
+        size_t frames = (wr - rd) / 2;
+        if (frames == 0) {
+            if (ms_now() - s_play_arrived_ms > PLAY_GAP_MS) return PLAY_TIMEOUT;
+            vTaskDelay(1);
+            continue;
+        }
+        if (frames > READ_FRAMES) frames = READ_FRAMES;
+        const uint8_t *p = s_pcm + rd;
+        for (size_t i = 0; i < frames; i++) {
+            int16_t v = (int16_t)((uint16_t)p[2 * i] | (uint16_t)p[2 * i + 1] << 8);
+            st[2 * i] = st[2 * i + 1] = v;
+        }
+        if (esp_codec_dev_write(s_out, st, (int)(frames * 2 * sizeof(int16_t))) != ESP_CODEC_DEV_OK)
+            return PLAY_CODEC;
+        rd += frames * 2;
+    }
+    return PLAYED;
+}
+
+/*
+ * One play, in the chime's sequence and with the chime's helpers:
+ *   gate on -> silence -> EXIO8 high -> 150 ms of silence -> the clip ->
+ *   60 ms of silence and a queue's worth more -> EXIO8 low, proved low ->
+ *   200 ms -> gate off.
+ * A timeout, the quiet hours arriving or the deadline end the clip early and
+ * go the same way out, through silence to the amp off; only a codec that will
+ * not take a write skips the silence, since it could not be written either.
+ * The volume is the chime's, CHIME_VOLUME, set once at boot and never touched.
+ */
+static void play_run(void)
+{
+    const size_t total = s_play_total;
+    const bool test = s_play_test;
+    const int64_t deadline = esp_timer_get_time() + (int64_t)total * 1000000 / PLAY_BYTES_S + PLAY_SLACK_US;
+
+    gate(true);
+    play_end_t end = PLAY_CODEC;
+    if (out_frames(-1, MS_FRAMES(50))) {
+        if (!amp_write(true)) end = PLAY_NO_AMP;
+        else if (out_frames(-1, MS_FRAMES(AMP_SETTLE_MS))) end = play_stream(total, test, deadline);
+        if (end != PLAY_CODEC && !out_frames(-1, MS_FRAMES(CHIME_TAIL_MS) + DMA_BUFFERS * READ_FRAMES))
+            end = PLAY_CODEC;
+    }
+    amp_off();                          /* whatever happened above */
+
+    vTaskDelay(pdMS_TO_TICKS(GATE_WAIT_MS));
+    gate(false);
+    ESP_LOGI(TAG, "%s", PLAY_END[end]);
+}
+
+static void player_task(void *arg)
+{
+    (void)arg;
+    for (;;) {
+        ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+        play_run();
+        sound_release();                /* the reader claimed it for this play */
+    }
+}
+
+/* What the reader is in the middle of: a line, or a clip's bytes (kept for
+   the player, or thrown away after a refusal). Only the reader touches it. */
+static size_t s_rx_left;                /* clip bytes still to come; 0 = reading lines */
+static bool s_rx_keep;
+static uint32_t s_rx_last_ms;
+
+static void play_refuse(const char *why, size_t discard)
+{
+    ESP_LOGI(TAG, "play: refused (%s)", why);
+    s_rx_left = discard;
+    s_rx_keep = false;
+    s_rx_last_ms = ms_now();
+}
+
+/* A token of digits only, as a number; false for anything else. */
+static bool digits(const char *tok, size_t n, unsigned long *out)
+{
+    if (n == 0 || n > 9) return false;  /* nine digits is past anything allowed, and fits */
+    unsigned long v = 0;
+    for (size_t i = 0; i < n; i++) {
+        if (!isdigit((unsigned char)tok[i])) return false;
+        v = v * 10 + (unsigned long)(tok[i] - '0');
+    }
+    *out = v;
+    return true;
+}
+
+/*
+ * "!play <nbytes> <rate> <normal|test>". A byte count that cannot be read
+ * leaves nothing to throw away, so the line after it is looked for at once;
+ * any other refusal throws the stated count away. The quiet hours are checked
+ * over the whole clip and CHIME_AHEAD_S more, as the chime checks its second.
+ */
+static void play_header(const char *line)
+{
+    char tok[4][16];
+    size_t tl[4] = { 0 };
+    int nt = 0;
+    const char *p = arg_of(line);
+    while (*p && nt < 4) {
+        size_t n = strcspn(p, " ");
+        tl[nt] = n;
+        snprintf(tok[nt], sizeof tok[nt], "%.*s", (int)(n < sizeof tok[nt] ? n : sizeof tok[nt] - 1), p);
+        nt++;
+        p += n;
+        while (*p == ' ') p++;
+    }
+    unsigned long nbytes = 0, rate = 0;
+    if (nt < 1 || !digits(tok[0], tl[0], &nbytes) || nbytes == 0) {
+        play_refuse("bad header", 0);
+        return;
+    }
+    bool test = nt >= 3 && strcmp(tok[2], "test") == 0;
+    if (nt != 3 || *p || !digits(tok[1], tl[1], &rate) || rate != PLAY_RATE
+        || (!test && strcmp(tok[2], "normal") != 0) || nbytes % 2 != 0) {
+        play_refuse("bad header", nbytes);
+        return;
+    }
+    if (nbytes > PLAY_MAX_BYTES) {
+        play_refuse("too long", nbytes);
+        return;
+    }
+    if (!s_pcm || !s_player) {
+        play_refuse("no memory", nbytes);
+        return;
+    }
+    if (!s_out || !s_amp_ok) {
+        play_refuse("no amp", nbytes);
+        return;
+    }
+    if (!test && quiet_within((uint32_t)((nbytes + PLAY_BYTES_S - 1) / PLAY_BYTES_S) + CHIME_AHEAD_S)) {
+        play_refuse("quiet hours", nbytes);
+        return;
+    }
+    if (!sound_claim()) {
+        play_refuse("busy", nbytes);
+        return;
+    }
+    /* The player is idle -- it releases the claim only when it is done -- so
+       the buffer is free to start again. */
+    s_play_total = nbytes;
+    s_play_test = test;
+    __atomic_store_n(&s_play_wr, 0, __ATOMIC_RELEASE);
+    s_play_arrived_ms = ms_now();
+    s_rx_left = nbytes;
+    s_rx_keep = true;
+    s_rx_last_ms = s_play_arrived_ms;
+    ESP_LOGI(TAG, "play: started (%lu bytes, %s)", nbytes, test ? "test" : "normal");
+    xTaskNotifyGive(s_player);
+}
+
+/* Bytes of the clip: into s_pcm for the player, or nowhere after a refusal.
+   Returns how many of the `n` belonged to it. */
+static size_t clip_take(const uint8_t *p, size_t n, uint32_t now_ms)
+{
+    size_t k = n < s_rx_left ? n : s_rx_left;
+    if (s_rx_keep) {
+        size_t wr = __atomic_load_n(&s_play_wr, __ATOMIC_RELAXED);
+        memcpy(s_pcm + wr, p, k);
+        __atomic_store_n(&s_play_wr, wr + k, __ATOMIC_RELEASE);    /* published after the copy */
+        s_play_arrived_ms = now_ms;
+    }
+    s_rx_left -= k;
+    s_rx_last_ms = now_ms;
+    return k;
+}
+
+static void usb_line(const char *line, size_t len)
+{
+    if (word_is(line, "!play")) play_header(line);
+    else if (line[0] == '!') on_message(line, len);
+}
+
+/*
+ * The reader: lines end at '\n' ('\r' is dropped, so "\r\n" works too), and
+ * one longer than USB_LINE_MAX is dropped whole, up to its end. After a
+ * !play header the bytes are the clip's, newlines and all, until its count is
+ * in; reads then ask for no more than the clip has left, so the next line is
+ * never swallowed. A clip whose bytes stop for PLAY_GAP_MS is given up and the
+ * reader goes back to lines; the player sees the same silence and stops.
+ */
+static void usb_task(void *arg)
+{
+    (void)arg;
+    static uint8_t in[512];
+    static char line[USB_LINE_MAX];
+    size_t len = 0;
+    bool overlong = false;
+    for (;;) {
+        size_t want = sizeof in;
+        if (s_rx_left > 0 && s_rx_left < want) want = s_rx_left;
+        int n = usb_serial_jtag_read_bytes(in, (uint32_t)want, pdMS_TO_TICKS(100));
+        uint32_t now_ms = ms_now();
+        if (n <= 0) {
+            if (s_rx_left > 0 && now_ms - s_rx_last_ms > PLAY_GAP_MS) {
+                if (!s_rx_keep)
+                    ESP_LOGW(TAG, "usb: a refused clip stopped with %u bytes to come; reading lines again",
+                             (unsigned)s_rx_left);
+                s_rx_left = 0;
+            }
+            continue;
+        }
+        for (size_t i = 0; i < (size_t)n;) {
+            if (s_rx_left > 0) {
+                i += clip_take(in + i, (size_t)n - i, now_ms);
+                continue;
+            }
+            char ch = (char)in[i++];
+            if (ch == '\n') {
+                if (len > 0 && !overlong) {
+                    line[len] = '\0';
+                    usb_line(line, len);
+                }
+                len = 0;
+                overlong = false;
+            } else if (ch == '\r') {
+                continue;
+            } else if (len < sizeof line - 1) {
+                line[len++] = ch;
+            } else {
+                overlong = true;
+            }
+        }
+    }
+}
+
+/*
+ * The driver, which ESP_LOG then writes through as well (usb_serial_jtag_vfs):
+ * with no host reading, it drops the log after 50 ms rather than blocking, as
+ * on watch. The reader outranks the ring's task: it only copies, and a ring
+ * left full loses the clip's bytes. The player sits below both; it spends its
+ * time waiting on the DMA.
+ */
+static void usb_start(void)
+{
+    s_pcm = heap_caps_malloc(PLAY_MAX_BYTES, MALLOC_CAP_SPIRAM);
+    if (!s_pcm) ESP_LOGE(TAG, "play: no %d bytes of PSRAM for a clip; plays will be refused", PLAY_MAX_BYTES);
+    else if (xTaskCreate(player_task, "player", 4096, NULL, 5, &s_player) != pdPASS) s_player = NULL;
+
+    usb_serial_jtag_driver_config_t cfg = { .rx_buffer_size = USB_RX_RING, .tx_buffer_size = 2048 };
+    if (usb_serial_jtag_driver_install(&cfg) != ESP_OK) {
+        ESP_LOGE(TAG, "usb: serial driver not installed; no relay commands, no plays");
+        return;
+    }
+    usb_serial_jtag_vfs_use_driver();
+    xTaskCreate(usb_task, "usbline", 4096, NULL, 7, NULL);
+    ESP_LOGI(TAG, "usb: listening for the relay's commands and plays");
+}
+
 /* ---- the control task ----------------------------------------------------- */
 
 static void control_task(void *arg)
@@ -1800,6 +2302,7 @@ static void control_task(void *arg)
     (void)arg;
     TickType_t wake = xTaskGetTickCount();
     int64_t next_line = esp_timer_get_time() + 1000000;
+    int64_t next_days = esp_timer_get_time() + 5 * 1000000;    /* soon after boot, for the relay */
     int slot_lines = 5;                 /* the slot levels, for the first few seconds */
 
     for (;;) {
@@ -1821,6 +2324,11 @@ static void control_task(void *arg)
                 slots_line();
                 slot_lines--;
             }
+        }
+        if (s_days_due || now >= next_days) {
+            s_days_due = false;
+            next_days = now + 60 * 1000000LL;
+            days_line();
         }
     }
 }
@@ -1887,5 +2395,6 @@ void speaker_app_main(void)
 
     if (ble_uart_start(on_message, on_time) != ESP_OK)
         ESP_LOGE(TAG, "ble: start failed; no clock pushes, no commands");
+    usb_start();
     ESP_LOGI(TAG, "speaker: up");
 }

@@ -62,6 +62,7 @@ typedef enum {
                         like the two above, so no saved mask reindexes. */
     PAGE_MOON,       /* watch: the big moon, its age and the next full/new */
     PAGE_SOUND,      /* watch: speaker's sound level, relayed by the Mac */
+    PAGE_DAYS,       /* watch: speaker's daily levels, today vs a usual day */
     PAGE_COUNT
 } page_t;
 

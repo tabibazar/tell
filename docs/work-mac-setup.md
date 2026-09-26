@@ -45,7 +45,8 @@ within seconds rather than at the next 5-minute push.
 A background agent: it starts at login, runs all the time, and launchd
 restarts it if it ever exits; unplugged boards are picked up again when they
 come back. It finds both boards by MAC and forwards speaker's level to
-watch's Sound page (side button: Face -> Sand -> Sound).
+watch's Sound page, and speaker's daily levels to watch's Days page (side
+button: Face -> Sand -> Sound -> Days).
 Log: `tail -f /tmp/noise-relay.log`. To run it by hand instead (for
 debugging), stop the agent first -- both would want the same USB ports:
 `launchctl bootout gui/$(id -u)/com.tabibazar.noise-relay`, then
@@ -63,8 +64,15 @@ Build first: `idf.py -B build-<board> -D SDKCONFIG=sdkconfig.<board>
 Factory backups of watch and speaker live only on the home Mac
 (`firmware-backup/`, git-ignored); their sha256 are in docs/hardware/.
 
-## 6. Calibrate speaker once it is in place
+## 6. Speech, calibration and the baseline (through the relay)
 
-With a phone sound-meter app beside it in a steady sound:
-`./mac/tell --device speaker '!cal NN'` (NN = the phone's dBA).
+    tools/speak "Dinner is ready"          # refused 21:00-06:00 (quiet hours)
+    tools/speak --test "testing"           # plays at any hour
+    tools/cal-speaker --status             # levels, days and the baseline
+
+speaker's scale is left estimated on purpose: a check on 2026-09-25 with
+stepped pink noise put normal conversation at about 56 dBA and the quiet
+room at about 34, both about right, while the phone app read ~35 dB high.
+To calibrate against a meter you trust (NIOSH SLM, an Apple Watch):
+`tools/cal-speaker` (guided, plays pink noise) or `tools/cal-speaker NN`.
 The chime is off by default: `./mac/tell --device speaker '!chime on'`.
