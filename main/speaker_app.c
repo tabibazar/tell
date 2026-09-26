@@ -562,36 +562,47 @@ static void touch_wake(void)
 }
 
 /*
- * The touch controller answered at 0x58, not the CST328's documented 0x1A.
- * Read what it says about itself through the CST328's own registers (16-bit
- * addresses, big-endian): into debug-info mode at D101, the panel size at
- * D1F4, the IC type at D204, the firmware at D208; then back to normal
- * reporting at D109. Only this chip is written to, and only its mode.
+ * The touch controller: a Hynitron CST3530 at 0x58 (the module's newer chip;
+ * Waveshare's docs name the CST328 at 0x1A, whose 16-bit registers this chip
+ * does not have -- read that way it streams its own firmware). Its protocol
+ * is the CST66xx family's, from Hynitron's driver as VIEWESMART carries it
+ * (esp_lcd_touch_cst3530, private/hyn/hyn_cst66xx.c): registers are four
+ * bytes, big-endian, sent as a write. Normal reporting is D0000400 twice (low
+ * power off), then D0000000, D0000C00, D0000100.
  */
 static i2c_master_dev_handle_t s_tp;       /* the touch controller at 0x58, if it answered */
+
+static esp_err_t tp_cmd(uint32_t reg)
+{
+    const uint8_t w[4] = { (uint8_t)(reg >> 24), (uint8_t)(reg >> 16), (uint8_t)(reg >> 8), (uint8_t)reg };
+    return i2c_master_transmit(s_tp, w, sizeof w, 30);
+}
 
 static void touch_identify(void)
 {
     i2c_master_bus_handle_t bus = i2cbus_handle(I2CBUS_MAIN);
-    i2c_master_dev_handle_t tp;
     i2c_device_config_t dc = { .dev_addr_length = I2C_ADDR_BIT_LEN_7, .device_address = 0x58,
                                .scl_speed_hz = 100000 };
-    if (i2c_master_probe(bus, 0x58, 20) != ESP_OK || i2c_master_bus_add_device(bus, &dc, &tp) != ESP_OK) {
-        ESP_LOGW(TAG, "touch: nothing at 0x58");
+    if (i2c_master_probe(bus, 0x58, 20) != ESP_OK || i2c_master_bus_add_device(bus, &dc, &s_tp) != ESP_OK) {
+        s_tp = NULL;
+        ESP_LOGW(TAG, "touch: nothing at 0x58; no swipes");
         return;
     }
-    uint8_t sz[4] = { 0 }, ic[4] = { 0 }, fw[4] = { 0 };
-    esp_err_t e0 = i2c_master_transmit(tp, (const uint8_t[]){ 0xD1, 0x01 }, 2, 50);
-    vTaskDelay(pdMS_TO_TICKS(10));
-    esp_err_t e1 = i2c_master_transmit_receive(tp, (const uint8_t[]){ 0xD1, 0xF4 }, 2, sz, 4, 50);
-    esp_err_t e2 = i2c_master_transmit_receive(tp, (const uint8_t[]){ 0xD2, 0x04 }, 2, ic, 4, 50);
-    esp_err_t e3 = i2c_master_transmit_receive(tp, (const uint8_t[]){ 0xD2, 0x08 }, 2, fw, 4, 50);
-    i2c_master_transmit(tp, (const uint8_t[]){ 0xD1, 0x09 }, 2, 50);
-    ESP_LOGI(TAG, "touch 0x58: mode %s; D1F4 %02X %02X %02X %02X (%s); D204 %02X %02X %02X %02X (%s); "
-             "D208 %02X %02X %02X %02X (%s)", esp_err_to_name(e0),
-             sz[0], sz[1], sz[2], sz[3], esp_err_to_name(e1), ic[0], ic[1], ic[2], ic[3], esp_err_to_name(e2),
-             fw[0], fw[1], fw[2], fw[3], esp_err_to_name(e3));
-    s_tp = tp;                  /* kept: the screen task reads touches through it */
+    esp_err_t e = tp_cmd(0xD0000400);
+    vTaskDelay(pdMS_TO_TICKS(1));
+    e |= tp_cmd(0xD0000400);
+    e |= tp_cmd(0xD0000000);
+    e |= tp_cmd(0xD0000C00);
+    e |= tp_cmd(0xD0000100);
+    /* Its information block: CA CA at [2..3] says the protocol is the right
+       one; the panel's resolution is at [28..31]. */
+    uint8_t info[50] = { 0 };
+    const uint8_t ri[4] = { 0xD0, 0x03, 0x00, 0x00 };
+    esp_err_t ei = i2c_master_transmit(s_tp, ri, sizeof ri, 30);
+    if (ei == ESP_OK) ei = i2c_master_receive(s_tp, info, sizeof info, 30);
+    ESP_LOGI(TAG, "touch: CST3530 at 0x58, normal reporting (%s); info %s: %02X%02X, %d x %d, tx %d rx %d",
+             e == ESP_OK ? "ok" : "a write failed", esp_err_to_name(ei), info[2], info[3],
+             info[28] | (info[29] << 8), info[30] | (info[31] << 8), info[48], info[49]);
 }
 
 /*
@@ -609,33 +620,49 @@ static portMUX_TYPE s_days_mux = portMUX_INITIALIZER_UNLOCKED;
 static bool s_screen_ok;     /* the panel came up */
 
 /*
- * One touch, read the CST328's way (its protocol, at 0x58 on this module):
- * the seven bytes from D000 -- finger 1's state, x and y packed in three
- * bytes, then the count at [5] and a fixed 0xAB at [6] that says the frame is
- * real -- and 0xAB written back to D000 so the next report is fresh. False
- * with no finger down, or nothing to be read.
+ * One touch: D0070000 then nine bytes -- a 16-bit checksum (0x55 plus the
+ * bytes from [4]), the report type at [2] (FF for positions), the finger count
+ * in [3]'s low nibble and keys in its high one, then per point x low, y low,
+ * pressure, the two high nibbles (x's low, y's high), and the event (high
+ * nibble, 0 = lifted) with the id. D00002AB acknowledges it. Only the first
+ * finger is used; with more than one point the checksum is not checked.
  */
 static bool touch_read(int *x, int *y)
 {
     if (s_tp == NULL) return false;
-    uint8_t b[7];
-    if (i2c_master_transmit_receive(s_tp, (const uint8_t[]){ 0xD0, 0x00 }, 2, b, sizeof b, 30) != ESP_OK)
+    uint8_t b[9];
+    const uint8_t rd[4] = { 0xD0, 0x07, 0x00, 0x00 };
+    if (i2c_master_transmit(s_tp, rd, sizeof rd, 30) != ESP_OK
+        || i2c_master_receive(s_tp, b, sizeof b, 30) != ESP_OK)
         return false;
-    if (b[6] != 0xAB) return false;
-    i2c_master_transmit(s_tp, (const uint8_t[]){ 0xD0, 0x00, 0xAB }, 3, 30);
-    if ((b[5] & 0x0F) == 0 || (b[0] & 0x0F) != 0x06) return false;
-    *x = (b[1] << 4) | (b[3] >> 4);
-    *y = (b[2] << 4) | (b[3] & 0x0F);
+    int fingers = b[3] & 0x0F, keys = b[3] >> 4;
+    bool ok = b[2] == 0xFF && fingers >= 1 && keys == 0;
+    if (ok && fingers == 1) {
+        uint16_t sum = 0x55;
+        for (int i = 4; i < 9; i++) sum = (uint16_t)(sum + b[i]);
+        ok = sum == (uint16_t)(b[0] | (b[1] << 8));
+    }
+    tp_cmd(0xD00002AB);
+    if (!ok || (b[8] >> 4) == 0) return false;
+    *x = b[4] | ((b[7] & 0x0F) << 8);
+    *y = b[5] | ((b[7] & 0xF0) << 4);
     return true;
 }
 
 /*
- * The two pages, Sound and Days, and a swipe either way between them: a
- * touch that travels 40 px or more before it lifts, along either axis (the
- * panel's touch axes are not yet known against the glass, so either counts).
- * Touches polled at 20 Hz; the Sound page drawn once a second, the Days page
- * when its data moves or the page is turned to it.
+ * The pages, in the order a swipe steps through them, wrapping: a swipe
+ * towards the left (or up) is the next, towards the right (or down) the one
+ * before. The page turns the moment a touch has travelled 40 px along its
+ * longer axis -- not when the finger lifts -- and once per touch. Touches are
+ * polled every 20 ms.
+ *
+ * The Days page changes once a minute, so it is drawn into a frame of its own
+ * in PSRAM when its data moves, and a swipe to it only copies that frame: the
+ * page is up in the time of one transfer. The Sound page, which moves every
+ * second, is drawn in place each second.
  */
+typedef enum { SCR_SOUND = 0, SCR_DAYS, SCR_PAGES } scr_page_t;
+
 static void screen_task(void *arg)
 {
     (void)arg;
@@ -644,32 +671,39 @@ static void screen_task(void *arg)
     int top = (c->h - NOISEUI_HEIGHT) / 2;
     page.fb = c->fb + (size_t)top * (size_t)c->w;
     page.h = NOISEUI_HEIGHT;
+    const size_t frame = (size_t)c->w * (size_t)c->h * sizeof(uint16_t);
+    uint16_t *days_fb = heap_caps_malloc(frame, MALLOC_CAP_SPIRAM);
+    canvas_t days_c = *c, days_page = page;
+    if (days_fb) {
+        days_c.fb = days_fb;
+        days_page.fb = days_fb + (size_t)top * (size_t)c->w;
+    }
     for (int i = 0; i < NOISEUI_POINTS; i++) { s_scr.hist[i] = NAN; s_scr.hist_valid[i] = false; }
     static daysui_t days;
     uint32_t days_seen = 0;
+    bool days_ready = false;
     double bucket_e = 0.0;
     int bucket_n = 0, ticks = 0, polls = 0;
-    bool on_days = false, redraw = true, down = false;
-    int x0 = 0, y0 = 0, xl = 0, yl = 0;
+    scr_page_t at = SCR_SOUND;
+    bool redraw = true, down = false, turned = false;
+    int x0 = 0, y0 = 0;
     TickType_t wake = xTaskGetTickCount();
     for (;;) {
         int tx, ty;
         if (touch_read(&tx, &ty)) {
-            if (!down) { x0 = tx; y0 = ty; down = true; }
-            xl = tx;
-            yl = ty;
-        } else if (down) {
-            down = false;
-            int dx = xl - x0, dy = yl - y0;
-            ESP_LOGI(TAG, "touch: %d,%d -> %d,%d", x0, y0, xl, yl);
-            if (abs(dx) >= 40 || abs(dy) >= 40) {
-                on_days = !on_days;
+            if (!down) { x0 = tx; y0 = ty; down = true; turned = false; }
+            int dx = tx - x0, dy = ty - y0;
+            int d = abs(dx) >= abs(dy) ? dx : dy;
+            if (!turned && abs(d) >= 40) {
+                turned = true;
+                at = (scr_page_t)((at + (d < 0 ? 1 : SCR_PAGES - 1)) % SCR_PAGES);
                 redraw = true;
-                ESP_LOGI(TAG, "screen: swipe, now %s", on_days ? "Days" : "Sound");
             }
+        } else {
+            down = false;
         }
 
-        if (++polls >= 20) {                   /* a second: the meter */
+        if (++polls >= 50) {                   /* a second: the meter */
             polls = 0;
             soundlevel_now_t n;
             soundlevel_report_t t;
@@ -696,24 +730,37 @@ static void screen_task(void *arg)
                 bucket_n = 0;
                 ticks = 0;
             }
-            if (!on_days) redraw = true;
+            if (at == SCR_SOUND) redraw = true;
         }
+
+        bool fresh = false;
         portENTER_CRITICAL(&s_days_mux);
         if (s_days_seq != days_seen) {
             days = s_days_scr;
             days_seen = s_days_seq;
-            if (on_days) redraw = true;
+            fresh = true;
         }
         portEXIT_CRITICAL(&s_days_mux);
+        if ((fresh || !days_ready) && days_fb) {
+            /* Drawn off screen whatever page is up, so a swipe to it is a copy. */
+            canvas_clear(&days_c);
+            daysui_draw(&days_page, &days);
+            days_ready = true;
+            if (at == SCR_DAYS) redraw = true;
+        }
 
         if (redraw) {
             redraw = false;
-            canvas_clear(c);
-            if (on_days) daysui_draw(&page, &days);
-            else noiseui_draw(&page, &s_scr);
+            if (at == SCR_DAYS) {
+                if (days_fb) memcpy(c->fb, days_fb, frame);
+                else { canvas_clear(c); daysui_draw(&page, &days); }
+            } else {
+                canvas_clear(c);
+                noiseui_draw(&page, &s_scr);
+            }
             display_blit();
         }
-        vTaskDelayUntil(&wake, pdMS_TO_TICKS(50));
+        vTaskDelayUntil(&wake, pdMS_TO_TICKS(20));
     }
 }
 
