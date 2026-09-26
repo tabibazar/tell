@@ -1,4 +1,7 @@
 #include "speaker_app.h"
+#include "display.h"
+#include "canvas.h"
+#include "noiseui.h"
 
 #include "ble_uart.h"
 #include "ds3231.h"
@@ -517,6 +520,160 @@ static void ring_start(void)
  * Reading the input ports is also what releases the TCA's INT#, which is tied
  * straight to 3V3 on this board and must not be left pulling against it.
  */
+/* Every address that answers on the one I2C bus, once at boot: the codecs,
+   expander and RTC are expected (0x18 0x20 0x40 0x51), and a screen on the
+   LCD FPC adds its touch controller -- FT6336 0x38, CST816 0x15, AXS5106
+   0x63, CST328 0x1A (the pinout doc). A probe only addresses; it writes
+   nothing to any device. */
+static void i2c_census(void)
+{
+    i2c_master_bus_handle_t bus = i2cbus_handle(I2CBUS_MAIN);
+    char seen[128] = "";
+    size_t n = 0;
+    for (uint16_t a = 0x08; a < 0x78; a++)
+        if (i2c_master_probe(bus, a, 20) == ESP_OK && n + 6 < sizeof seen)
+            n += (size_t)snprintf(seen + n, sizeof seen - n, " 0x%02X", (unsigned)a);
+    ESP_LOGI(TAG, "i2c: answering:%s", n ? seen : " none");
+}
+
+/*
+ * The LCD FPC's touch controller is held by TP_RST on EXIO1, which the
+ * demos pulse low and release before talking to it (pinout doc; EXIO6 is not
+ * touched). EXIO1 is made an output only after the latch already holds it
+ * high, so it never glitches low by accident; then 20 ms low, released, and
+ * the bus counted again. The amp's bit stays low in every latch write.
+ */
+static void touch_wake(void)
+{
+    if (s_io == NULL) return;
+    const uint32_t tp_rst = IO_EXPANDER_PIN_NUM_1;
+    if (s_io->write_output_reg(s_io, 0xFFFF & ~(uint32_t)EXIO_AMP) != ESP_OK
+        || esp_io_expander_set_dir(s_io, tp_rst, IO_EXPANDER_OUTPUT) != ESP_OK) {
+        ESP_LOGW(TAG, "touch: TP_RST not driven");
+        return;
+    }
+    s_io->write_output_reg(s_io, 0xFFFF & ~(uint32_t)EXIO_AMP & ~tp_rst);
+    vTaskDelay(pdMS_TO_TICKS(20));
+    s_io->write_output_reg(s_io, 0xFFFF & ~(uint32_t)EXIO_AMP);
+    vTaskDelay(pdMS_TO_TICKS(200));
+    ESP_LOGI(TAG, "touch: TP_RST pulsed");
+    i2c_census();
+}
+
+/*
+ * The touch controller answered at 0x58, not the CST328's documented 0x1A.
+ * Read what it says about itself through the CST328's own registers (16-bit
+ * addresses, big-endian): into debug-info mode at D101, the panel size at
+ * D1F4, the IC type at D204, the firmware at D208; then back to normal
+ * reporting at D109. Only this chip is written to, and only its mode.
+ */
+static void touch_identify(void)
+{
+    i2c_master_bus_handle_t bus = i2cbus_handle(I2CBUS_MAIN);
+    i2c_master_dev_handle_t tp;
+    i2c_device_config_t dc = { .dev_addr_length = I2C_ADDR_BIT_LEN_7, .device_address = 0x58,
+                               .scl_speed_hz = 100000 };
+    if (i2c_master_probe(bus, 0x58, 20) != ESP_OK || i2c_master_bus_add_device(bus, &dc, &tp) != ESP_OK) {
+        ESP_LOGW(TAG, "touch: nothing at 0x58");
+        return;
+    }
+    uint8_t sz[4] = { 0 }, ic[4] = { 0 }, fw[4] = { 0 };
+    esp_err_t e0 = i2c_master_transmit(tp, (const uint8_t[]){ 0xD1, 0x01 }, 2, 50);
+    vTaskDelay(pdMS_TO_TICKS(10));
+    esp_err_t e1 = i2c_master_transmit_receive(tp, (const uint8_t[]){ 0xD1, 0xF4 }, 2, sz, 4, 50);
+    esp_err_t e2 = i2c_master_transmit_receive(tp, (const uint8_t[]){ 0xD2, 0x04 }, 2, ic, 4, 50);
+    esp_err_t e3 = i2c_master_transmit_receive(tp, (const uint8_t[]){ 0xD2, 0x08 }, 2, fw, 4, 50);
+    i2c_master_transmit(tp, (const uint8_t[]){ 0xD1, 0x09 }, 2, 50);
+    ESP_LOGI(TAG, "touch 0x58: mode %s; D1F4 %02X %02X %02X %02X (%s); D204 %02X %02X %02X %02X (%s); "
+             "D208 %02X %02X %02X %02X (%s)", esp_err_to_name(e0),
+             sz[0], sz[1], sz[2], sz[3], esp_err_to_name(e1), ic[0], ic[1], ic[2], ic[3], esp_err_to_name(e2),
+             fw[0], fw[1], fw[2], fw[3], esp_err_to_name(e3));
+    i2c_master_bus_rm_device(tp);
+}
+
+/*
+ * speaker's own screen: watch's Sound page (noiseui.c), fed straight from the
+ * meter rather than over a relay. Once a second: the fast level, the 3 s
+ * LAeq, today's, and the hour's strip of 10 s energy means. Drawn into the
+ * middle 280 rows of the 240x320 panel, the page's own size.
+ */
+static noiseui_t s_scr;
+static bool s_screen_ok;     /* the panel came up */
+
+static void screen_task(void *arg)
+{
+    (void)arg;
+    canvas_t *c = display_canvas();
+    canvas_t page = *c;
+    int top = (c->h - NOISEUI_HEIGHT) / 2;
+    page.fb = c->fb + (size_t)top * (size_t)c->w;
+    page.h = NOISEUI_HEIGHT;
+    for (int i = 0; i < NOISEUI_POINTS; i++) { s_scr.hist[i] = NAN; s_scr.hist_valid[i] = false; }
+    double bucket_e = 0.0;
+    int bucket_n = 0, ticks = 0;
+    TickType_t wake = xTaskGetTickCount();
+    for (;;) {
+        soundlevel_now_t n;
+        soundlevel_report_t t;
+        sl_lock();
+        soundlevel_now(&s_sl, &n);
+        bool have_today = soundlevel_today(&s_sl, &t) && t.blocks > 0;
+        sl_unlock();
+        s_scr.have_signal = n.have;
+        s_scr.laf = n.laf;
+        s_scr.laeq3 = n.laeq3s;
+        s_scr.today = have_today ? t.laeq : NAN;
+        s_scr.calibrated = n.calibrated;
+        if (n.have && isfinite(n.laeq3s)) {
+            bucket_e += pow(10.0, n.laeq3s / 10.0);
+            bucket_n++;
+        }
+        if (++ticks >= 10) {
+            memmove(s_scr.hist, s_scr.hist + 1, (NOISEUI_POINTS - 1) * sizeof s_scr.hist[0]);
+            memmove(s_scr.hist_valid, s_scr.hist_valid + 1, (NOISEUI_POINTS - 1) * sizeof s_scr.hist_valid[0]);
+            bool ok = bucket_n > 0;
+            s_scr.hist[NOISEUI_POINTS - 1] = ok ? (float)(10.0 * log10(bucket_e / bucket_n)) : NAN;
+            s_scr.hist_valid[NOISEUI_POINTS - 1] = ok;
+            bucket_e = 0.0;
+            bucket_n = 0;
+            ticks = 0;
+        }
+        canvas_clear(c);
+        noiseui_draw(&page, &s_scr);
+        display_blit();
+        vTaskDelayUntil(&wake, pdMS_TO_TICKS(1000));
+    }
+}
+
+/*
+ * The 2.8" module on the LCD FPC: its reset is EXIO0, made an output only
+ * once the latch holds it high, pulsed low 20 ms, then 120 ms for the ST7789
+ * to come out of reset. Then a test card: which corner is which, and the
+ * colours drawn as the canvas holds them (row 1) and byte-swapped (row 2) --
+ * the row that reads red, green, blue, amber, grey says the byte order.
+ */
+static void screen_start(void)
+{
+    touch_identify();
+    if (s_io == NULL) return;
+    const uint32_t lcd_rst = IO_EXPANDER_PIN_NUM_0;
+    if (s_io->write_output_reg(s_io, 0xFFFF & ~(uint32_t)EXIO_AMP) != ESP_OK
+        || esp_io_expander_set_dir(s_io, lcd_rst, IO_EXPANDER_OUTPUT) != ESP_OK) {
+        ESP_LOGW(TAG, "screen: LCD_RST not driven; no screen");
+        return;
+    }
+    s_io->write_output_reg(s_io, 0xFFFF & ~(uint32_t)EXIO_AMP & ~lcd_rst);
+    vTaskDelay(pdMS_TO_TICKS(20));
+    s_io->write_output_reg(s_io, 0xFFFF & ~(uint32_t)EXIO_AMP);
+    vTaskDelay(pdMS_TO_TICKS(120));
+    if (display_init() != ESP_OK) {
+        ESP_LOGE(TAG, "screen: ST7789 did not start");
+        return;
+    }
+    display_set_brightness(40);            /* no need for full glare, or its heat */
+    s_screen_ok = true;          /* its task starts once the meter and its lock exist */
+}
+
 static void expander_start(void)
 {
     i2c_master_bus_handle_t bus = i2cbus_handle(I2CBUS_MAIN);
@@ -2345,7 +2502,10 @@ void speaker_app_main(void)
     /* 2. The bus, and the expander with the amp held off. 3. The codecs,
        MCLK first. Nothing on the bus is reachable without the bus. */
     if (i2cbus_init(I2CBUS_MAIN) == ESP_OK) {
-        expander_start();
+        i2c_census();
+    expander_start();
+    touch_wake();
+    screen_start();
         codecs_start();
     } else {
         ESP_LOGE(TAG, "i2c: bus failed; no codecs, no clock, no amp");
@@ -2386,6 +2546,10 @@ void speaker_app_main(void)
     gpio_config(&boot);
 
     s_sl_lock = xSemaphoreCreateMutex();
+    if (s_screen_ok) {
+        xTaskCreatePinnedToCore(screen_task, "screen", 6144, NULL, 2, NULL, 0);
+        ESP_LOGI(TAG, "screen: the Sound page, from speaker's own level");
+    }
     s_cmds = xQueueCreate(8, sizeof(cmd_t));
 
     if (s_in) xTaskCreatePinnedToCore(audio_task, "audio", 8192, NULL, 10, NULL, 1);

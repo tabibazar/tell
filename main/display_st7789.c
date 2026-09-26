@@ -54,6 +54,36 @@
 #define LCD_MIRROR_Y false
 #undef PIN_TFT_POWER
 
+#elif defined(CONFIG_SCREEN_BOARD_AUDIO_S3)
+/*
+ * speaker: the AUDIO-Board's LCD FPC with Waveshare's 2.8" module on it, an
+ * ST7789T3 at 240x320, stood upright. Pins from the board's schematic, the
+ * lvgl example and xiaozhi, which agree (docs/hardware/speaker-pinout.md; the
+ * factory bsp_board.h is stale): CS 3, SCLK 4, BL 5, DC 7, MOSI 9. The panel's
+ * reset is EXIO0 on the TCA9555, pulsed by speaker_app.c before this runs,
+ * so none here. 40 MHz, not 80: a flex cable and a module, not glass on the
+ * board.
+ */
+#define PIN_TFT_CS     3
+#define PIN_TFT_DC     7
+#define PIN_TFT_RST   -1
+#define PIN_TFT_BL     5
+#define PIN_SCK        4
+#define PIN_MOSI       9
+#define LCD_W 240
+#define LCD_H 320
+#define LCD_PCLK_HZ (40 * 1000 * 1000)
+#define LCD_SWAP_XY false
+#define LCD_GAP_X 0
+#define LCD_GAP_Y 0
+/* The ST7789T3 ignores the RAMCTRL endian bit that watch's ST7789V2 takes:
+   with it the test card's red came out blue and green red (2026-09-26), so
+   the frame is swapped for the wire instead, as on envo's JD9853. */
+#define LCD_SWAP_COLOR_BYTES 1
+#define LCD_MIRROR_X false
+#define LCD_MIRROR_Y false
+#undef PIN_TFT_POWER
+
 #elif defined(CONFIG_SCREEN_BOARD_WAVESHARE_147B)
 /* Waveshare ESP32-S3-LCD-1.47B, from their own Display_ST7789.h. */
 #define PIN_TFT_CS    42

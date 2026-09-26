@@ -80,7 +80,9 @@ elseif(CONFIG_SCREEN_BOARD_AUDIO_S3)
     # lilly: main.c's loop names touch_*, and touch_init is never reached),
     # no PMIC, no camera. She does have a card slot (sdcard.c) and a PCF85063
     # (pcf85063.c, kept below).
-    set(BOARD_EXCLUDES "display_st7789.c" "display_jd9853.c" "display_rgb.c" "display_i80.c" "display_axs15231b.c"
+    # Since 2026-09-26 a 2.8" ST7789T3 module sits on her LCD FPC, so she
+    # has display_st7789.c and display_none.c goes.
+    set(BOARD_EXCLUDES "display_none.c" "display_jd9853.c" "display_rgb.c" "display_i80.c" "display_axs15231b.c"
                        "axp2101.c" "qmi8658.c" "level.c" "levelbig.c" "particles.c" "shaketimer.c"
                        "pip.c" "axs_touch.c" "axs5106l_touch.c" "camera.c")
 else()
@@ -95,16 +97,20 @@ endif()
 # speaker's alone. soundlevel.c and ring.c are pure and host-tested; no other
 # board compiles any of the four.
 if(NOT CONFIG_SCREEN_BOARD_AUDIO_S3)
-    list(APPEND BOARD_EXCLUDES "soundlevel.c" "speaker_app.c" "display_none.c")
+    list(APPEND BOARD_EXCLUDES "soundlevel.c" "speaker_app.c")
     # ring.c's colours are also watch's: her Sound page tints speaker's level
     # exactly as speaker's ring does.
     if(NOT CONFIG_SCREEN_BOARD_TOUCH_LCD_169)
         list(APPEND BOARD_EXCLUDES "ring.c")
     endif()
 endif()
-# watch's Sound page (noiseui.c) is hers alone.
+# watch's Sound and Days pages (noiseui.c, daysui.c); speaker's own screen
+# shows the Sound page too.
 if(NOT CONFIG_SCREEN_BOARD_TOUCH_LCD_169)
-    list(APPEND BOARD_EXCLUDES "noiseui.c" "daysui.c")
+    list(APPEND BOARD_EXCLUDES "daysui.c")
+    if(NOT CONFIG_SCREEN_BOARD_AUDIO_S3)
+        list(APPEND BOARD_EXCLUDES "noiseui.c")
+    endif()
 endif()
 
 # One touch driver per board -- both define the same touch_* interface, so
@@ -152,7 +158,7 @@ if(NOT CONFIG_SCREEN_BOARD_TOUCH_LCD_169)
     list(APPEND BOARD_EXCLUDES "vfont.c")
     # The vector drawing is the face's, and envo's air pages draw their marks
     # with it too -- traces, arrows, page dots. Every other board leaves it out.
-    if(NOT CONFIG_SCREEN_BOARD_TOUCH_LCD_147)
+    if(NOT CONFIG_SCREEN_BOARD_TOUCH_LCD_147 AND NOT CONFIG_SCREEN_BOARD_AUDIO_S3)
         list(APPEND BOARD_EXCLUDES "vector.c")
     endif()
 endif()
@@ -166,7 +172,7 @@ endif()
 if(NOT CONFIG_SCREEN_BOARD_TOUCH_LCD_147)
     list(APPEND BOARD_EXCLUDES "envstate.c" "envui.c")
     # The Inter faces also set watch's Sound page.
-    if(NOT CONFIG_SCREEN_BOARD_TOUCH_LCD_169)
+    if(NOT CONFIG_SCREEN_BOARD_TOUCH_LCD_169 AND NOT CONFIG_SCREEN_BOARD_AUDIO_S3)
         list(APPEND BOARD_EXCLUDES "aafont.c")
     endif()
 endif()
