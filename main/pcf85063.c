@@ -129,12 +129,14 @@ const char *pcf85063_untrusted(uint8_t control_1, const uint8_t regs[7])
 }
 
 /*
- * The hardware half is watch's alone. Every .c in main/ is compiled on every
+ * The hardware half is for the boards with a PCF85063 soldered on: watch, and
+ * speaker (the AUDIO-Board), whose chip sits at the same 0x51 on her one bus
+ * beside the codecs and the TCA9555. Every .c in main/ is compiled on every
  * board, so without this guard the ds3231_* names below would collide with
  * ds3231.c's own on a board that really has a DS3231. ds3231.c carries the
  * matching guard the other way round.
  */
-#if defined(ESP_PLATFORM) && CONFIG_SCREEN_BOARD_TOUCH_LCD_169
+#if defined(ESP_PLATFORM) && (CONFIG_SCREEN_BOARD_TOUCH_LCD_169 || CONFIG_SCREEN_BOARD_AUDIO_S3)
 #include "i2cbus.h"
 #include "esp_log.h"
 
@@ -149,10 +151,11 @@ static bool s_present;
 
 esp_err_t ds3231_init(void)
 {
-    /* The chip is soldered to the main bus alongside the CST816D and the
-       QMI8658, so there is no other bus to look on. Bring the bus up rather
-       than assume the touch driver already has; the order in main.c is not
-       this driver's business. */
+    /* The chip is soldered to the main bus -- alongside the QMI8658 on
+       watch, the codecs and the TCA9555 on speaker -- so there is no other
+       bus to look on. Bring the bus up rather than assume another driver
+       already has; the order the app brings things up in is not this
+       driver's business. */
     if (i2cbus_init(I2CBUS_MAIN) != ESP_OK || !i2cbus_probe(I2CBUS_MAIN, ADDR)) {
         ESP_LOGW(TAG, "no PCF85063 at 0x%02X; the clock waits for a Mac", ADDR);
         return ESP_ERR_NOT_FOUND;

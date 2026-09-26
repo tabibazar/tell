@@ -70,10 +70,32 @@ elseif(CONFIG_SCREEN_BOARD_TOUCH_LCD_35B)
     set(BOARD_EXCLUDES "display_st7789.c" "display_jd9853.c" "display_rgb.c" "display_i80.c"
                        "particles.c" "shaketimer.c"
                        "pip.c" "gt911.c" "axs5106l_touch.c")
+elseif(CONFIG_SCREEN_BOARD_AUDIO_S3)
+    # speaker: a Waveshare ESP32-S3-AUDIO-Board with no screen at all. She runs
+    # speaker_app.c from the top of app_main and never reaches the page UI, so
+    # every panel driver goes and display_none.c stands in for display.h; the
+    # rest of main.c's page machinery (pages, views, canvas, the payload
+    # parser) still compiles so the shared main.c links, as it does on lilly.
+    # No IMU, no touch panel (gt911.c stays as the harmless default, as on
+    # lilly: main.c's loop names touch_*, and touch_init is never reached),
+    # no PMIC, no camera. She does have a card slot (sdcard.c) and a PCF85063
+    # (pcf85063.c, kept below).
+    set(BOARD_EXCLUDES "display_st7789.c" "display_jd9853.c" "display_rgb.c" "display_i80.c" "display_axs15231b.c"
+                       "axp2101.c" "qmi8658.c" "level.c" "levelbig.c" "particles.c" "shaketimer.c"
+                       "pip.c" "axs_touch.c" "axs5106l_touch.c" "camera.c")
 else()
     set(BOARD_EXCLUDES "display_st7789.c" "display_jd9853.c" "display_rgb.c" "display_axs15231b.c" "axp2101.c"
                        "qmi8658.c" "level.c" "levelbig.c" "particles.c" "shaketimer.c"
                        "pip.c" "axs_touch.c" "axs5106l_touch.c" "sdcard.c" "camera.c")
+endif()
+
+# The noise monitor -- the sound level meter (soundlevel.c), the ring's
+# colours (ring.c), the app that drives the codecs, the LEDs and the card
+# (speaker_app.c) and the stand-in for a display (display_none.c) -- is
+# speaker's alone. soundlevel.c and ring.c are pure and host-tested; no other
+# board compiles any of the four.
+if(NOT CONFIG_SCREEN_BOARD_AUDIO_S3)
+    list(APPEND BOARD_EXCLUDES "soundlevel.c" "ring.c" "speaker_app.c" "display_none.c")
 endif()
 
 # One touch driver per board -- both define the same touch_* interface, so
@@ -108,9 +130,14 @@ list(APPEND BOARD_EXCLUDES "bubblelevel.c")
 list(APPEND BOARD_EXCLUDES "cst816d_touch.c")
 if(NOT CONFIG_SCREEN_BOARD_TOUCH_LCD_169)
     # The analog face and what only it needs -- the moon's arithmetic -- and
-    # watch's power/battery and PCF85063 clock are hers alone. The pure ones
-    # build on the host for the tests.
-    list(APPEND BOARD_EXCLUDES "face.c" "moonphase.c" "watch.c" "pcf85063.c")
+    # watch's power/battery are hers alone. The pure ones build on the host
+    # for the tests.
+    list(APPEND BOARD_EXCLUDES "face.c" "moonphase.c" "watch.c")
+    # The PCF85063 clock is watch's and speaker's: both have one soldered on
+    # at 0x51, answering to the ds3231_* names.
+    if(NOT CONFIG_SCREEN_BOARD_AUDIO_S3)
+        list(APPEND BOARD_EXCLUDES "pcf85063.c")
+    endif()
     # The stroke font is the face's alone: its numerals and sub-dial words.
     # envo's pages set their type in Inter now (aafont.c, below).
     list(APPEND BOARD_EXCLUDES "vfont.c")
@@ -145,6 +172,6 @@ idf_component_register(
     EXCLUDE_SRCS ${BOARD_EXCLUDES}
     INCLUDE_DIRS "."
     EMBED_FILES ${BOARD_EMBEDS}
-    REQUIRES esp_lcd esp_lcd_jd9853 driver esp_driver_ledc esp_driver_i2c esp_driver_spi esp_driver_tsens esp_timer bt nvs_flash esp_event fatfs esp_driver_sdmmc sdmmc esp_driver_usb_serial_jtag esp_driver_gpio esp_adc)
+    REQUIRES esp_lcd esp_lcd_jd9853 driver esp_driver_ledc esp_driver_i2c esp_driver_spi esp_driver_tsens esp_timer bt nvs_flash esp_event fatfs esp_driver_sdmmc sdmmc esp_driver_usb_serial_jtag esp_driver_gpio esp_adc esp_driver_i2s)
 
 

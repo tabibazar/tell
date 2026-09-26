@@ -75,3 +75,8 @@ host_tests/test_face
 host_tests/test_aafont
 # Face renders are produced by test_face for eyeballing; regenerate, don't keep.
 host_tests/renders/
+build-speaker/
+sdkconfig.speaker
+sdkconfig.speaker.old
+host_tests/test_soundlevel
+host_tests/test_ring

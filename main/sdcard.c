@@ -16,16 +16,28 @@
 static const char *TAG = "sdcard";
 
 static bool s_mounted = false;
+static sdmmc_card_t *s_card;        /* the mounted card, for sd_unmount */
 
 /*
- * SDMMC pins are per board, 1-bit in both cases.
- *   envio (Touch-LCD-3.5B): the B1 spike proved clk=11 cmd=10 d0=9.
- *   envo  (Touch-LCD-1.47):  from Waveshare's bsp_sdcard.h -- clk=16 cmd=15 d0=17.
+ * SDMMC pins are per board, 1-bit in every case.
+ *   envio   (Touch-LCD-3.5B): the B1 spike proved clk=11 cmd=10 d0=9.
+ *   envo    (Touch-LCD-1.47):  from Waveshare's bsp_sdcard.h -- clk=16 cmd=15 d0=17.
+ *   speaker (AUDIO-Board):     clk=40 cmd=42 d0=41, from the schematic and the
+ *                              factory demo (docs/hardware/speaker-pinout.md).
+ *                              The card's D3 is on the TCA9555's EXIO3, not a
+ *                              GPIO: speaker_app.c leaves it an input, so its
+ *                              10k pull-up holds it high and the card powers up
+ *                              in SD mode rather than SPI. D1/D2 are pulled up
+ *                              and not wired to the chip at all.
  */
 #if CONFIG_SCREEN_BOARD_TOUCH_LCD_147
 #define SD_PIN_CLK 16
 #define SD_PIN_CMD 15
 #define SD_PIN_D0  17
+#elif CONFIG_SCREEN_BOARD_AUDIO_S3
+#define SD_PIN_CLK 40
+#define SD_PIN_CMD 42
+#define SD_PIN_D0  41
 #else
 #define SD_PIN_CLK 11
 #define SD_PIN_CMD 10
@@ -61,9 +73,22 @@ esp_err_t sd_mount(void)
     }
 
     s_mounted = true;
+    s_card = card;
     ESP_LOGI(TAG, "mounted (%lluMB)",
              ((uint64_t)card->csd.capacity * card->csd.sector_size) >> 20);
     return ESP_OK;
+}
+
+void sd_unmount(void)
+{
+    if (!s_mounted) return;
+    esp_err_t err = esp_vfs_fat_sdcard_unmount("/sdcard", s_card);
+    if (err != ESP_OK) ESP_LOGW(TAG, "unmount: %s", esp_err_to_name(err));
+    /* Whatever unmount said, the card it knew is gone: the next sd_mount
+       starts the host and the card from scratch. */
+    s_mounted = false;
+    s_card = NULL;
+    ESP_LOGI(TAG, "unmounted");
 }
 
 /* mkdir, treating "already there" as success -- the normal case once a

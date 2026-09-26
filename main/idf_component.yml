@@ -11,3 +11,20 @@ dependencies:
 # (CONFIG_SCCB_HARDWARE_I2C_PORT / SCCB_*NG) to coexist with i2cbus's
 # I2CBUS_MAIN; see sdkconfig.defaults.envio.
   espressif/esp32-camera: "^2.0.0"
+# The three below are speaker's (the Waveshare ESP32-S3-AUDIO-Board) and are
+# only referenced by speaker_app.c, which is compiled for her alone, so on the
+# other boards they are pulled but not linked, as the two above are.
+#
+# esp_codec_dev drives her two codecs over the shared I2C bus: the ES7210 that
+# digitises the mics and the ES8311 that feeds the speaker amp. 1.x, not the
+# 2.0 betas, whose manifest refuses IDF 5.5.0-5.5.2. Its I2C layer must use the
+# new i2c_master driver to coexist with i2cbus's I2CBUS_MAIN, which is its
+# default on IDF 5.3+ (CONFIG_CODEC_I2C_BACKWARD_COMPATIBLE=n, pinned in
+# sdkconfig.defaults.speaker).
+  espressif/esp_codec_dev: "^1.6.2"
+# esp_io_expander_tca95xx_16bit drives the TCA9555 that holds the amp enable
+# (EXIO8), the side keys and the pins that must never be driven -- EXIO6 among
+# them, which takes USB away. 2.x, which attaches to an i2c_master bus handle.
+  espressif/esp_io_expander_tca95xx_16bit: "^2.0.2"
+# led_strip sends the ring's seven WS2812 their colours over RMT on GPIO38.
+  espressif/led_strip: "^3.0.3"

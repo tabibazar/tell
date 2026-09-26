@@ -327,8 +327,12 @@ soundlevel_period_t soundlevel_period(uint32_t tod_s)
  * interval appears up to one block (125 ms) after its end.
  *
  * Only a date that differs counts as a new day, forwards or back: a clock set
- * back a day by the Mac closes today into `yesterday` too. Rare, harmless,
- * and better than mixing two dates.
+ * back a day by the Mac closes today into `yesterday` too, and reopens the
+ * day before EMPTY. That is better than mixing two dates, but it is not
+ * harmless to a caller that rewrites a day's line by its date: the reopened
+ * day would be written over the finished one. So speaker_app.c refuses the
+ * one back step that happens in practice -- a date or time sent just before
+ * midnight that lands just after it (MIDNIGHT_GUARD_S there).
  */
 static void roll(soundlevel_t *s, int32_t day, uint32_t tod_s)
 {

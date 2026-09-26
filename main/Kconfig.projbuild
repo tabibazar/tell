@@ -48,6 +48,19 @@ config SCREEN_BOARD_TOUCH_LCD_169
         on battery. Runs a grand-complication analog face and the sand. See
         docs/superpowers/specs/2026-09-24-watch-grand-complication-design.md.
 
+config SCREEN_BOARD_AUDIO_S3
+    bool "Waveshare ESP32-S3-AUDIO-Board (noise monitor)"
+    help
+        speaker. No screen: two analog mics into an ES7210, an ES8311 and a
+        small amp for the speaker, a ring of seven WS2812, a PCF85063 clock, a
+        TCA9555 expander and a microSD slot. It runs its own app,
+        speaker_app.c, called from the top of app_main -- a noise monitor
+        that shows the room's level on the ring and logs it to the card --
+        and none of the page UI. See
+        docs/superpowers/specs/2026-09-25-speaker-noise-monitor-design.md and,
+        before touching the expander, the boot_safety section of
+        docs/hardware/speaker-pinout.md.
+
 endchoice
 
 config SCREEN_DEVICE_NAME
@@ -58,6 +71,7 @@ config SCREEN_DEVICE_NAME
     default "envio" if SCREEN_BOARD_TOUCH_LCD_35B
     default "envo" if SCREEN_BOARD_TOUCH_LCD_147
     default "watch" if SCREEN_BOARD_TOUCH_LCD_169
+    default "speaker" if SCREEN_BOARD_AUDIO_S3
     default "small"
     help
         The name this board advertises. Give each board on your desk a
@@ -71,6 +85,7 @@ config SCREEN_I2C_SDA
     default 8 if SCREEN_BOARD_TOUCH_LCD_35B
     default 42 if SCREEN_BOARD_TOUCH_LCD_147
     default 11 if SCREEN_BOARD_TOUCH_LCD_169
+    default 11 if SCREEN_BOARD_AUDIO_S3
     default 42
     help
         The CrowPanel wires its GT911 touch controller to GPIO19/20. The
@@ -83,6 +98,9 @@ config SCREEN_I2C_SDA
         AXP2101 PMIC, the AXS15231B touch, a QMI8658, a PCF85063 RTC and a
         TCA9554 expander. The display itself is QSPI, not on here.
 
+        speaker (AUDIO-Board) has one bus on GPIO11/10 for everything: both
+        codecs, the TCA9555 and the PCF85063.
+
 config SCREEN_I2C_SCL
     int "I2C SCL pin"
     default 20 if SCREEN_BOARD_CROWPANEL_7
@@ -91,6 +109,7 @@ config SCREEN_I2C_SCL
     default 7 if SCREEN_BOARD_TOUCH_LCD_35B
     default 41 if SCREEN_BOARD_TOUCH_LCD_147
     default 10 if SCREEN_BOARD_TOUCH_LCD_169
+    default 10 if SCREEN_BOARD_AUDIO_S3
     default 41
 
 config SCREEN_BRIGHTNESS
@@ -108,6 +127,7 @@ config SCREEN_BUTTON_A
     default 0 if SCREEN_BOARD_TOUCH_LCD_35B
     default 0 if SCREEN_BOARD_TOUCH_LCD_147
     default 0 if SCREEN_BOARD_TOUCH_LCD_169
+    default 0 if SCREEN_BOARD_AUDIO_S3
     default -1
     help
         GPIO0 is the BOOT button on both of these boards. It is a strapping
