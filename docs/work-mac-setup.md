@@ -17,7 +17,15 @@ matter.
 
 (`envio-camera-maze` holds the same commits; main was fast-forwarded to it.)
 
-## 2. Clock pushes (BLE, every 5 min)
+## 2. Tools the Mac needs (once)
+
+    mac/build.sh                          # builds mac/tell, the BLE sender (Xcode tools)
+    python3 -m pip install --user pyserial   # for the relay (skip if ESP-IDF is installed:
+                                             # the relay uses its Python automatically)
+
+The first `tell` run asks for Bluetooth permission for the terminal -- allow it.
+
+## 3. Clock pushes (BLE, every 5 min)
 
     tools/install-agent.sh watch
     tools/install-agent.sh speaker
@@ -26,14 +34,14 @@ Check: `tail /tmp/push-clock.watch.log /tmp/push-clock.speaker.log`.
 Once these run at work, the same agents on the home Mac can be removed:
 `launchctl bootout gui/$(id -u)/com.tabibazar.push-clock.watch` (and `.speaker`).
 
-## 3. speaker's level on watch (both on this Mac's USB)
+## 4. speaker's level on watch (both on this Mac's USB)
 
     python3 tools/noise-relay.py      # see its --help and --self-test
 
 It finds both boards by MAC and forwards speaker's level to watch's Sound
 page (side button: Face -> Sand -> Sound).
 
-## 4. Flashing at work (only if you change firmware)
+## 5. Flashing at work (only if you change firmware)
 
 Needs ESP-IDF 5.5 (`tools/idf-env.sh`). Each board has its own script, and
 each refuses a board whose MAC is not its own:
@@ -45,7 +53,7 @@ Build first: `idf.py -B build-<board> -D SDKCONFIG=sdkconfig.<board>
 Factory backups of watch and speaker live only on the home Mac
 (`firmware-backup/`, git-ignored); their sha256 are in docs/hardware/.
 
-## 5. Calibrate speaker once it is in place
+## 6. Calibrate speaker once it is in place
 
 With a phone sound-meter app beside it in a steady sound:
 `./mac/tell --device speaker '!cal NN'` (NN = the phone's dBA).
