@@ -12,9 +12,10 @@ matter.
 
 ## 1. Get the code
 
-    git fetch origin
-    git checkout envio-camera-maze
+    git checkout main
     git pull
+
+(`envio-camera-maze` holds the same commits; main was fast-forwarded to it.)
 
 ## 2. Clock pushes (BLE, every 5 min)
 
