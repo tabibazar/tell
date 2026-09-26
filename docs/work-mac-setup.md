@@ -9,8 +9,8 @@ matter.
 
 | Board | MAC | What it needs from a Mac |
 |---|---|---|
-| watch | 80:45:6b:35:11:d4 | the clock (its RTC backup cell is flat); the noise relay for its Sound page |
-| speaker | 28:84:85:56:f6:b0 | the clock (flat RTC cell -- no SD logging until set) |
+| watch | 80:45:6b:35:11:d4 | the clock (its RTC backup cell is flat) |
+| speaker | 28:84:85:56:f6:b0 | the clock (flat RTC cell -- no SD logging until set); the relay for speech |
 | envo | 28:84:85:88:1c:3c | nothing: it has its own DS3231 and logs on its own |
 
 ## 1. Get the code
@@ -38,17 +38,18 @@ Keep them on both Macs. The relay (below) also pushes a board's clock the
 moment it is plugged in, so a board that lost power on the way is right
 within seconds rather than at the next 5-minute push.
 
-## 4. speaker's level on watch (both on this Mac's USB)
+## 4. The speaker relay (speaker on this Mac's USB)
 
     tools/install-agent.sh noise-relay
 
 A background agent: it starts at login, runs all the time, and launchd
-restarts it if it ever exits; unplugged boards are picked up again when they
-come back. It finds both boards by MAC and forwards speaker's level to
-watch's Sound page, and speaker's daily levels to watch's Days page (side
-button: Face -> Sand -> Sound -> Days).
-Log: `tail -f /tmp/noise-relay.log`. To run it by hand instead (for
-debugging), stop the agent first -- both would want the same USB ports:
+restarts it if it ever exits; an unplugged speaker is picked up again when it
+comes back. It finds speaker by MAC, pushes her clock the moment she is
+plugged in, and carries speech and commands to her (section 6).
+speaker has her own screen since 2026-09-26 (Sound and Days, swipe between
+them), so watch is no longer fed; `--to-watch` brings that back if ever wanted.
+Log: `tail -f /tmp/noise-relay.err`. To run it by hand instead (for
+debugging), stop the agent first -- both would want the same USB port:
 `launchctl bootout gui/$(id -u)/com.tabibazar.noise-relay`, then
 `python3 tools/noise-relay.py --verbose`.
 

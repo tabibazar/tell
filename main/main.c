@@ -3787,9 +3787,11 @@ static void watch_function_key(int64_t now)
     }
     s_pages.last_activity_us = now;
     if (k == WATCH_KEY_SHORT) {
-        /* Face -> Sand -> Sound -> Days -> Face; a page the board lacks (no
-           IMU, no sand) is stepped over. */
-        static const page_t order[] = { PAGE_FACE, PAGE_PARTICLES, PAGE_SOUND, PAGE_DAYS };
+        /* Face -> Sand -> Face; a page the board lacks (no IMU, no sand) is
+           stepped over. Sound and Days are off the cycle since speaker got a
+           screen of her own (2026-09-26); their code stays for a relay run
+           with --to-watch. */
+        static const page_t order[] = { PAGE_FACE, PAGE_PARTICLES };
         enum { N_ORDER = sizeof order / sizeof order[0] };
         int at = 0;
         for (int i = 0; i < N_ORDER; i++) if (order[i] == s_pages.current) at = i;
@@ -4060,8 +4062,7 @@ void app_main(void)
        the function button (when the IMU answered). Nothing else -- the timer,
        stopwatch and chip pages ride in with the sand and the RTC elsewhere. */
     available = (available & PAGE_BIT(PAGE_PARTICLES))
-              | PAGE_BIT(PAGE_FACE) | PAGE_BIT(PAGE_MOON) | PAGE_BIT(PAGE_SOUND)
-              | PAGE_BIT(PAGE_DAYS);
+              | PAGE_BIT(PAGE_FACE) | PAGE_BIT(PAGE_MOON);
 #else
     available &= ~(PAGE_BIT(PAGE_FACE) | PAGE_BIT(PAGE_MOON) | PAGE_BIT(PAGE_SOUND)
                    | PAGE_BIT(PAGE_DAYS));

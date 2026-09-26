@@ -1049,8 +1049,9 @@ class Server:
 class Relay:
     """Both boards, the socket, and one turn of the loop at a time (step())."""
 
-    def __init__(self, speaker, watch, server=None):
+    def __init__(self, speaker, watch, server=None, echo=True):
         self.speaker, self.watch, self.server = speaker, watch, server
+        self.echo = echo        # with no watch: print what it would have got (a dry run), or drop it
         self.boards = [b for b in (speaker, watch) if b is not None]
         self.pacer = Pacer()
         self.days = DaysOut()
@@ -1247,7 +1248,8 @@ class Relay:
             if line is None:
                 continue
             if watch is None:
-                print(line.rstrip("\n"), flush=True)
+                if self.echo:
+                    print(line.rstrip("\n"), flush=True)
             else:
                 watch.send(line, now)
 
@@ -1256,19 +1258,24 @@ def run(args):
     need_pyserial()
     macs = registry()
     speaker = Speaker(args.speaker or macs.get("speaker", SPEAKER_MAC), args.verbose)
-    watch = None if args.dry_run else Watch(args.watch or macs.get("watch", WATCH_MAC), args.verbose)
+    # Since 2026-09-26 speaker has a screen of her own, so watch is not fed by
+    # default: the relay is speaker's alone (speech, commands, her clock on
+    # plug-in) and leaves watch's port free. --to-watch brings the feed back.
+    to_watch = args.to_watch and not args.dry_run
+    watch = Watch(args.watch or macs.get("watch", WATCH_MAC), args.verbose) if to_watch else None
     # A dry run writes nothing to either board, so it takes no jobs either.
     server = None if args.dry_run else Server(args.socket)
     if server is not None and not server.open():
         server = None
-    relay = Relay(speaker, watch, server)
+    relay = Relay(speaker, watch, server, echo=args.dry_run)
 
     def stop(signum, frame):
         raise KeyboardInterrupt
 
     signal.signal(signal.SIGTERM, stop)
     log("relaying speaker %s -> %s" % (speaker.mac.upper(),
-                                       "stdout (dry run)" if watch is None else "watch " + watch.mac.upper()))
+                                       "stdout (dry run)" if args.dry_run
+                                       else "watch " + watch.mac.upper() if watch else "no watch (speaker only)"))
     try:
         while True:
             relay.step()
@@ -1702,6 +1709,8 @@ def main():
                     help="check the parsers, pacing and socket on fakes, then exit")
     ap.add_argument("--speaker", metavar="MAC", help="speaker's MAC, instead of boards.tsv's")
     ap.add_argument("--watch", metavar="MAC", help="watch's MAC, instead of boards.tsv's")
+    ap.add_argument("--to-watch", action="store_true",
+                    help="also feed speaker's level and days to watch (off since speaker has a screen)")
     ap.add_argument("--socket", metavar="PATH", default=SOCK_PATH,
                     help="where to take jobs for speaker (default ~/.tell/speaker.sock)")
     args = ap.parse_args()
