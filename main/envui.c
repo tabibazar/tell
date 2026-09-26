@@ -42,7 +42,8 @@
  * ranks. Labels in the smallest; a secondary line one up; the words that
  * name a state in the next two; the numbers in the largest two.
  */
-#define F_LABEL   (&aafont_inter_label)     /* capitals 13: labels, units, axis, key, week */
+#define F_LABEL   (&aafont_inter_label)     /* capitals 13: labels, units, axis, key */
+#define F_SMALL   (&aafont_inter_small)     /* capitals 10: the week grid's days and hours */
 #define F_SUB     (&aafont_inter_sub)       /* 17: the trend word, minutes so far, the date */
 #define F_WORD    (&aafont_inter_word)      /* 25: FROM VOCs, NO READING, the chart's word */
 #define F_STATE   (&aafont_inter_state)     /* 32: GOOD / FAIR / POOR, the chart's number */
@@ -1062,7 +1063,10 @@ static void week_page(canvas_t *c, const envui_week_t *w, int page, int pages)
          */
         char name[3] = { w->day[d][0], w->day[d][1], '\0' };
         if (name[1] >= 'A' && name[1] <= 'Z') name[1] = (char)(name[1] - 'A' + 'a');
-        aafont_draw(c, F_LABEL, XL, W_GY + d * W_CH, name, d == 6 ? COL_WHITE : COL_GREY, AAFONT_LEFT);
+        /* Centred on the row's cells: at the label size the days stood 3 px
+           apart and ran into one another. */
+        int ty = W_GY + d * W_CH + 1 + (W_CELL_H - F_SMALL->cap) / 2;
+        aafont_draw(c, F_SMALL, XL, ty, name, d == 6 ? COL_WHITE : COL_GREY, AAFONT_LEFT);
         for (int h = 0; h < 24; h++) {
             int x = W_GX + h * W_CW, y = W_GY + d * W_CH + 1;
             switch (w->cell[d][h]) {
@@ -1113,13 +1117,13 @@ static void week_page(canvas_t *c, const envui_week_t *w, int page, int pages)
        cells and 6 px over the page dots, so "12" reads as a label on the
        grid and not as a caption on the dots under it. */
     int ly = W_GY + 7 * W_CH + 1;
-    aafont_draw(c, F_LABEL, W_GX, ly, "00", COL_GREY, AAFONT_LEFT);
+    aafont_draw(c, F_SMALL, W_GX, ly, "00", COL_GREY, AAFONT_LEFT);
     const char *mid[] = { "06", "12", "18" };
     for (int k = 0; k < 3; k++) {
         int x = W_GX + (k + 1) * 6 * W_CW - 1;
-        aafont_draw(c, F_LABEL, x, ly, mid[k], COL_GREY, AAFONT_CENTRE);
+        aafont_draw(c, F_SMALL, x, ly, mid[k], COL_GREY, AAFONT_CENTRE);
     }
-    aafont_draw(c, F_LABEL, XR + 1, ly, "24", COL_GREY, AAFONT_RIGHT);
+    aafont_draw(c, F_SMALL, XR + 1, ly, "24", COL_GREY, AAFONT_RIGHT);
 
     page_dots(c, page, pages);
 }

@@ -6,6 +6,7 @@
 /* The faces themselves. Each header defines one aafont_t over its own static
    tables, so this is the one file that may include them. */
 #include "font_inter_label.h"
+#include "font_inter_small.h"
 #include "font_inter_sub.h"
 #include "font_inter_word.h"
 #include "font_inter_state.h"

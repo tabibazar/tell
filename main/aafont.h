@@ -179,6 +179,7 @@ uint16_t aafont_blend(uint16_t dst, uint16_t src, unsigned a);
  * line around it are laid out as before.
  */
 extern const aafont_t aafont_inter_label;
+extern const aafont_t aafont_inter_small;    /* 13 px, capitals 10: envo's week grid */
 extern const aafont_t aafont_inter_sub;
 extern const aafont_t aafont_inter_word;
 extern const aafont_t aafont_inter_state;
