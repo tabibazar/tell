@@ -4,6 +4,10 @@
 #include "noiseui.h"
 #include "daysui.h"
 #include "liveui.h"
+#include "airui.h"
+#include "aht21.h"
+#include "ens160.h"
+#include "envstate.h"
 
 #include "ble_uart.h"
 #include "ds3231.h"
@@ -627,6 +631,20 @@ static uint32_t s_days_seq;
 static portMUX_TYPE s_days_mux = portMUX_INITIALIZER_UNLOCKED;
 static bool s_screen_ok;     /* the panel came up */
 
+/* The Air page's reading, written by the control task every AIR_EVERY_US,
+   copied by the screen task when the sequence moves. */
+#define AIR_EVERY_US    (10 * 1000000LL)
+static airui_t s_air;
+static uint32_t s_air_seq;
+static portMUX_TYPE s_air_mux = portMUX_INITIALIZER_UNLOCKED;
+static envs_t *s_envs;          /* in PSRAM: envstate's ring of readings */
+
+/* The Sound page's hour, read back from the card after a restart: the
+   control task (which owns the card) fills it once, the screen task takes it. */
+static float *s_rest_hist;      /* NOISEUI_POINTS, in PSRAM */
+static bool *s_rest_valid;
+static volatile bool s_rest_ready;
+
 /*
  * One touch: D0070000 then nine bytes -- a 16-bit checksum (0x55 plus the
  * bytes from [4]), the report type at [2] (FF for positions), the finger count
@@ -669,7 +687,7 @@ static bool touch_read(int *x, int *y)
  * page is up in the time of one transfer. The Sound page, which moves every
  * second, is drawn in place each second.
  */
-typedef enum { SCR_SOUND = 0, SCR_LIVE, SCR_DAYS, SCR_PAGES } scr_page_t;
+typedef enum { SCR_SOUND = 0, SCR_LIVE, SCR_DAYS, SCR_AIR, SCR_PAGES } scr_page_t;
 
 static void screen_task(void *arg)
 {
@@ -704,6 +722,8 @@ static void screen_task(void *arg)
 #define live (*livep)
     for (int i = 0; i < LIVEUI_BANDS; i++) live.band[i] = live.peak[i] = NAN;
     int live_tick = 0;
+    static airui_t air;
+    uint32_t air_seen = 0;
     int x0 = 0, y0 = 0;
     TickType_t wake = xTaskGetTickCount();
     for (;;) {
@@ -720,6 +740,25 @@ static void screen_task(void *arg)
         } else {
             down = false;
         }
+
+        if (s_rest_ready && s_rest_hist && s_rest_valid) {
+            /* The hour before the restart, from the card: the strip takes it
+               whole, and the points of this boot's first minute go on from it. */
+            memcpy(s_scr.hist, s_rest_hist, sizeof s_scr.hist);
+            memcpy(s_scr.hist_valid, s_rest_valid, sizeof s_scr.hist_valid);
+            s_rest_ready = false;
+            ticks = 0;
+            bucket_e = 0.0;
+            bucket_n = 0;
+            if (at == SCR_SOUND) redraw = true;
+        }
+        portENTER_CRITICAL(&s_air_mux);
+        if (s_air_seq != air_seen) {
+            air = s_air;
+            air_seen = s_air_seq;
+            if (at == SCR_AIR) redraw = true;
+        }
+        portEXIT_CRITICAL(&s_air_mux);
 
         if (++polls >= 50) {                   /* a second: the meter */
             polls = 0;
@@ -795,6 +834,8 @@ static void screen_task(void *arg)
             redraw = false;
             if (at == SCR_LIVE) {
                 /* drawn above, on its own clock */
+            } else if (at == SCR_AIR) {
+                airui_draw(c, &air);
             } else if (at == SCR_DAYS) {
                 if (days_fb) memcpy(c->fb, days_fb, frame);
                 else { canvas_clear(c); daysui_draw(&page, &days); }
@@ -2647,6 +2688,141 @@ static void usb_start(void)
 
 /* ---- the control task ----------------------------------------------------- */
 
+/*
+ * The air, every AIR_EVERY_US, as envo reads the same ENS160 + AHT21 pair:
+ * the AHT21 first, its reading handed to the ENS160 as compensation (the
+ * datasheet default when it has none), then the gas; envstate keeps the
+ * readings and gives the display value, the state with hysteresis and the
+ * trend. One "air:" line to the log each time.
+ */
+static void air_sample(int64_t now)
+{
+    if (s_envs == NULL) return;
+    float t = 0, rh = 0;
+    bool have_th = aht21_present() && aht21_read(&t, &rh);
+    envs_reading_t r = { .t_us = now };
+    if (have_th) {
+        r.temp_c100 = (int16_t)lrintf(t * 100.0f);
+        r.rh_c100 = (uint16_t)lrintf(rh * 100.0f);
+        r.have |= ENV_HAVE_TEMP | ENV_HAVE_RH;
+    }
+    uint16_t eco2 = 0, tvoc = 0;
+    uint8_t aqi = 0;
+    ens160_validity_t validity = ENS160_INVALID;
+    bool have_gas = false;
+    if (ens160_present()) {
+        ens160_air_t a = { .aht_ok = have_th, .aht_c = t, .aht_rh = rh };
+        ens160_comp_t comp = ens160_choose_comp(&a);
+        ens160_compensate(comp.celsius, comp.humidity);
+        have_gas = ens160_read(&eco2, &tvoc, &aqi, &validity);
+        if (have_gas) {
+            r.tvoc = tvoc;
+            r.eco2 = eco2;
+            r.aqi = aqi;
+            r.validity = (uint8_t)validity;
+            r.have |= ENV_HAVE_GAS;
+        }
+    }
+    envs_push(s_envs, &r);
+    envs_update(s_envs, ENVS_VOC);
+    envs_update(s_envs, ENVS_ECO2);
+
+    airui_t a;
+    memset(&a, 0, sizeof a);
+    a.have_sensor = ens160_present();
+    bool err = false;
+    int mins = 0;
+    a.warming = envs_gas_warming(s_envs, &mins, &err, now);
+    a.gas_error = err;
+    a.warm_minutes = mins;
+    a.have_voc = envs_value(s_envs, ENVS_VOC, &a.voc_ppb);
+    a.have_eco2 = envs_value(s_envs, ENVS_ECO2, &a.eco2_ppm);
+    a.voc_state = s_envs->state[ENVS_VOC];
+    a.eco2_state = s_envs->state[ENVS_ECO2];
+    a.voc_trend = envs_trend(s_envs, ENVS_VOC, now);
+    a.have_temp = a.have_rh = have_th;
+    a.temp_c = t;
+    a.rh = rh;
+    portENTER_CRITICAL(&s_air_mux);
+    s_air = a;
+    s_air_seq++;
+    portEXIT_CRITICAL(&s_air_mux);
+    ESP_LOGI(TAG, "air: tvoc %u ppb eco2 %u ppm aqi %u validity %d%s | %.1f C %.0f %% (%s%s)",
+             tvoc, eco2, aqi, (int)validity, a.warming ? " warming" : "", (double)t, (double)rh,
+             have_gas ? "gas" : "no gas", have_th ? ", th" : ", no th");
+}
+
+/*
+ * The Sound page's last hour, read back from the detail log after a restart:
+ * each "HH:MM:SS,laeq1s,..." line of the last 3600 s folded into the strip's
+ * 10 s points as energy means -- today's file, and yesterday's too in the
+ * first hour after midnight. Rows the estimated offset wrote are rebased as
+ * the days line rebases them. Only the tail of a file is read: the last
+ * hour is under 100 KB of it.
+ */
+static void hist_fold_file(int32_t day, uint32_t now_tod, uint32_t day_shift, float rebase,
+                           double *e, int *n)
+{
+    char date[11], path[48], row[64];
+    format_date(day, date);
+    snprintf(path, sizeof path, SD_DIR "/%s.csv", date);
+    FILE *f = fopen(path, "r");
+    if (!f) return;
+    if (fseek(f, 0, SEEK_END) == 0) {
+        long size = ftell(f);
+        long from = size > 110000 ? size - 110000 : 0;
+        fseek(f, from, SEEK_SET);
+        if (from > 0 && !fgets(row, sizeof row, f)) { fclose(f); return; }   /* a part line */
+    }
+    while (fgets(row, sizeof row, f)) {
+        unsigned h, m, sec;
+        if (sscanf(row, "%2u:%2u:%2u,", &h, &m, &sec) != 3 || h > 23 || m > 59 || sec > 59) continue;
+        float v = csv_level(csv_field(row, 1));
+        if (!isfinite(v)) continue;
+        const char *cal = csv_field(row, 3);
+        if (cal && strncmp(cal, "est", 3) == 0) v += rebase;
+        int64_t age = (int64_t)now_tod + day_shift - (int64_t)(h * 3600 + m * 60 + sec);
+        if (age < 0 || age >= NOISEUI_POINTS * 10) continue;
+        int i = NOISEUI_POINTS - 1 - (int)(age / 10);
+        e[i] += pow(10.0, v / 10.0);
+        n[i]++;
+    }
+    fclose(f);
+}
+
+static void hist_restore(void)
+{
+    int32_t today;
+    uint32_t tod;
+    if (!s_sd || !s_screen_ok || !clock_now(&today, &tod) || today < 0) return;
+    s_rest_hist = heap_caps_malloc(NOISEUI_POINTS * sizeof(float), MALLOC_CAP_SPIRAM);
+    s_rest_valid = heap_caps_malloc(NOISEUI_POINTS * sizeof(bool), MALLOC_CAP_SPIRAM);
+    double *e = heap_caps_calloc(NOISEUI_POINTS, sizeof(double), MALLOC_CAP_SPIRAM);
+    int *n = heap_caps_calloc(NOISEUI_POINTS, sizeof(int), MALLOC_CAP_SPIRAM);
+    if (!s_rest_hist || !s_rest_valid || !e || !n) {
+        free(e);
+        free(n);
+        return;
+    }
+    soundlevel_now_t now;
+    sl_lock();
+    soundlevel_now(&s_sl, &now);
+    sl_unlock();
+    const float rebase = now.calibrated ? now.cal_offset - SOUNDLEVEL_CAL_EST_DB : 0.0f;
+    if (tod < NOISEUI_POINTS * 10) hist_fold_file(today - 1, tod, 86400, rebase, e, n);
+    hist_fold_file(today, tod, 0, rebase, e, n);
+    int got = 0;
+    for (int i = 0; i < NOISEUI_POINTS; i++) {
+        s_rest_valid[i] = n[i] > 0;
+        s_rest_hist[i] = n[i] > 0 ? (float)(10.0 * log10(e[i] / n[i])) : NAN;
+        got += n[i] > 0;
+    }
+    free(e);
+    free(n);
+    s_rest_ready = true;
+    ESP_LOGI(TAG, "screen: the hour's strip restored from the card, %d of %d points", got, NOISEUI_POINTS);
+}
+
 static void control_task(void *arg)
 {
     (void)arg;
@@ -2654,6 +2830,8 @@ static void control_task(void *arg)
     int64_t next_line = esp_timer_get_time() + 1000000;
     int64_t next_days = esp_timer_get_time() + 5 * 1000000;    /* soon after boot, for the relay */
     int slot_lines = 5;                 /* the slot levels, for the first few seconds */
+    int64_t next_air = esp_timer_get_time() + 3 * 1000000;
+    bool restored = false;
 
     for (;;) {
         vTaskDelayUntil(&wake, pdMS_TO_TICKS(100));
@@ -2680,6 +2858,19 @@ static void control_task(void *arg)
             next_days = now + 60 * 1000000LL;
             days_line();
         }
+        if (now >= next_air) {
+            next_air = now + AIR_EVERY_US;
+            air_sample(now);
+        }
+        /* Once, as soon as the card and the clock are both there. */
+        if (!restored && s_sd) {
+            int32_t d;
+            uint32_t t;
+            if (clock_now(&d, &t) && d >= 0) {
+                restored = true;
+                hist_restore();
+            }
+        }
     }
 }
 
@@ -2699,6 +2890,13 @@ void speaker_app_main(void)
     expander_start();
     touch_wake();
     screen_start();
+    /* The air module on the bus, if it is there: an ENS160 and an AHT21. */
+    aht21_init();
+    ens160_init();
+    s_envs = heap_caps_calloc(1, sizeof(envs_t), MALLOC_CAP_SPIRAM);
+    if (s_envs) envs_init(s_envs);
+    ESP_LOGI(TAG, "air: ENS160 %s, AHT21 %s", ens160_present() ? "found" : "absent",
+             aht21_present() ? "found" : "absent");
         codecs_start();
     } else {
         ESP_LOGE(TAG, "i2c: bus failed; no codecs, no clock, no amp");

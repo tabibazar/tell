@@ -111,9 +111,9 @@ if(NOT CONFIG_SCREEN_BOARD_TOUCH_LCD_169)
         list(APPEND BOARD_EXCLUDES "noiseui.c" "daysui.c")
     endif()
 endif()
-# speaker's Live page (the waveform and the octave bars) is hers alone.
+# speaker's Live and Air pages are hers alone.
 if(NOT CONFIG_SCREEN_BOARD_AUDIO_S3)
-    list(APPEND BOARD_EXCLUDES "liveui.c")
+    list(APPEND BOARD_EXCLUDES "liveui.c" "airui.c")
 endif()
 
 # One touch driver per board -- both define the same touch_* interface, so
@@ -173,7 +173,11 @@ endif()
 # the unused faces anyway, but left out here they cost the other boards not
 # even the compile, and their images stay exactly what they were.
 if(NOT CONFIG_SCREEN_BOARD_TOUCH_LCD_147)
-    list(APPEND BOARD_EXCLUDES "envstate.c" "envui.c")
+    list(APPEND BOARD_EXCLUDES "envui.c")
+    # speaker's Air page states her ENS160 by the same limits and hysteresis.
+    if(NOT CONFIG_SCREEN_BOARD_AUDIO_S3)
+        list(APPEND BOARD_EXCLUDES "envstate.c")
+    endif()
     # The Inter faces also set watch's Sound page.
     if(NOT CONFIG_SCREEN_BOARD_TOUCH_LCD_169 AND NOT CONFIG_SCREEN_BOARD_AUDIO_S3)
         list(APPEND BOARD_EXCLUDES "aafont.c")
