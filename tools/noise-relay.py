@@ -406,6 +406,13 @@ def check_command(text):
         m = re.match(r"^(\d{1,2})-(\d{1,2})$", args[0]) if len(args) == 1 else None
         if m is None or int(m.group(1)) > 23 or int(m.group(2)) > 23:
             raise ValueError('say "!night HH-HH", e.g. !night 22-07')
+    elif word == "!office":
+        days = {"mon", "tue", "wed", "thu", "fri", "sat", "sun"}
+        if not (args == ["none"] or (len(args) == 1 and all(d.lower() in days for d in args[0].split(",")))):
+            raise ValueError('say "!office mon,tue,thu,fri" or "!office none"')
+    elif word == "!place":
+        if args not in (["home"], ["office"]):
+            raise ValueError('say "!place home" or "!place office"')
     elif word == "!thrh":
         if not (len(args) == 1 and re.match(r"^-?\d{1,2}(?:\.\d+)?$", args[0])):
             raise ValueError('say "!thrh X", the humidity offset in points')
@@ -418,7 +425,7 @@ def check_command(text):
         if not (args == ["off"] or (len(args) == 2 and all(re.match(num, a) for a in args))):
             raise ValueError('say "!thcal T RH" (the room\'s C and %) or "!thcal off"')
     else:
-        raise ValueError("%s is not carried (only !cal, !chime, !ring, !night, !thcal, !thfit, !thrh)" % word[:20])
+        raise ValueError("%s is not carried (only !cal, !chime, !ring, !night, !thcal, !thfit, !thrh, !office, !place)" % word[:20])
     return " ".join(parts)
 
 
@@ -1090,7 +1097,7 @@ class Relay:
                     self.seen["days"] = (msg, now)
                     if got[1]:
                         self.days.set(days_commands(*got))
-            elif word in ("cal", "thcal", "thfit", "thrh", "play", "status"):
+            elif word in ("cal", "thcal", "thfit", "thrh", "office", "place", "play", "status"):
                 if word in ("cal", "thcal", "thfit", "thrh"):
                     self.seen[word] = (msg, now)
                 if word == "status":

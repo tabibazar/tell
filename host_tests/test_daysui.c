@@ -485,6 +485,38 @@ static void test_pages(void)
     s->bars = 30;
     draw(s, "month_30_sparse");
 
+    /* Office and home: Fridays at the office are compared with office
+       Fridays only, and the caption says where today is. */
+    s = month(35, 52.4f, false);
+    s->bars = 30;
+    for (int i = 0; i < s->n; i++)
+        s->day[i].place = i % 7 == 2 || i % 7 == 5 || i % 7 == 6 ? DAYSUI_PLACE_HOME : DAYSUI_PLACE_OFFICE;
+    s->day[s->n - 1].place = DAYSUI_PLACE_OFFICE;
+    {
+        daysui_base_t b = daysui_baseline(s);
+        int n_office = 0;
+        for (int i = s->n - 2; i >= 0 && n_office < 4; i--)
+            if (daysui_weekday(s->day[i].year, s->day[i].month, s->day[i].day) == b.weekday
+                && s->day[i].place == DAYSUI_PLACE_OFFICE) n_office++;
+        printf("     office Friday: kind %d over %d, place %d\n", b.kind, b.n, b.place);
+        expect("an office day is compared with office days of its weekday",
+               b.place == DAYSUI_PLACE_OFFICE && (b.kind != DAYSUI_BASE_WEEKDAY || b.n <= n_office));
+    }
+    draw(s, "month_30_office");
+    {
+        /* The versus page: each weekday's usual level against Wednesday's. */
+        int n;
+        float we = daysui_weekday_usual(s, 2, &n);
+        expect("Wednesday's usual level comes from up to four Wednesdays", isfinite(we) && n >= 1 && n <= 4);
+        static const uint8_t pl[7] = { DAYSUI_PLACE_OFFICE, DAYSUI_PLACE_OFFICE, DAYSUI_PLACE_HOME,
+                                       DAYSUI_PLACE_OFFICE, DAYSUI_PLACE_OFFICE, DAYSUI_PLACE_HOME, DAYSUI_PLACE_HOME };
+        guard_fill(s_mem);
+        canvas_t cv = canvas_on(s_mem);
+        daysui_draw_versus(&cv, s, pl);
+        expect("the versus page stays inside the framebuffer", guard_ok(s_mem));
+        render("versus", s_mem + GUARD);
+    }
+
     /* The same, quieter: the minus path. */
     draw(month(35, 44.1f, false), "full_month_quieter");
     /* About the same. */

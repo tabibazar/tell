@@ -221,12 +221,21 @@ typedef struct {
     uint8_t night_to;       /* ... until this one */
     float   t_gain, t_off;  /* the air module's temperature: gain x raw + offset (!thfit, !thcal) */
     float   rh_off;         /* and humidity's offset, after the temperature correction (!thcal) */
+    uint8_t office_mask;    /* weekdays at the office, bit 0 Monday .. bit 6 Sunday (!office) */
+    int32_t place_from;     /* the day the schedule starts; days before it were at home */
+    int32_t place_day;      /* one day marked by hand (!place), -1 none ... */
+    uint8_t place_what;     /* ... and where: DAYSUI_PLACE_HOME or _OFFICE */
 } spk_settings_t;
 
 static volatile spk_settings_t s_set = {
     .cal_offset = SOUNDLEVEL_CAL_EST_DB, .calibrated = false,
     .chime = false, .ring = true, .night_from = 22, .night_to = 7,
     .t_gain = 1.0f,
+    /* Reza, 2026-09-27: speaker goes to the office every weekday but
+       Wednesday, from Monday the 28th. */
+    .office_mask = 0x1B,                /* Mon, Tue, Thu, Fri */
+    .place_from = 20724,                /* timecalc_days(2026, 9, 28) */
+    .place_day = -1, .place_what = 0,
 };
 
 /* The chime's gate, and what the reference slot says. Written by one task and
@@ -450,6 +459,10 @@ static void settings_load(void)
     int32_t off;
     if (nvs_get_i32(h, "t_off_c", &off) == ESP_OK && off > -3000 && off < 3000) s_set.t_off = off / 100.0f;
     if (nvs_get_i32(h, "t_gain_m", &off) == ESP_OK && off >= 500 && off <= 2000) s_set.t_gain = off / 1000.0f;
+    if (nvs_get_u8(h, "off_mask", &u) == ESP_OK) s_set.office_mask = u & 0x7F;
+    if (nvs_get_i32(h, "place_from", &off) == ESP_OK) s_set.place_from = off;
+    if (nvs_get_i32(h, "place_day", &off) == ESP_OK) s_set.place_day = off;
+    if (nvs_get_u8(h, "place_what", &u) == ESP_OK) s_set.place_what = u;
     if (nvs_get_i32(h, "rh_off_c", &off) == ESP_OK && off > -4000 && off < 4000) s_set.rh_off = off / 100.0f;
     if (nvs_get_u8(h, "ring", &u) == ESP_OK) s_set.ring = u != 0;
     if (nvs_get_u16(h, "night", &w) == ESP_OK && (w >> 8) < 24 && (w & 0xFF) < 24) {
@@ -474,6 +487,10 @@ static void settings_save(void)
     if (e == ESP_OK) e = nvs_set_u16(h, "night", (uint16_t)(s_set.night_from << 8 | s_set.night_to));
     if (e == ESP_OK) e = nvs_set_i32(h, "t_off_c", (int32_t)lrintf(s_set.t_off * 100.0f));
     if (e == ESP_OK) e = nvs_set_i32(h, "t_gain_m", (int32_t)lrintf(s_set.t_gain * 1000.0f));
+    if (e == ESP_OK) e = nvs_set_u8(h, "off_mask", s_set.office_mask);
+    if (e == ESP_OK) e = nvs_set_i32(h, "place_from", s_set.place_from);
+    if (e == ESP_OK) e = nvs_set_i32(h, "place_day", s_set.place_day);
+    if (e == ESP_OK) e = nvs_set_u8(h, "place_what", s_set.place_what);
     if (e == ESP_OK) e = nvs_set_i32(h, "rh_off_c", (int32_t)lrintf(s_set.rh_off * 100.0f));
     if (e == ESP_OK) e = nvs_commit(h);
     nvs_close(h);
@@ -721,7 +738,7 @@ static bool touch_read(int *x, int *y)
  * page is up in the time of one transfer. The Sound page, which moves every
  * second, is drawn in place each second.
  */
-typedef enum { SCR_SOUND = 0, SCR_LIVE, SCR_DAYS, SCR_AIR, SCR_AIRDAY, SCR_AIRWEEK, SCR_PAGES } scr_page_t;
+typedef enum { SCR_SOUND = 0, SCR_LIVE, SCR_DAYS, SCR_VERSUS, SCR_AIR, SCR_AIRDAY, SCR_AIRWEEK, SCR_PAGES } scr_page_t;
 #define SCR_DWELL_US    (10 * 1000000LL)        /* each page, when the screen turns them itself */
 #define SCR_IDLE_US     (10 * 60 * 1000000LL)   /* untouched this long, and it turns them again */
 
@@ -859,6 +876,7 @@ static void screen_task(void *arg)
         if (s_days_seq != days_seen) {
             days = s_days_scr;
             days_seen = s_days_seq;
+            if (at == SCR_VERSUS) redraw = true;
             fresh = true;
         }
         portEXIT_CRITICAL(&s_days_mux);
@@ -898,6 +916,13 @@ static void screen_task(void *arg)
             redraw = false;
             if (at == SCR_LIVE) {
                 /* drawn above, on its own clock */
+            } else if (at == SCR_VERSUS) {
+                /* Each weekday against Wednesday, named by the schedule. */
+                uint8_t pl[7];
+                for (int k = 0; k < 7; k++)
+                    pl[k] = (s_set.office_mask >> k) & 1 ? DAYSUI_PLACE_OFFICE : DAYSUI_PLACE_HOME;
+                canvas_clear(c);
+                daysui_draw_versus(&page, &days, pl);
             } else if (at == SCR_AIR) {
                 airui_draw(c, &air);
             } else if (at == SCR_AIRDAY) {
@@ -1545,7 +1570,7 @@ static void rtc_service(int64_t now)
 #define TODAY_PATH      SD_DIR "/today.bin"
 #define TODAY_TMP       SD_DIR "/today.tmp"
 #define DETAIL_HEADER   "time,laeq1s,lafmax1s,cal\n"
-#define DAILY_HEADER    "date,laeq_day_so_far,lday_07_19,levening_19_23,lnight_23_07,max,l90,red_minutes,cal\n"
+#define DAILY_HEADER    "date,laeq_day_so_far,lday_07_19,levening_19_23,lnight_23_07,max,l90,red_minutes,cal,place\n"
 #define DETAIL_BATCH    10          /* lines held before a write: one write every 10 s */
 #define SD_RETRY_US     (60 * 1000000LL)
 #define SD_BAD_MAX      3           /* failures in a row before the card is let go and mounted again */
@@ -1741,14 +1766,32 @@ static void detail_add(const soundlevel_report_t *r, bool calibrated)
  * go back in place), nothing is replaced, since a file of only today's line
  * put in its place would be every past day gone. True when the line is in.
  */
+/*
+ * Where a day was spent: the day marked by hand if it is that one, home before
+ * the schedule started, and otherwise the schedule's weekdays at the office.
+ * Written into daily.csv with the day, so a day keeps its place whatever the
+ * schedule becomes later; rows from before the column read as home.
+ */
+static uint8_t place_of(int32_t day)
+{
+    if (day == s_set.place_day && (s_set.place_what == DAYSUI_PLACE_HOME || s_set.place_what == DAYSUI_PLACE_OFFICE))
+        return s_set.place_what;
+    if (day < s_set.place_from) return DAYSUI_PLACE_HOME;
+    int y, m, d;
+    timecalc_civil(day, &y, &m, &d);
+    int wd = daysui_weekday(y, m, d);
+    return wd >= 0 && (s_set.office_mask >> wd) & 1 ? DAYSUI_PLACE_OFFICE : DAYSUI_PLACE_HOME;
+}
+
 static bool daily_put(const soundlevel_report_t *r, bool calibrated)
 {
-    char date[11], a[12], b[12], c[12], d[12], e[12], f[12], line[160];
+    char date[11], a[12], b[12], c[12], d[12], e[12], f[12], line[168];
     format_date(r->day, date);
-    snprintf(line, sizeof line, "%s,%s,%s,%s,%s,%s,%s,%.1f,%s\n", date,
+    snprintf(line, sizeof line, "%s,%s,%s,%s,%s,%s,%s,%.1f,%s,%s\n", date,
              lvl(r->laeq, a), lvl(r->period[SOUNDLEVEL_DAY], b), lvl(r->period[SOUNDLEVEL_EVENING], c),
              lvl(r->period[SOUNDLEVEL_NIGHT], d), lvl(r->lmax, e), lvl(r->l90, f),
-             (double)(r->red_s / 60.0f), calibrated ? "cal" : "est");
+             (double)(r->red_s / 60.0f), calibrated ? "cal" : "est",
+             place_of(r->day) == DAYSUI_PLACE_OFFICE ? "office" : "home");
 
     if (!sd_recover(DAILY_TMP, DAILY_PATH)) {
         sd_fail("daily.tmp recovery");
@@ -1986,7 +2029,9 @@ static void days_line(void)
     if (!clock_now(&today, &tod) || today < 0) return;
     const int32_t first = today - (DAYS_BACK - 1);
     float laeq[DAYS_BACK], l90[DAYS_BACK];
+    uint8_t place[DAYS_BACK];
     bool seen[DAYS_BACK] = { false };
+    for (int i = 0; i < DAYS_BACK; i++) place[i] = DAYSUI_PLACE_HOME;
     for (int i = 0; i < DAYS_BACK; i++) laeq[i] = l90[i] = NAN;
 
     soundlevel_now_t n;
@@ -2011,6 +2056,8 @@ static void days_line(void)
             int i = (int)(day - first);
             laeq[i] = csv_level(csv_field(row, 1));
             l90[i] = csv_level(csv_field(row, 6));
+            const char *pl = csv_field(row, 9);
+            place[i] = pl && strncmp(pl, "office", 6) == 0 ? DAYSUI_PLACE_OFFICE : DAYSUI_PLACE_HOME;
             const char *cal = csv_field(row, 8);
             if (cal && strncmp(cal, "est", 3) == 0) {
                 laeq[i] += rebase;
@@ -2075,6 +2122,9 @@ static void days_line(void)
         e->laeq = laeq[i];
         e->l90 = l90[i];
         e->today = i == DAYS_BACK - 1;
+        /* Today's place is the schedule's, as it stands now; the others' are
+           what was written with them. */
+        e->place = e->today ? place_of(first + i) : place[i];
     }
     portENTER_CRITICAL(&s_days_mux);
     s_days_scr = d;
@@ -2405,6 +2455,53 @@ static void command(const char *text)
         ESP_LOGI(TAG, "thcal: T = %.3f x raw %+.2f C, RH %+.1f %% after its temperature correction "
                  "(the module read %.1f C %.1f %%)", (double)s_set.t_gain, (double)s_set.t_off,
                  (double)s_set.rh_off, (double)s_th_raw_t, (double)s_th_raw_rh);
+        return;
+    }
+    if (word_is(text, "!office")) {
+        /* "!office mon,tue,thu,fri" (or "none"): the weekdays at the office,
+           from today; days already written keep the place they have. */
+        static const char *const wd[7] = { "mon", "tue", "wed", "thu", "fri", "sat", "sun" };
+        uint8_t mask = 0;
+        bool ok = strcmp(arg, "none") == 0;
+        if (!ok) {
+            char buf[48];
+            snprintf(buf, sizeof buf, "%s", arg);
+            ok = buf[0] != '\0';
+            for (char *tok = strtok(buf, ", "); tok && ok; tok = strtok(NULL, ", ")) {
+                int k = -1;
+                for (int i = 0; i < 7; i++) if (strncasecmp(tok, wd[i], 3) == 0) k = i;
+                if (k < 0) ok = false;
+                else mask |= (uint8_t)(1 << k);
+            }
+        }
+        if (!ok) {
+            ESP_LOGW(TAG, "office: say \"!office mon,tue,thu,fri\" or \"!office none\"");
+            return;
+        }
+        int32_t today;
+        uint32_t tod;
+        s_set.office_mask = mask;
+        if (clock_now(&today, &tod) && today >= 0) s_set.place_from = today;
+        settings_save();
+        s_days_due = true;
+        ESP_LOGI(TAG, "office: weekdays mask %02X from today; today is %s", mask,
+                 clock_now(&today, &tod) && place_of(today) == DAYSUI_PLACE_OFFICE ? "office" : "home");
+        return;
+    }
+    if (word_is(text, "!place")) {
+        /* "!place home" or "!place office": today only, whatever the schedule. */
+        int32_t today;
+        uint32_t tod;
+        uint8_t what = strcmp(arg, "office") == 0 ? DAYSUI_PLACE_OFFICE : strcmp(arg, "home") == 0 ? DAYSUI_PLACE_HOME : 0;
+        if (!what || !clock_now(&today, &tod) || today < 0) {
+            ESP_LOGW(TAG, "place: say \"!place home\" or \"!place office\" (needs the date)");
+            return;
+        }
+        s_set.place_day = today;
+        s_set.place_what = what;
+        settings_save();
+        s_days_due = true;
+        ESP_LOGI(TAG, "place: today is %s", what == DAYSUI_PLACE_OFFICE ? "office" : "home");
         return;
     }
     if (word_is(text, "!thrh")) {

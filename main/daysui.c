@@ -162,12 +162,21 @@ static long today_dn(const daysui_t *s)
     return t >= 0 ? day_dn(&s->day[t]) : LONG_MAX;
 }
 
+/* A day in the same place as today, when today has one. */
+static bool same_place(const daysui_day_t *d, int place)
+{
+    return place == DAYSUI_PLACE_ANY || d->place == place;
+}
+
 daysui_base_t daysui_baseline(const daysui_t *s)
 {
-    daysui_base_t b = { DAYSUI_BASE_NONE, NAN, 0, -1 };
+    daysui_base_t b = { DAYSUI_BASE_NONE, NAN, 0, -1, DAYSUI_PLACE_ANY };
     if (s == NULL) return b;
     int t = today_index(s);
-    if (t >= 0) b.weekday = daysui_weekday(s->day[t].year, s->day[t].month, s->day[t].day);
+    if (t >= 0) {
+        b.weekday = daysui_weekday(s->day[t].year, s->day[t].month, s->day[t].day);
+        b.place = s->day[t].place;
+    }
 
     /* Same weekday first: seven days apart, so up to four in five weeks. */
     float v[7];
@@ -178,7 +187,8 @@ daysui_base_t daysui_baseline(const daysui_t *s)
             if (i < 0) break;
             const daysui_day_t *d = &s->day[i];
             below = day_dn(d);
-            if (daysui_weekday(d->year, d->month, d->day) == b.weekday && level_ok(d->laeq))
+            if (daysui_weekday(d->year, d->month, d->day) == b.weekday && level_ok(d->laeq)
+                && same_place(d, b.place))
                 v[n++] = d->laeq;
         }
         if (n > 0) {
@@ -194,7 +204,7 @@ daysui_base_t daysui_baseline(const daysui_t *s)
         int i = latest_before(s, below);
         if (i < 0) break;
         below = day_dn(&s->day[i]);
-        if (level_ok(s->day[i].laeq)) v[n++] = s->day[i].laeq;
+        if (level_ok(s->day[i].laeq) && same_place(&s->day[i], b.place)) v[n++] = s->day[i].laeq;
     }
     if (n > 0) {
         b.kind = DAYSUI_BASE_RECENT;
@@ -333,13 +343,25 @@ static const char *const s_weekday_short[7] = { "Mo", "Tu", "We", "Th", "Fr", "S
  * take one from. The weekday in full, or in three letters where the full name
  * will not fit -- "than a usual Wednesday (4)" is 226 px.
  */
+/* "office", "home", or nothing for a day with no place. */
+static const char *place_word(int place)
+{
+    return place == DAYSUI_PLACE_OFFICE ? "office" : place == DAYSUI_PLACE_HOME ? "home" : NULL;
+}
+
 static void weekday_line(char *out, size_t size, const daysui_base_t *b, bool with_level)
 {
+    const char *pl = place_word(b->place);
     for (int pass = 0; pass < 2; pass++) {
         const char *wd = b->weekday < 0 || b->weekday > 6 ? "day"
                        : pass == 0 ? s_weekday_name[b->weekday] : s_weekday_abbr[b->weekday];
-        if (with_level) snprintf(out, size, "usual %s: %d dBA (%d)", wd, whole_db(b->level), b->n);
-        else snprintf(out, size, "than a usual %s (%d)", wd, b->n);
+        if (with_level) {
+            if (pl) snprintf(out, size, "%s %s: %d dBA (%d)", pl, wd, whole_db(b->level), b->n);
+            else snprintf(out, size, "usual %s: %d dBA (%d)", wd, whole_db(b->level), b->n);
+        } else {
+            if (pl) snprintf(out, size, "than %s %s %s (%d)", b->place == DAYSUI_PLACE_OFFICE ? "an" : "a", pl, wd, b->n);
+            else snprintf(out, size, "than a usual %s (%d)", wd, b->n);
+        }
         if (aafont_width(F_LABEL, out) <= TEXT_W) return;
     }
 }
@@ -392,7 +414,9 @@ static void comparison(canvas_t *c, const daysui_t *s, const daysui_day_t *t)
         if (b.kind == DAYSUI_BASE_WEEKDAY)
             weekday_line(than, sizeof than, &b, true);
         else
-            snprintf(than, sizeof than, "recent days: %d dBA (%d)", whole_db(b.level), b.n);
+            snprintf(than, sizeof than, "recent %sdays: %d dBA (%d)",
+                     b.place == DAYSUI_PLACE_OFFICE ? "office " : b.place == DAYSUI_PLACE_HOME ? "home " : "",
+                     whole_db(b.level), b.n);
         aafont_draw(c, F_LABEL, MID, THAN_TOP, than, lo, AAFONT_CENTRE);
         return;
     }
@@ -413,7 +437,8 @@ static void comparison(canvas_t *c, const daysui_t *s, const daysui_day_t *t)
     if (b.kind == DAYSUI_BASE_WEEKDAY)
         weekday_line(than, sizeof than, &b, false);
     else
-        snprintf(than, sizeof than, "than recent days (%d)", b.n);
+        snprintf(than, sizeof than, "than recent %sdays (%d)",
+                 b.place == DAYSUI_PLACE_OFFICE ? "office " : b.place == DAYSUI_PLACE_HOME ? "home " : "", b.n);
     aafont_draw(c, F_LABEL, MID, THAN_TOP, than, lo, AAFONT_CENTRE);
 }
 
@@ -592,7 +617,14 @@ static void page(canvas_t *c, const daysui_t *s)
     int t = today_index(s);
     const daysui_day_t *td = t >= 0 ? &s->day[t] : NULL;
     if (s->stale) tracked(c, F_LABEL, MID, CAP_TOP, "OUT OF DATE", CREAM_DIM, AAFONT_CENTRE, 2);
-    else tracked(c, F_LABEL, MID, CAP_TOP, "TODAY SO FAR", GOLD, AAFONT_CENTRE, 2);
+    else {
+        /* Where today is, beside it, when speaker says. */
+        int pl = td ? td->place : DAYSUI_PLACE_ANY;
+        tracked(c, F_LABEL, MID, CAP_TOP,
+                pl == DAYSUI_PLACE_OFFICE ? "OFFICE, SO FAR"
+                : pl == DAYSUI_PLACE_HOME ? "HOME, SO FAR" : "TODAY SO FAR",
+                GOLD, AAFONT_CENTRE, 2);
+    }
     figure(c, s, td);
     comparison(c, s, td);
     background(c, s);
@@ -606,5 +638,88 @@ void daysui_draw(canvas_t *c, const daysui_t *s)
     if (c == NULL || c->fb == NULL || c->w <= 0 || c->h <= 0) return;
     bool was = vec_linear_light(true);
     page(c, s);
+    vec_linear_light(was);
+}
+
+/* ---- the versus page -------------------------------------------------------- */
+
+float daysui_weekday_usual(const daysui_t *s, int weekday, int *np)
+{
+    if (np) *np = 0;
+    if (s == NULL || weekday < 0 || weekday > 6) return NAN;
+    float v[4];
+    int n = 0;
+    for (long below = today_dn(s); n < 4;) {
+        int i = latest_before(s, below);
+        if (i < 0) break;
+        const daysui_day_t *d = &s->day[i];
+        below = day_dn(d);
+        if (daysui_weekday(d->year, d->month, d->day) == weekday && level_ok(d->laeq)) v[n++] = d->laeq;
+    }
+    if (np) *np = n;
+    return n ? daysui_energy_mean(v, n) : NAN;
+}
+
+#define V_TOP       58             /* the first row's name, capitals */
+#define V_PITCH     44
+#define V_BAR_Y     20             /* a row's bar, below its name */
+#define V_BAR_H     12
+#define V_X0        16
+#define V_X1        224
+
+void daysui_draw_versus(canvas_t *c, const daysui_t *s, const uint8_t place_of_weekday[7])
+{
+    if (c == NULL || c->fb == NULL || c->w <= 0 || c->h <= 0) return;
+    bool was = vec_linear_light(true);
+    ground(c);
+    tracked(c, F_LABEL, MID, CAP_TOP, "VS WEDNESDAY", GOLD, AAFONT_CENTRE, 2);
+    aafont_draw(c, F_LABEL, MID, CAP_TOP + 20, "usual level, last 4 of each", CREAM_DIM, AAFONT_CENTRE);
+    if (s == NULL || !s->have_data) {
+        aafont_draw(c, F_SUB, MID, 130, "waiting for days", CREAM_DIM, AAFONT_CENTRE);
+        vec_linear_light(was);
+        return;
+    }
+    int nw;
+    float wed = daysui_weekday_usual(s, 2, &nw);
+    for (int wd = 0; wd < 5; wd++) {
+        int y = V_TOP + wd * V_PITCH;
+        int n;
+        float lv = daysui_weekday_usual(s, wd, &n);
+        const char *pl = place_of_weekday ? place_word(place_of_weekday[wd]) : NULL;
+        char name[24];
+        snprintf(name, sizeof name, "%s%s%s", s_weekday_abbr[wd], pl ? "  " : "", pl ? pl : "");
+        aafont_draw(c, F_LABEL, V_X0, y, name, wd == 2 ? GOLD : CREAM_SOFT, AAFONT_LEFT);
+
+        /* The difference from Wednesday at the right of the name's line. */
+        char b[24];
+        if (wd == 2) snprintf(b, sizeof b, isfinite(wed) ? "reference" : "--");
+        else if (isfinite(lv) && isfinite(wed)) snprintf(b, sizeof b, "%+.1f dB", (double)(lv - wed));
+        else snprintf(b, sizeof b, "--");
+        aafont_draw(c, F_LABEL, V_X1, y, b, wd == 2 ? CREAM_DIM : CREAM, AAFONT_RIGHT);
+
+        /* The bar on the fixed 30..80 scale, in the ring's colour for the
+           level, its figure at its end; a weekday with no days, a hatched
+           track. */
+        int by = y + V_BAR_Y, full = V_X1 - V_X0 - 30;
+        canvas_fill_rect(c, V_X0, by, full, V_BAR_H, HATCH);
+        if (isfinite(lv)) {
+            float f = (lv - B_LO) / (B_HI - B_LO);
+            if (!(f > 0.0f)) f = 0.0f;
+            if (f > 1.0f) f = 1.0f;
+            int w = (int)lroundf(f * (float)full);
+            if (w > 0) canvas_fill_rect(c, V_X0, by, w, V_BAR_H, noiseui_colour(lv));
+            snprintf(b, sizeof b, "%d", whole_db(lv));
+            aafont_draw(c, F_LABEL, V_X1, by - 1, b, CREAM_SOFT, AAFONT_RIGHT);
+        } else {
+            for (int x = V_X0; x < V_X0 + full; x++)
+                for (int yy = by; yy < by + V_BAR_H; yy++)
+                    if ((x + yy) % 5 == 0) pixel(c, x, yy, RAIL);
+        }
+        /* Wednesday's level as a faint mark across every other bar. */
+        if (wd != 2 && isfinite(wed)) {
+            float f = (wed - B_LO) / (B_HI - B_LO);
+            if (f > 0.0f && f < 1.0f) canvas_fill_rect(c, V_X0 + (int)lroundf(f * (float)full), by - 2, 1, V_BAR_H + 4, GOLD);
+        }
+    }
     vec_linear_light(was);
 }

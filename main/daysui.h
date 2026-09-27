@@ -74,7 +74,13 @@ typedef struct {
     float    laeq;      /* dBA, the day's LAeq; NaN for "--" */
     float    l90;       /* dBA, the level exceeded 90 % of the day; NaN for "--" */
     bool     today;     /* the running day, speaker's "*": partial */
+    uint8_t  place;     /* DAYSUI_PLACE_*: where the day was spent; 0 when nobody says */
 } daysui_day_t;
+
+/* Where a day was spent, for speaker, who goes to the office on some days:
+   a day is compared only with days in the same place. Unset (0), as on
+   watch, and every day counts. */
+enum { DAYSUI_PLACE_ANY = 0, DAYSUI_PLACE_HOME = 1, DAYSUI_PLACE_OFFICE = 2 };
 
 typedef struct {
     bool have_data;     /* a days line has arrived since boot */
@@ -98,6 +104,7 @@ typedef struct {
     float level;        /* dBA, the energy mean; NaN for NONE */
     int   n;            /* days in it: 1..4 for WEEKDAY, 1..7 for RECENT, 0 for NONE */
     int   weekday;      /* today's, 0 Monday .. 6 Sunday; -1 when there is no today */
+    int   place;        /* today's DAYSUI_PLACE_*, which the days it draws on share */
 } daysui_base_t;
 
 /*
@@ -121,6 +128,18 @@ daysui_base_t daysui_baseline(const daysui_t *s);
    that have one; today's L90 if none has; NaN if today has none either.
    `n` (may be NULL) gets how many days it is the median of, 0 for today's. */
 float daysui_background(const daysui_t *s, int *n);
+
+/*
+ * The versus page: Monday to Friday each at its usual level -- the energy mean
+ * of up to its four latest days with one, today (partial) left out -- as a
+ * bar on the fixed scale, and each against Wednesday's, the day at home, in
+ * dB. `place_of_weekday` (may be NULL) names each row home or office.
+ */
+void daysui_draw_versus(canvas_t *c, const daysui_t *s, const uint8_t place_of_weekday[7]);
+
+/* A weekday's usual level (0 Monday .. 6 Sunday), as the versus page takes
+   it; NaN with none. `n` (may be NULL) gets how many days it is the mean of. */
+float daysui_weekday_usual(const daysui_t *s, int weekday, int *n);
 
 /* The energy mean of `n` levels in dBA: 10 log10 of the mean of 10^(L/10).
    NaN for n <= 0. Public so the test can hold the baselines to it. */
