@@ -82,3 +82,5 @@ host_tests/test_soundlevel
 host_tests/test_ring
 host_tests/test_noiseui
 host_tests/test_daysui
+host_tests/test_liveui
+host_tests/test_airui
