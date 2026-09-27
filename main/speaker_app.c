@@ -722,6 +722,8 @@ static bool touch_read(int *x, int *y)
  * second, is drawn in place each second.
  */
 typedef enum { SCR_SOUND = 0, SCR_LIVE, SCR_DAYS, SCR_AIR, SCR_AIRDAY, SCR_AIRWEEK, SCR_PAGES } scr_page_t;
+#define SCR_DWELL_US    (10 * 1000000LL)        /* each page, when the screen turns them itself */
+#define SCR_IDLE_US     (10 * 60 * 1000000LL)   /* untouched this long, and it turns them again */
 
 static void screen_task(void *arg)
 {
@@ -767,10 +769,17 @@ static void screen_task(void *arg)
     const airui_day_t *airday = NULL;
     const airui_week_t *airweek = NULL;
     int x0 = 0, y0 = 0;
+    /* On its own the screen shows each page in turn for SCR_DWELL_US; a touch
+       stops that, and it starts again once the screen has been left alone for
+       SCR_IDLE_US -- the page first held a full dwell, not turned at once. */
+    int64_t last_touch_us = INT64_MIN / 2;
+    int64_t next_turn_us = esp_timer_get_time() + SCR_DWELL_US;
     TickType_t wake = xTaskGetTickCount();
     for (;;) {
         int tx, ty;
+        int64_t now_us = esp_timer_get_time();
         if (touch_read(&tx, &ty)) {
+            last_touch_us = now_us;
             if (!down) { x0 = tx; y0 = ty; down = true; turned = false; }
             int dx = tx - x0, dy = ty - y0;
             int d = abs(dx) >= abs(dy) ? dx : dy;
@@ -781,6 +790,13 @@ static void screen_task(void *arg)
             }
         } else {
             down = false;
+        }
+        if (now_us - last_touch_us < SCR_IDLE_US) {
+            next_turn_us = now_us + SCR_DWELL_US;
+        } else if (now_us >= next_turn_us) {
+            at = (scr_page_t)((at + 1) % SCR_PAGES);
+            redraw = true;
+            next_turn_us = now_us + SCR_DWELL_US;
         }
 
         if (s_rest_ready && s_rest_hist && s_rest_valid) {
