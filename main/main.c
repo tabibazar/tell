@@ -1461,6 +1461,62 @@ static void on_time(uint32_t secs)
 static void on_message(const char *text, size_t len);   /* below */
 
 /*
+ * envo's AHT21 reads humidity high: 70 % overnight and 60 % the next morning
+ * against a hygrometer's 37 % and speaker's 37 % (2026-09-27). Until the part
+ * is replaced, an offset in points, kept in NVS and set over USB with
+ * "!rhoff X", is added to its humidity before anything takes it -- the
+ * pages, the SD line and the flash record alike.
+ */
+static float s_rh_off;
+static float s_t_off;           /* the room's temperature likewise: "!toff X", in C */
+
+static void rh_off_load(void)
+{
+    nvs_handle_t h;
+    int32_t v;
+    if (nvs_open("envo", NVS_READONLY, &h) != ESP_OK) return;
+    if (nvs_get_i32(h, "rh_off_c", &v) == ESP_OK && v > -6000 && v < 6000) s_rh_off = v / 100.0f;
+    if (nvs_get_i32(h, "t_off_c", &v) == ESP_OK && v > -1000 && v < 1000) s_t_off = v / 100.0f;
+    nvs_close(h);
+    ESP_LOGI(TAG, "offsets: humidity %+.1f points, temperature %+.2f C", (double)s_rh_off, (double)s_t_off);
+}
+
+static bool rh_off_command(const char *text)
+{
+    if (strncmp(text, "!toff", 5) == 0) {
+        float x;
+        if (sscanf(text + 5, "%f", &x) != 1 || !(x > -10.0f && x < 10.0f)) {
+            ESP_LOGW(TAG, "toff: say \"!toff X\", C within 10");
+            return true;
+        }
+        s_t_off = x;
+        nvs_handle_t h;
+        if (nvs_open("envo", NVS_READWRITE, &h) == ESP_OK) {
+            nvs_set_i32(h, "t_off_c", (int32_t)lrintf(x * 100.0f));
+            nvs_commit(h);
+            nvs_close(h);
+        }
+        ESP_LOGI(TAG, "toff: temperature offset %+.2f C", (double)x);
+        return true;
+    }
+    if (strncmp(text, "!rhoff", 6) != 0) return false;
+    float x;
+    if (sscanf(text + 6, "%f", &x) != 1 || !(x > -60.0f && x < 60.0f)) {
+        ESP_LOGW(TAG, "rhoff: say \"!rhoff X\", points within 60");
+        return true;
+    }
+    s_rh_off = x;
+    nvs_handle_t h;
+    if (nvs_open("envo", NVS_READWRITE, &h) == ESP_OK) {
+        nvs_set_i32(h, "rh_off_c", (int32_t)lrintf(x * 100.0f));
+        nvs_commit(h);
+        nvs_close(h);
+    }
+    ESP_LOGI(TAG, "rhoff: humidity offset %+.1f points", (double)x);
+    return true;
+}
+
+/*
  * envo's link to a Mac, over her USB serial since she has no BLE: what BLE
  * carries, as lines. "!sync N" is the time, N seconds since local midnight
  * (BLE's time characteristic); the lines after it up to a lone "." are one
@@ -1530,6 +1586,9 @@ static bool watch_noise_line(const char *text, size_t len);   /* the watch block
 static void on_message(const char *text, size_t len)
 {
     int64_t now = esp_timer_get_time();
+#if CONFIG_SCREEN_BOARD_TOUCH_LCD_147
+    if (rh_off_command(text)) return;
+#endif
 #if CONFIG_SCREEN_BOARD_TOUCH_LCD_169
     if (watch_noise_line(text, len)) return;
 #endif
@@ -2068,6 +2127,13 @@ static bool env_read_averaged(env_sample_t *rec)
 {
     float at = 0, arh = 0;
     bool have_aht = aht21_present() && aht21_read(&at, &arh);
+#if CONFIG_SCREEN_BOARD_TOUCH_LCD_147
+    if (have_aht) {
+        arh += s_rh_off;
+        if (arh < 0.0f) arh = 0.0f;
+        if (arh > 100.0f) arh = 100.0f;
+    }
+#endif
     int64_t now_us = esp_timer_get_time();
 
     /* The newest humidity the AHT21 vouched for -- a frame that passed
@@ -2112,6 +2178,9 @@ static bool env_read_averaged(env_sample_t *rec)
     if (have_aht && have_bme)    { t = (at + bt) / 2.0f; }
     else if (have_aht)           { t = at; }
     else if (have_bme)           { t = bt; }
+#if CONFIG_SCREEN_BOARD_TOUCH_LCD_147
+    if (have_th) t += s_t_off;                  /* envo's calibration, !toff */
+#endif
     if (have_aht && have_bme_rh) { rh = (arh + brh) / 2.0f; }
     else if (have_aht)           { rh = arh; }
     else if (have_bme_rh)        { rh = brh; }
@@ -4183,6 +4252,7 @@ void app_main(void)
             nvs_flash_erase();
             nvs_flash_init();
         }
+        rh_off_load();
         envo_usb_start();
     }
 #else

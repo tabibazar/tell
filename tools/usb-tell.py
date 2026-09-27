@@ -53,12 +53,16 @@ def main():
     except Exception as e:                     # held, or gone between list and open
         print("usb-tell: %s: %s" % (dev, e), file=sys.stderr)
         return 1
+    # A moment before writing: bytes sent the instant the port opens were
+    # lost (2026-09-27, !toff and !rhoff never arrived), the board's end not
+    # yet reading; and a moment after, so the close does not cut them off.
+    time.sleep(0.5)
     now = datetime.datetime.now()
     secs = now.hour * 3600 + now.minute * 60 + now.second
     lines = ["!sync %d" % secs] + [l for l in body.split("\n") if l != "."] + ["."]
     port.write(("\n".join(lines) + "\n").encode())
     port.flush()
-    time.sleep(0.2)
+    time.sleep(0.5)
     port.close()
     print("usb-tell: %s on %s, %d line(s)" % (args.device, dev, len(lines)))
     return 0
