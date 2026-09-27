@@ -113,7 +113,7 @@ if(NOT CONFIG_SCREEN_BOARD_TOUCH_LCD_169)
 endif()
 # speaker's Live and Air pages are hers alone.
 if(NOT CONFIG_SCREEN_BOARD_AUDIO_S3)
-    list(APPEND BOARD_EXCLUDES "liveui.c" "airui.c")
+    list(APPEND BOARD_EXCLUDES "liveui.c" "airui.c" "dirui.c")
 endif()
 
 # One touch driver per board -- both define the same touch_* interface, so

@@ -5,6 +5,7 @@
 #include "daysui.h"
 #include "liveui.h"
 #include "airui.h"
+#include "dirui.h"
 #include "aht21.h"
 #include "ens160.h"
 #include "envstate.h"
@@ -623,6 +624,7 @@ static noiseui_t s_scr;
    a second. */
 #define LIVE_RING 4096
 static int16_t *s_live;                 /* LIVE_RING samples, in PSRAM (screen_start) */
+static int16_t *s_live2;                /* MIC2's, the same, for the Direction page */
 static volatile uint32_t s_live_w;
 /* The days as speaker's Days page takes them, refreshed with every days line. */
 #define SCREEN_DAYS     30
@@ -702,7 +704,7 @@ static bool touch_read(int *x, int *y)
  * page is up in the time of one transfer. The Sound page, which moves every
  * second, is drawn in place each second.
  */
-typedef enum { SCR_SOUND = 0, SCR_LIVE, SCR_DAYS, SCR_AIR, SCR_AIRDAY, SCR_AIRWEEK, SCR_PAGES } scr_page_t;
+typedef enum { SCR_SOUND = 0, SCR_LIVE, SCR_DIR, SCR_DAYS, SCR_AIR, SCR_AIRDAY, SCR_AIRWEEK, SCR_PAGES } scr_page_t;
 
 static void screen_task(void *arg)
 {
@@ -737,6 +739,13 @@ static void screen_task(void *arg)
 #define live (*livep)
     for (int i = 0; i < LIVEUI_BANDS; i++) live.band[i] = live.peak[i] = NAN;
     int live_tick = 0;
+    /* The Direction page: its state, the two blocks it reads, a slow floor
+       of the fast level (a sound must stand 8 dB over it to be placed). */
+    static dirui_t dir;
+    int16_t *d1 = heap_caps_malloc(DIRUI_N * sizeof(int16_t), MALLOC_CAP_SPIRAM);
+    int16_t *d2 = heap_caps_malloc(DIRUI_N * sizeof(int16_t), MALLOC_CAP_SPIRAM);
+    int dir_tick = 0;
+    float floor_db = NAN;
     static airui_t air;
     uint32_t air_seen = 0, airv_seen = 0;
     const airui_day_t *airday = NULL;
@@ -853,9 +862,44 @@ static void screen_task(void *arg)
             redraw = false;
         }
 
+        /* The floor follows the fast level down at once and up slowly. */
+        if (s_scr.have_signal && isfinite(s_scr.laf))
+            floor_db = !isfinite(floor_db) || s_scr.laf < floor_db ? s_scr.laf : floor_db + 0.002f;
+
+        /* The Direction page: ten times a second while it is up. */
+        if (at == SCR_DIR && ++dir_tick >= 5 && d1 && d2 && s_live && s_live2) {
+            dir_tick = 0;
+            uint32_t w = s_live_w;
+            for (int i = 0; i < DIRUI_N; i++) {
+                uint32_t k = (w - DIRUI_N + (uint32_t)i) & (LIVE_RING - 1);
+                d1[i] = s_live[k];
+                d2[i] = s_live2[k];
+            }
+            float deg, conf;
+            bool loud = isfinite(s_scr.laf) && isfinite(floor_db) && s_scr.laf > floor_db + 8.0f;
+            dir.active = false;
+            if (loud && dirui_estimate(d1, d2, (float)SOUNDLEVEL_FS, &deg, &conf) && conf > 0.3f) {
+                dir.deg = dir.n_trail > 0 ? 0.5f * dir.deg + 0.5f * deg : deg;
+                dir.confidence = conf;
+                dir.active = true;
+                if (dir.n_trail == DIRUI_TRAIL) {
+                    memmove(dir.trail, dir.trail + 1, (DIRUI_TRAIL - 1) * sizeof dir.trail[0]);
+                    dir.n_trail--;
+                }
+                dir.trail[dir.n_trail++] = dir.deg;
+            }
+            dir.have_signal = s_scr.have_signal;
+            dir.laf = s_scr.laf;
+            dirui_draw(c, &dir);
+            display_blit();
+            redraw = false;
+        }
+
         if (redraw) {
             redraw = false;
-            if (at == SCR_LIVE) {
+            if (at == SCR_DIR) {
+                /* drawn above, on its own clock */
+            } else if (at == SCR_LIVE) {
                 /* drawn above, on its own clock */
             } else if (at == SCR_AIR) {
                 airui_draw(c, &air);
@@ -906,6 +950,7 @@ static void screen_start(void)
     }
     display_set_brightness(40);            /* no need for full glare, or its heat */
     s_live = heap_caps_calloc(LIVE_RING, sizeof(int16_t), MALLOC_CAP_SPIRAM);
+    s_live2 = heap_caps_calloc(LIVE_RING, sizeof(int16_t), MALLOC_CAP_SPIRAM);
     s_screen_ok = true;          /* its task starts once the meter and its lock exist */
 }
 
@@ -1285,8 +1330,11 @@ static void audio_task(void *arg)
         }
         {
             uint32_t w = s_live_w;
-            if (s_live)
-                for (int i = 0; i < READ_FRAMES; i++) s_live[(w + (uint32_t)i) & (LIVE_RING - 1)] = buf[i * SLOTS + SLOT_MIC1];
+            if (s_live && s_live2)
+                for (int i = 0; i < READ_FRAMES; i++) {
+                    s_live[(w + (uint32_t)i) & (LIVE_RING - 1)] = buf[i * SLOTS + SLOT_MIC1];
+                    s_live2[(w + (uint32_t)i) & (LIVE_RING - 1)] = buf[i * SLOTS + SLOT_MIC2];
+                }
             s_live_w = w + READ_FRAMES;
         }
         for (int k = 0; k < SLOTS; k++) slot_e[k] += e[k];
