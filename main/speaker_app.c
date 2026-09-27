@@ -2391,6 +2391,23 @@ static void command(const char *text)
                  (double)s_set.rh_off, (double)s_th_raw_t, (double)s_th_raw_rh);
         return;
     }
+    if (word_is(text, "!thrh")) {
+        /* "!thrh X": humidity's flat offset alone, in points, on top of the
+           temperature fit -- from a reference such as the outdoor dew point
+           (2026-09-27: North York's overnight, via Open-Meteo, said -11). */
+        float x;
+        if (sscanf(arg, "%f", &x) != 1 || !(x > -40.0f && x < 40.0f)) {
+            ESP_LOGW(TAG, "thrh: say \"!thrh X\", the humidity offset in points (within 40)");
+            return;
+        }
+        s_set.rh_off = x;
+        settings_save();
+        float t = s_th_raw_t, h = s_th_raw_rh;
+        if (s_th_raw_ok) th_correct(&t, &h);
+        ESP_LOGI(TAG, "thrh: humidity %+.1f points; now %.1f C %.1f %% (raw %.1f C %.1f %%)", (double)x,
+                 (double)t, (double)h, (double)s_th_raw_t, (double)s_th_raw_rh);
+        return;
+    }
     if (word_is(text, "!thfit")) {
         /* "!thfit A B": temperature = A x raw + B, a straight-line fit of a
            reference against the module; humidity follows by moisture. */
