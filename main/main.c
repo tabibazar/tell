@@ -3509,6 +3509,7 @@ static void draw_forecast(canvas_t *c)
 #include "watch.h"
 #include "noiseui.h"
 #include "daysui.h"
+#include "jpeg_decoder.h"
 #include "aafont.h"
 #include "driver/usb_serial_jtag.h"
 #include "driver/usb_serial_jtag_vfs.h"
@@ -3727,6 +3728,21 @@ static bool watch_noise_line(const char *text, size_t len)
     return true;
 }
 
+/*
+ * The viewfinder: a camera's frames from the Mac (tools/watch-cam.py), each a
+ * line "!jpg N" and then exactly N bytes of JPEG sized to the panel. The
+ * reader fills one of two PSRAM buffers and publishes it; the main loop
+ * decodes the newest into the canvas. A frame the loop has not reached when
+ * the next lands is simply skipped: the picture is live, not a queue.
+ */
+#define CAM_MAX_BYTES   (64 * 1024)
+static uint8_t *s_cam_buf[2];
+static uint32_t s_cam_len[2];
+static int      s_cam_ready = -1;        /* the buffer published last, -1 none */
+static uint32_t s_cam_seq, s_cam_seen;
+static int64_t  s_cam_at_us;
+static page_t   s_cam_back = PAGE_FACE;  /* where the viewfinder returns to */
+
 /* The Mac writes lines to watch's own USB serial port; ESP_LOG keeps working
    through the driver, which drops output after 50 ms when nothing reads it,
    so a watch on a charger never blocks on its log. */
@@ -3735,15 +3751,55 @@ static void watch_usb_task(void *arg)
     (void)arg;
     char line[192];                     /* the days lines are under 128 */
     int len = 0;
-    uint8_t in[64];
+    static uint8_t in[1024];
+    uint32_t bin_left = 0, bin_len = 0;
+    int bin_buf = 0;
     for (;;) {
         int n = usb_serial_jtag_read_bytes(in, sizeof in, pdMS_TO_TICKS(1000));
-        for (int i = 0; i < n; i++) {
-            if (in[i] == '\n' || in[i] == '\r') {
-                if (len > 0) { line[len] = '\0'; watch_noise_line(line, (size_t)len); }
+        if (n <= 0 && bin_left > 0) {
+            ESP_LOGW(TAG, "cam: a frame stopped %u bytes short; dropped", (unsigned)bin_left);
+            bin_left = 0;                   /* a second without bytes: back to lines */
+        }
+        for (int i = 0; i < n;) {
+            if (bin_left > 0) {
+                uint32_t take = (uint32_t)(n - i) < bin_left ? (uint32_t)(n - i) : bin_left;
+                memcpy(s_cam_buf[bin_buf] + bin_len, in + i, take);
+                bin_len += take;
+                bin_left -= take;
+                i += (int)take;
+                if (bin_left == 0) {
+                    portENTER_CRITICAL(&s_noise_mux);
+                    s_cam_len[bin_buf] = bin_len;
+                    s_cam_ready = bin_buf;
+                    s_cam_seq++;
+                    portEXIT_CRITICAL(&s_noise_mux);
+                }
+                continue;
+            }
+            uint8_t ch = in[i++];
+            if (ch == '\n' || ch == '\r') {
+                if (len > 0) {
+                    line[len] = '\0';
+                    unsigned nb;
+                    if (sscanf(line, "!jpg %u", &nb) == 1) {
+                        if (nb > 0 && nb <= CAM_MAX_BYTES && s_cam_buf[0] && s_cam_buf[1]) {
+                            /* The buffer not published last, so the loop can
+                               still be decoding the other. */
+                            portENTER_CRITICAL(&s_noise_mux);
+                            bin_buf = s_cam_ready == 0 ? 1 : 0;
+                            portEXIT_CRITICAL(&s_noise_mux);
+                            bin_left = nb;
+                            bin_len = 0;
+                        } else {
+                            ESP_LOGW(TAG, "cam: a %u-byte frame refused", nb);
+                        }
+                    } else {
+                        watch_noise_line(line, (size_t)len);
+                    }
+                }
                 len = 0;
             } else if (len < (int)sizeof line - 1) {
-                line[len++] = (char)in[i];
+                line[len++] = (char)ch;
             } else {
                 len = 0;                    /* overlong: drop the whole line */
             }
@@ -3751,15 +3807,70 @@ static void watch_usb_task(void *arg)
     }
 }
 
+/*
+ * The newest frame into the canvas, if there is one the loop has not shown:
+ * the first turns the watch to the viewfinder (remembering where it was),
+ * each keeps it awake, and three seconds without one sends it back. The
+ * frame's pixels land as RGB565 in the canvas's own order, straight into the
+ * framebuffer: the Mac sends it at the panel's exact size.
+ */
+static bool watch_cam_tick(canvas_t *c, int64_t now)
+{
+    int k;
+    uint32_t seq;
+    portENTER_CRITICAL(&s_noise_mux);
+    k = s_cam_ready;
+    seq = s_cam_seq;
+    portEXIT_CRITICAL(&s_noise_mux);
+    if (seq == s_cam_seen) {
+        if (s_pages.current == PAGE_VIEWFINDER && now - s_cam_at_us > 3000000) {
+            pages_show(&s_pages, s_cam_back, now);
+            s_drawn_second = -1;
+            ESP_LOGI(TAG, "cam: frames stopped; back to page %d", (int)s_cam_back);
+        }
+        return s_pages.current == PAGE_VIEWFINDER;
+    }
+    s_cam_seen = seq;
+    s_cam_at_us = now;
+    s_pages.last_activity_us = now;
+    if (s_pages.current != PAGE_VIEWFINDER) {
+        s_cam_back = s_pages.current;
+        pages_show(&s_pages, PAGE_VIEWFINDER, now);
+        ESP_LOGI(TAG, "cam: frames coming; viewfinder");
+    }
+    esp_jpeg_image_cfg_t cfg = {
+        .indata = s_cam_buf[k],
+        .indata_size = s_cam_len[k],
+        .outbuf = (uint8_t *)c->fb,
+        .outbuf_size = (uint32_t)(c->w * c->h * 2),
+        .out_format = JPEG_IMAGE_FORMAT_RGB565,
+        .out_scale = JPEG_IMAGE_SCALE_0,
+        .flags.swap_color_bytes = 0,
+    };
+    esp_jpeg_image_output_t out = { 0 };
+    if (esp_jpeg_decode(&cfg, &out) != ESP_OK || out.width != (uint32_t)c->w) {
+        static int said;
+        if (said++ < 3) ESP_LOGW(TAG, "cam: a frame did not decode to %dx%d (%ux%u)", c->w, c->h,
+                                 (unsigned)out.width, (unsigned)out.height);
+        return true;
+    }
+    display_blit();
+    return true;
+}
+
 static void watch_usb_start(void)
 {
-    usb_serial_jtag_driver_config_t cfg = { .rx_buffer_size = 1024, .tx_buffer_size = 1024 };
+    /* The frames want room: 8 KB of ring so a JPEG streams in without the
+       FIFO overflowing between reads. */
+    usb_serial_jtag_driver_config_t cfg = { .rx_buffer_size = 8192, .tx_buffer_size = 1024 };
+    s_cam_buf[0] = heap_caps_malloc(CAM_MAX_BYTES, MALLOC_CAP_SPIRAM);
+    s_cam_buf[1] = heap_caps_malloc(CAM_MAX_BYTES, MALLOC_CAP_SPIRAM);
     if (usb_serial_jtag_driver_install(&cfg) != ESP_OK) {
         ESP_LOGW(TAG, "usb: serial driver not installed; no relay input");
         return;
     }
     usb_serial_jtag_vfs_use_driver();
-    xTaskCreate(watch_usb_task, "usbline", 3072, NULL, 3, NULL);
+    xTaskCreate(watch_usb_task, "usbline", 4096, NULL, 3, NULL);
     ESP_LOGI(TAG, "usb: listening for the noise relay");
 }
 
@@ -3835,6 +3946,7 @@ static bool watch_days_tick(int64_t now)
 
 static void watch_draw(canvas_t *c, int64_t now)
 {
+    if (watch_cam_tick(c, now)) return;      /* the viewfinder has the screen */
     if (s_pages.current == PAGE_DAYS) {
         bool changed = watch_days_tick(now);
         int minute = (int)(now / 60000000);
@@ -3906,7 +4018,7 @@ static void watch_idle(int64_t now)
         }
     }
     bool dark = s_pages.current != PAGE_PARTICLES && s_pages.current != PAGE_SOUND
-             && s_pages.current != PAGE_DAYS
+             && s_pages.current != PAGE_DAYS && s_pages.current != PAGE_VIEWFINDER
              && now - s_pages.last_activity_us > WATCH_IDLE_US;
     if (dark == s_watch_dark) return;
     s_watch_dark = dark;
@@ -4211,10 +4323,10 @@ void app_main(void)
        the function button (when the IMU answered). Nothing else -- the timer,
        stopwatch and chip pages ride in with the sand and the RTC elsewhere. */
     available = (available & PAGE_BIT(PAGE_PARTICLES))
-              | PAGE_BIT(PAGE_FACE) | PAGE_BIT(PAGE_MOON);
+              | PAGE_BIT(PAGE_FACE) | PAGE_BIT(PAGE_MOON) | PAGE_BIT(PAGE_VIEWFINDER);
 #else
     available &= ~(PAGE_BIT(PAGE_FACE) | PAGE_BIT(PAGE_MOON) | PAGE_BIT(PAGE_SOUND)
-                   | PAGE_BIT(PAGE_DAYS));
+                   | PAGE_BIT(PAGE_DAYS) | PAGE_BIT(PAGE_VIEWFINDER));
 #endif
 
     uint32_t rtc_secs;

@@ -62,4 +62,5 @@ const page_def_t page_defs[PAGE_COUNT] = {
     [PAGE_MOON]     = { "Moon",          0,                             NULL,           false, 0,        PG_SMALL, false, false },
     [PAGE_SOUND]    = { "Sound",         0,                             NULL,           false, 0,        PG_SMALL, false, false },
     [PAGE_DAYS]     = { "Days",          0,                             NULL,           false, 0,        PG_SMALL, false, false },
+    [PAGE_VIEWFINDER] = { "Viewfinder",  0,                             NULL,           false, 0,        PG_SMALL, false, false },
 };

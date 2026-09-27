@@ -63,6 +63,7 @@ typedef enum {
     PAGE_MOON,       /* watch: the big moon, its age and the next full/new */
     PAGE_SOUND,      /* watch: speaker's sound level, relayed by the Mac */
     PAGE_DAYS,       /* watch: speaker's daily levels, today vs a usual day */
+    PAGE_VIEWFINDER, /* watch: a camera's frames, streamed from the Mac over USB */
     PAGE_COUNT
 } page_t;
 
