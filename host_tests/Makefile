@@ -4,7 +4,7 @@ CFLAGS = -std=c11 -Wall -Wextra -Werror -g -I../main
 VIEW_SRCS = $(wildcard ../main/view_*.c)
 UD_SRCS = ../main/usagedata.c $(wildcard ../main/ud_*.c)
 
-all: test_textwrap test_font test_font_clock test_timecalc test_canvas test_usagedata test_pages test_views test_drift test_envstore test_envpage test_ens160 test_settings test_ds3231 test_level test_levelbig test_particles test_pip test_maze test_bubblelevel test_vector test_moonphase test_pcf85063 test_face test_envstate test_envui test_aafont test_soundlevel test_ring test_noiseui test_daysui test_liveui test_airui test_dirui
+all: test_textwrap test_font test_font_clock test_timecalc test_canvas test_usagedata test_pages test_views test_drift test_envstore test_envpage test_ens160 test_settings test_ds3231 test_level test_levelbig test_particles test_pip test_maze test_bubblelevel test_vector test_moonphase test_pcf85063 test_face test_envstate test_envui test_aafont test_soundlevel test_ring test_noiseui test_daysui test_liveui test_airui
 
 test_textwrap: test_textwrap.c ../main/textwrap.c
 	cc $(CFLAGS) -o $@ $^
@@ -139,7 +139,3 @@ test_liveui: $(LIVEUI_SRCS) ../main/liveui.h ../main/noiseui.h ../main/aafont.h 
 AIRUI_SRCS = test_airui.c ../main/airui.c ../main/envstate.c ../main/aafont.c ../main/vector.c ../main/canvas.c ../main/textwrap.c
 test_airui: $(AIRUI_SRCS) ../main/airui.h ../main/envstate.h ../main/aafont.h $(wildcard ../main/font_inter_*.h)
 	$(CC) $(CFLAGS) -o $@ $(AIRUI_SRCS) -lm
-
-DIRUI_SRCS = test_dirui.c ../main/dirui.c ../main/noiseui.c ../main/ring.c ../main/aafont.c ../main/vector.c ../main/canvas.c ../main/textwrap.c
-test_dirui: $(DIRUI_SRCS) ../main/dirui.h ../main/noiseui.h ../main/aafont.h $(wildcard ../main/font_inter_*.h)
-	$(CC) $(CFLAGS) -o $@ $(DIRUI_SRCS) -lm
