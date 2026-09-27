@@ -639,6 +639,21 @@ static uint32_t s_air_seq;
 static portMUX_TYPE s_air_mux = portMUX_INITIALIZER_UNLOCKED;
 static envs_t *s_envs;          /* in PSRAM: envstate's ring of readings */
 
+/* The air's history for AIR 24H and AIR WEEK: a week and a day of 5-minute
+   means, one row per day kept by its day number, in PSRAM. The control task
+   folds readings in and rebuilds the two views, alternating between two
+   copies of each so the screen task always draws one that is finished. */
+#define AIR_DAYS        8
+typedef struct { uint16_t tvoc, eco2; int16_t t10; uint8_t rh, flags; } air_slot_t;
+#define AIRS_GAS        0x01    /* tvoc/eco2 are the mean of valid readings */
+#define AIRS_TH         0x02
+typedef struct { int32_t day; air_slot_t s[AIRUI_SLOTS]; } air_row_t;
+static air_row_t *s_air_rows;   /* AIR_DAYS rows */
+static airui_day_t *s_airday[2];
+static airui_week_t *s_airweek[2];
+static int s_airv_cur;          /* which of the pair was published last */
+static uint32_t s_airv_seq;
+
 /* The Sound page's hour, read back from the card after a restart: the
    control task (which owns the card) fills it once, the screen task takes it. */
 static float *s_rest_hist;      /* NOISEUI_POINTS, in PSRAM */
@@ -687,7 +702,7 @@ static bool touch_read(int *x, int *y)
  * page is up in the time of one transfer. The Sound page, which moves every
  * second, is drawn in place each second.
  */
-typedef enum { SCR_SOUND = 0, SCR_LIVE, SCR_DAYS, SCR_AIR, SCR_PAGES } scr_page_t;
+typedef enum { SCR_SOUND = 0, SCR_LIVE, SCR_DAYS, SCR_AIR, SCR_AIRDAY, SCR_AIRWEEK, SCR_PAGES } scr_page_t;
 
 static void screen_task(void *arg)
 {
@@ -723,7 +738,9 @@ static void screen_task(void *arg)
     for (int i = 0; i < LIVEUI_BANDS; i++) live.band[i] = live.peak[i] = NAN;
     int live_tick = 0;
     static airui_t air;
-    uint32_t air_seen = 0;
+    uint32_t air_seen = 0, airv_seen = 0;
+    const airui_day_t *airday = NULL;
+    const airui_week_t *airweek = NULL;
     int x0 = 0, y0 = 0;
     TickType_t wake = xTaskGetTickCount();
     for (;;) {
@@ -757,6 +774,12 @@ static void screen_task(void *arg)
             air = s_air;
             air_seen = s_air_seq;
             if (at == SCR_AIR) redraw = true;
+        }
+        if (s_airv_seq != airv_seen) {
+            airv_seen = s_airv_seq;
+            airday = s_airday[s_airv_cur];
+            airweek = s_airweek[s_airv_cur];
+            if (at == SCR_AIRDAY || at == SCR_AIRWEEK) redraw = true;
         }
         portEXIT_CRITICAL(&s_air_mux);
 
@@ -836,6 +859,12 @@ static void screen_task(void *arg)
                 /* drawn above, on its own clock */
             } else if (at == SCR_AIR) {
                 airui_draw(c, &air);
+            } else if (at == SCR_AIRDAY) {
+                static airui_day_t none_day;
+                airui_draw_day(c, airday ? airday : &none_day);
+            } else if (at == SCR_AIRWEEK) {
+                static airui_week_t none_week;
+                airui_draw_week(c, airweek ? airweek : &none_week);
             } else if (at == SCR_DAYS) {
                 if (days_fb) memcpy(c->fb, days_fb, frame);
                 else { canvas_clear(c); daysui_draw(&page, &days); }
@@ -2688,6 +2717,177 @@ static void usb_start(void)
 
 /* ---- the control task ----------------------------------------------------- */
 
+/* The row for `day`, taking over the oldest when it has none; NULL with no store. */
+static air_row_t *air_row(int32_t day, bool make)
+{
+    if (s_air_rows == NULL) return NULL;
+    air_row_t *oldest = &s_air_rows[0];
+    for (int i = 0; i < AIR_DAYS; i++) {
+        if (s_air_rows[i].day == day) return &s_air_rows[i];
+        if (s_air_rows[i].day < oldest->day) oldest = &s_air_rows[i];
+    }
+    if (!make) return NULL;
+    memset(oldest, 0, sizeof *oldest);
+    oldest->day = day;
+    return oldest;
+}
+
+/* The worst state of a slot's VOC and eCO2, by the limits alone. */
+static envs_state_t slot_state(const air_slot_t *a)
+{
+    envs_state_t v = envs_classify(ENVS_VOC, a->tvoc, ENVS_OK);
+    envs_state_t e = envs_classify(ENVS_ECO2, a->eco2, ENVS_OK);
+    return v > e ? v : e;
+}
+
+/* The running slot, folded as readings come: sums of the valid gas and of
+   the room, and which slot of which day it is. */
+static struct { int32_t day; int slot; double tvoc, eco2, t, rh; int ng, nth; } s_acc = { .day = -1 };
+
+static bool acc_slot(air_slot_t *o)
+{
+    memset(o, 0, sizeof *o);
+    if (s_acc.ng > 0) {
+        o->tvoc = (uint16_t)lround(s_acc.tvoc / s_acc.ng);
+        o->eco2 = (uint16_t)lround(s_acc.eco2 / s_acc.ng);
+        o->flags |= AIRS_GAS;
+    }
+    if (s_acc.nth > 0) {
+        o->t10 = (int16_t)lround(s_acc.t / s_acc.nth * 10.0);
+        o->rh = (uint8_t)lround(s_acc.rh / s_acc.nth);
+        o->flags |= AIRS_TH;
+    }
+    return o->flags != 0;
+}
+
+/* The two views, rebuilt into the copy not published last. */
+static void air_views(int32_t today, int now_slot)
+{
+    int k = s_airv_cur ^ 1;
+    airui_day_t *d = s_airday[k];
+    airui_week_t *w = s_airweek[k];
+    if (d == NULL || w == NULL) return;
+    air_slot_t running;
+    bool have_running = s_acc.day == today && s_acc.slot == now_slot && acc_slot(&running);
+
+    d->have_sensor = w->have_sensor = ens160_present();
+    d->now_slot = now_slot;
+    for (int i = 0; i < AIRUI_SLOTS; i++) {
+        int back = AIRUI_SLOTS - 1 - i;             /* slots before now */
+        int32_t day = today;
+        int slot = now_slot - back;
+        if (slot < 0) { slot += AIRUI_SLOTS; day--; }
+        const air_slot_t *a = NULL;
+        if (back == 0 && have_running) a = &running;
+        else {
+            air_row_t *r = air_row(day, false);
+            if (r) a = &r->s[slot];
+        }
+        bool g = a && (a->flags & AIRS_GAS);
+        d->voc[i] = g ? (float)a->tvoc : NAN;
+        d->eco2[i] = g ? (float)a->eco2 : NAN;
+    }
+
+    w->poor_hours = w->fair_hours = 0;
+    for (int di = 0; di < 7; di++) {
+        int32_t day = today - 6 + di;
+        int y, m, dd;
+        timecalc_civil(day, &y, &m, &dd);
+        static const char *const wd[7] = { "Mo", "Tu", "We", "Th", "Fr", "Sa", "Su" };
+        int wk = daysui_weekday(y, m, dd);
+        memcpy(w->day[di], wk >= 0 ? wd[wk] : "--", 3);
+        air_row_t *r = air_row(day, false);
+        for (int h = 0; h < 24; h++) {
+            if (day == today && h * 12 > now_slot) { w->cell[di][h] = AIRUI_CELL_FUTURE; continue; }
+            int n = 0, fair = 0, poor = 0;
+            for (int q = 0; q < 12; q++) {
+                int slot = h * 12 + q;
+                const air_slot_t *a = NULL;
+                if (day == today && slot == now_slot && have_running) a = &running;
+                else if (r) a = &r->s[slot];
+                if (!a || !(a->flags & AIRS_GAS)) continue;
+                n++;
+                envs_state_t st = slot_state(a);
+                if (st == ENVS_POOR) poor++;
+                else if (st == ENVS_FAIR) fair++;
+            }
+            uint8_t cell = n == 0 ? AIRUI_CELL_NONE : poor >= 3 ? AIRUI_CELL_POOR
+                         : poor + fair >= 3 ? AIRUI_CELL_FAIR : AIRUI_CELL_OK;
+            w->cell[di][h] = cell;
+            if (cell == AIRUI_CELL_POOR) w->poor_hours++;
+            else if (cell == AIRUI_CELL_FAIR) w->fair_hours++;
+        }
+    }
+    portENTER_CRITICAL(&s_air_mux);
+    s_airv_cur = k;
+    s_airv_seq++;
+    portEXIT_CRITICAL(&s_air_mux);
+}
+
+/* A finished slot: into its day's row, and a line in that day's air file. */
+static void air_close_slot(void)
+{
+    air_slot_t o;
+    if (s_acc.day < 0 || !acc_slot(&o)) return;
+    air_row_t *r = air_row(s_acc.day, true);
+    if (r) r->s[s_acc.slot] = o;
+    if (!s_sd) return;
+    char date[11], path[48], line[96], a[12], b[12], t[12], h[12];
+    format_date(s_acc.day, date);
+    snprintf(path, sizeof path, SD_DIR "/air-%s.csv", date);
+    bool fresh = !exists(path);
+    FILE *f = fopen(path, "a");
+    if (!f) { sd_fail("air open"); return; }
+    bool g = o.flags & AIRS_GAS, th = o.flags & AIRS_TH;
+    if (g) { snprintf(a, sizeof a, "%u", o.tvoc); snprintf(b, sizeof b, "%u", o.eco2); }
+    else { strcpy(a, "--"); strcpy(b, "--"); }
+    if (th) { snprintf(t, sizeof t, "%.1f", o.t10 / 10.0); snprintf(h, sizeof h, "%u", o.rh); }
+    else { strcpy(t, "--"); strcpy(h, "--"); }
+    snprintf(line, sizeof line, "%02d:%02d,%s,%s,%s,%s\n", s_acc.slot / 12, s_acc.slot % 12 * 5, a, b, t, h);
+    bool ok = (!fresh || fputs("time,tvoc_ppb,eco2_ppm,temp_c,rh_pct\n", f) >= 0) && fputs(line, f) >= 0;
+    if (fclose(f) != 0 || !ok) sd_fail("air write");
+    else sd_ok();
+}
+
+/* After a restart: the last seven days' air files back into the rows. */
+static void air_restore(void)
+{
+    int32_t today;
+    uint32_t tod;
+    if (!s_sd || s_air_rows == NULL || !clock_now(&today, &tod) || today < 0) return;
+    int got = 0;
+    for (int32_t day = today - 6; day <= today; day++) {
+        char date[11], path[48], row[96];
+        format_date(day, date);
+        snprintf(path, sizeof path, SD_DIR "/air-%s.csv", date);
+        FILE *f = fopen(path, "r");
+        if (!f) continue;
+        air_row_t *r = air_row(day, true);
+        while (r && fgets(row, sizeof row, f)) {
+            unsigned hh, mm;
+            if (sscanf(row, "%2u:%2u,", &hh, &mm) != 2 || hh > 23 || mm > 59) continue;
+            air_slot_t *a = &r->s[hh * 12 + mm / 5];
+            float tv = csv_level(csv_field(row, 1)), ec = csv_level(csv_field(row, 2));
+            float tc = csv_level(csv_field(row, 3)), rh = csv_level(csv_field(row, 4));
+            memset(a, 0, sizeof *a);
+            if (isfinite(tv) && isfinite(ec)) {
+                a->tvoc = (uint16_t)tv;
+                a->eco2 = (uint16_t)ec;
+                a->flags |= AIRS_GAS;
+            }
+            if (isfinite(tc) && isfinite(rh)) {
+                a->t10 = (int16_t)lrintf(tc * 10.0f);
+                a->rh = (uint8_t)rh;
+                a->flags |= AIRS_TH;
+            }
+            got++;
+        }
+        fclose(f);
+    }
+    air_views(today, (int)(tod / 300));
+    ESP_LOGI(TAG, "air: %d five-minute slots restored from the card", got);
+}
+
 /*
  * The air, every AIR_EVERY_US, as envo reads the same ENS160 + AHT21 pair:
  * the AHT21 first, its reading handed to the ENS160 as compensation (the
@@ -2747,6 +2947,31 @@ static void air_sample(int64_t now)
     s_air = a;
     s_air_seq++;
     portEXIT_CRITICAL(&s_air_mux);
+
+    /* The 5-minute slot: a new one closes the last; this reading joins it.
+       Only readings the chip vouches for (validity 0) count as gas. */
+    int32_t day;
+    uint32_t tod;
+    if (clock_now(&day, &tod) && day >= 0) {
+        int slot = (int)(tod / 300);
+        if (day != s_acc.day || slot != s_acc.slot) {
+            air_close_slot();
+            memset(&s_acc, 0, sizeof s_acc);
+            s_acc.day = day;
+            s_acc.slot = slot;
+        }
+        if (have_gas && validity == ENS160_NORMAL) {
+            s_acc.tvoc += tvoc;
+            s_acc.eco2 += eco2;
+            s_acc.ng++;
+        }
+        if (have_th) {
+            s_acc.t += t;
+            s_acc.rh += rh;
+            s_acc.nth++;
+        }
+        air_views(day, slot);
+    }
     ESP_LOGI(TAG, "air: tvoc %u ppb eco2 %u ppm aqi %u validity %d%s | %.1f C %.0f %% (%s%s)",
              tvoc, eco2, aqi, (int)validity, a.warming ? " warming" : "", (double)t, (double)rh,
              have_gas ? "gas" : "no gas", have_th ? ", th" : ", no th");
@@ -2869,6 +3094,7 @@ static void control_task(void *arg)
             if (clock_now(&d, &t) && d >= 0) {
                 restored = true;
                 hist_restore();
+                air_restore();
             }
         }
     }
@@ -2894,6 +3120,13 @@ void speaker_app_main(void)
     aht21_init();
     ens160_init();
     s_envs = heap_caps_calloc(1, sizeof(envs_t), MALLOC_CAP_SPIRAM);
+    s_air_rows = heap_caps_calloc(AIR_DAYS, sizeof(air_row_t), MALLOC_CAP_SPIRAM);
+    if (s_air_rows)
+        for (int i = 0; i < AIR_DAYS; i++) s_air_rows[i].day = -1000 - i;
+    for (int i = 0; i < 2; i++) {
+        s_airday[i] = heap_caps_calloc(1, sizeof(airui_day_t), MALLOC_CAP_SPIRAM);
+        s_airweek[i] = heap_caps_calloc(1, sizeof(airui_week_t), MALLOC_CAP_SPIRAM);
+    }
     if (s_envs) envs_init(s_envs);
     ESP_LOGI(TAG, "air: ENS160 %s, AHT21 %s", ens160_present() ? "found" : "absent",
              aht21_present() ? "found" : "absent");

@@ -41,4 +41,31 @@ typedef struct {
 
 void airui_draw(canvas_t *c, const airui_t *s);
 
+/* The last 24 hours as 5-minute means, oldest first, the last slot the one
+   running now. NaN is no reading (a gap). `now_slot` is the time of day of
+   the last slot, 0..287, for the hour marks. */
+#define AIRUI_SLOTS  288
+typedef struct {
+    float voc[AIRUI_SLOTS];     /* ppb */
+    float eco2[AIRUI_SLOTS];    /* ppm */
+    int   now_slot;
+    bool  have_sensor;
+} airui_day_t;
+
+/* AIR 24H: VOC and eCO2 est on fixed zoned scales, each trace coloured by
+   the state it is in. */
+void airui_draw_day(canvas_t *c, const airui_day_t *d);
+
+/* The week: 7 days of 24 hours, today last. Each hour the worst state that
+   lasted 15 minutes of it (3 of its 5-minute means), of VOC and eCO2. */
+typedef enum { AIRUI_CELL_NONE = 0, AIRUI_CELL_OK, AIRUI_CELL_FAIR, AIRUI_CELL_POOR, AIRUI_CELL_FUTURE } airui_cell_t;
+typedef struct {
+    uint8_t cell[7][24];        /* airui_cell_t */
+    char    day[7][3];          /* "Mo".."Su", today last */
+    int     poor_hours, fair_hours;
+    bool    have_sensor;
+} airui_week_t;
+
+void airui_draw_week(canvas_t *c, const airui_week_t *w);
+
 #endif /* AIRUI_H */

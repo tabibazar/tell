@@ -3,6 +3,7 @@
 #include "aafont.h"
 #include "vector.h"
 
+#include <math.h>
 #include <stdio.h>
 
 /* envo's colours: state is the only thing with colour on the page. */
@@ -151,4 +152,175 @@ void airui_draw(canvas_t *c, const airui_t *s)
     eco2(c, s);
     room(c, s);
     vec_linear_light(was);
+}
+
+/* ---- AIR 24H -------------------------------------------------------------- */
+
+#define D_X0        16
+#define D_X1        224
+#define D_H         100
+#define COL_TINT    0x00E7      /* navy under VOC's GOOD zone, as on envo */
+
+/* The zoned scale, as on envo's full chart: GOOD gets the most height, POOR
+   the least, and a value over the top is pinned to it. */
+typedef struct { float lo, fair, poor, top; } zones_t;
+static const zones_t s_voc_z = { 0.0f, 220.0f, 650.0f, 2200.0f };
+static const zones_t s_eco2_z = { 400.0f, 800.0f, 1000.0f, 1500.0f };
+#define Z_GOOD      44
+#define Z_FAIR      34
+#define Z_POOR      22
+
+/* Height above the chart's floor for a value, in px. */
+static float zone_y(const zones_t *z, float v)
+{
+    if (v <= z->lo) return 0.0f;
+    if (v < z->fair) return (v - z->lo) / (z->fair - z->lo) * Z_GOOD;
+    if (v < z->poor) return Z_GOOD + (v - z->fair) / (z->poor - z->fair) * Z_FAIR;
+    if (v < z->top) return Z_GOOD + Z_FAIR + (v - z->poor) / (z->top - z->poor) * Z_POOR;
+    return (float)D_H;
+}
+
+static uint16_t zone_col(const zones_t *z, float v)
+{
+    return v >= z->poor ? COL_POOR : v >= z->fair ? COL_FAIR : COL_WHITE;
+}
+
+static void chart(canvas_t *c, int top, const char *title, const char *unit, const zones_t *z,
+                  const float *v, int now_slot, bool tint)
+{
+    aafont_draw(c, F_LABEL, D_X0, top, title, COL_WHITE, AAFONT_LEFT);
+    aafont_draw(c, F_LABEL, D_X1, top, unit, COL_GREY, AAFONT_RIGHT);
+    int y0 = top + 22, floor_y = y0 + D_H;
+    if (tint) canvas_fill_rect(c, D_X0, floor_y - Z_GOOD, D_X1 - D_X0, Z_GOOD, COL_TINT);
+    canvas_fill_rect(c, D_X0, floor_y - Z_GOOD, D_X1 - D_X0, 1, COL_FAIR);
+    canvas_fill_rect(c, D_X0, floor_y - Z_GOOD - Z_FAIR, D_X1 - D_X0, 1, COL_POOR);
+    canvas_fill_rect(c, D_X0, floor_y, D_X1 - D_X0, 1, COL_RULE);
+
+    /* Hour marks every six hours: a tick under the floor and the hour. */
+    int cols = D_X1 - D_X0;
+    for (int k = 0; k < AIRUI_SLOTS; k++) {
+        int slot_tod = (now_slot - (AIRUI_SLOTS - 1 - k) + AIRUI_SLOTS * 2) % AIRUI_SLOTS;
+        if (slot_tod % 72 != 0) continue;             /* 72 slots = 6 h */
+        int x = D_X0 + k * cols / AIRUI_SLOTS;
+        canvas_fill_rect(c, x, floor_y + 1, 1, 3, COL_GREY);
+        if (slot_tod == 0) canvas_fill_rect(c, x, y0, 1, D_H, COL_RULE);   /* midnight */
+    }
+
+    /* The trace: each column the mean of its slots, joined to the one before
+       by a vertical run, in the colour of the state it is in. */
+    float prev = NAN;
+    for (int x = 0; x < cols; x++) {
+        int k0 = x * AIRUI_SLOTS / cols, k1 = (x + 1) * AIRUI_SLOTS / cols;
+        double sum = 0;
+        int n = 0;
+        for (int k = k0; k < k1 && k < AIRUI_SLOTS; k++)
+            if (v[k] == v[k]) { sum += v[k]; n++; }
+        if (n == 0) { prev = NAN; continue; }
+        float m = (float)(sum / n);
+        int y = floor_y - 1 - (int)(zone_y(z, m) + 0.5f);
+        int yp = prev == prev ? floor_y - 1 - (int)(zone_y(z, prev) + 0.5f) : y;
+        int ya = y < yp ? y : yp, yb = y < yp ? yp : y;
+        canvas_fill_rect(c, D_X0 + x, ya - 1, 1, yb - ya + 2, zone_col(z, m));
+        prev = m;
+    }
+}
+
+static void hour_labels(canvas_t *c, int y, int now_slot)
+{
+    int cols = D_X1 - D_X0;
+    for (int k = 0; k < AIRUI_SLOTS; k++) {
+        int slot_tod = (now_slot - (AIRUI_SLOTS - 1 - k) + AIRUI_SLOTS * 2) % AIRUI_SLOTS;
+        if (slot_tod % 72 != 0) continue;
+        int x = D_X0 + k * cols / AIRUI_SLOTS;
+        char b[4];
+        snprintf(b, sizeof b, "%02d", slot_tod / 12);
+        if (x > D_X0 + 10 && x < D_X1 - 30) aafont_draw(c, F_LABEL, x, y, b, COL_GREY, AAFONT_CENTRE);
+    }
+    aafont_draw(c, F_LABEL, D_X1, y, "NOW", COL_GREY, AAFONT_RIGHT);
+}
+
+void airui_draw_day(canvas_t *c, const airui_day_t *d)
+{
+    if (c == NULL || c->fb == NULL || c->w <= 0 || c->h <= 0) return;
+    canvas_fill_rect(c, 0, 0, c->w, c->h, COL_BG);
+    if (d == NULL) return;
+    if (!d->have_sensor) {
+        aafont_draw(c, F_WORD, c->w / 2, 130, "NO AIR SENSOR", COL_GREY, AAFONT_CENTRE);
+        return;
+    }
+    chart(c, 12, "VOC 24H", "ppb", &s_voc_z, d->voc, d->now_slot, true);
+    chart(c, 158, "eCO2 est 24H", "ppm", &s_eco2_z, d->eco2, d->now_slot, false);
+    hour_labels(c, 158 + 22 + D_H + 8, d->now_slot);
+}
+
+/* ---- the week -------------------------------------------------------------- */
+
+#define WK_TOP      60
+#define WK_PITCH    30
+#define WK_CELL_H   20
+#define WK_X0       50
+#define WK_CW       7
+#define WK_CELL_W   5
+
+void airui_draw_week(canvas_t *c, const airui_week_t *w)
+{
+    if (c == NULL || c->fb == NULL || c->w <= 0 || c->h <= 0) return;
+    canvas_fill_rect(c, 0, 0, c->w, c->h, COL_BG);
+    if (w == NULL) return;
+    aafont_draw(c, F_LABEL, XL, 14, "AIR WEEK", COL_WHITE, AAFONT_LEFT);
+    if (!w->have_sensor) {
+        aafont_draw(c, F_WORD, c->w / 2, 130, "NO AIR SENSOR", COL_GREY, AAFONT_CENTRE);
+        return;
+    }
+    bool any = false;
+    for (int d = 0; d < 7; d++) {
+        int y = WK_TOP + d * WK_PITCH;
+        aafont_draw(c, F_LABEL, XL, y + (WK_CELL_H - F_LABEL->cap) / 2, w->day[d],
+                    d == 6 ? COL_WHITE : COL_GREY, AAFONT_LEFT);
+        for (int h = 0; h < 24; h++) {
+            int x = WK_X0 + h * WK_CW;
+            switch (w->cell[d][h]) {
+            case AIRUI_CELL_NONE:
+                canvas_fill_rect(c, x + WK_CELL_W / 2, y + WK_CELL_H / 2, 1, 1, COL_RULE);
+                break;
+            case AIRUI_CELL_OK:
+                canvas_fill_rect(c, x, y + WK_CELL_H - 4, WK_CELL_W, 4, COL_GOOD);
+                any = true;
+                break;
+            case AIRUI_CELL_FAIR:
+                canvas_fill_rect(c, x, y + WK_CELL_H / 2, WK_CELL_W, WK_CELL_H - WK_CELL_H / 2, COL_FAIR);
+                any = true;
+                break;
+            case AIRUI_CELL_POOR:
+                canvas_fill_rect(c, x, y, WK_CELL_W, WK_CELL_H, COL_POOR);
+                any = true;
+                break;
+            default:
+                break;
+            }
+        }
+    }
+    /* The takeaway, as on envo's week, on its own line under the title:
+       hours that went bad, or that none did. */
+    char b[24];
+    const int ty = 34;
+    if (w->poor_hours == 0 && w->fair_hours == 0) {
+        aafont_draw(c, F_LABEL, XL, ty, any ? "ALL GOOD" : "NO DATA", any ? COL_GOOD : COL_GREY, AAFONT_LEFT);
+    } else {
+        int x = XL;
+        if (w->poor_hours > 0) {
+            snprintf(b, sizeof b, "POOR %dH", w->poor_hours);
+            x += aafont_draw(c, F_LABEL, x, ty, b, COL_POOR, AAFONT_LEFT) + 14;
+        }
+        if (w->fair_hours > 0) {
+            snprintf(b, sizeof b, "FAIR %dH", w->fair_hours);
+            aafont_draw(c, F_LABEL, x, ty, b, COL_FAIR, AAFONT_LEFT);
+        }
+    }
+    int ly = WK_TOP + 7 * WK_PITCH + 2;
+    static const char *const hl[5] = { "00", "06", "12", "18", "24" };
+    for (int k = 0; k < 5; k++) {
+        int x = WK_X0 + k * 6 * WK_CW - (k == 4 ? 2 : 0);
+        aafont_draw(c, F_LABEL, x, ly, hl[k], COL_GREY, k == 0 ? AAFONT_LEFT : k == 4 ? AAFONT_RIGHT : AAFONT_CENTRE);
+    }
 }
