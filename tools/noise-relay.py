@@ -406,12 +406,16 @@ def check_command(text):
         m = re.match(r"^(\d{1,2})-(\d{1,2})$", args[0]) if len(args) == 1 else None
         if m is None or int(m.group(1)) > 23 or int(m.group(2)) > 23:
             raise ValueError('say "!night HH-HH", e.g. !night 22-07')
+    elif word == "!thfit":
+        num = r"^-?\d{1,3}(?:\.\d+)?$"
+        if not (len(args) == 2 and all(re.match(num, a) for a in args)):
+            raise ValueError('say "!thfit A B": temperature = A x raw + B')
     elif word == "!thcal":
         num = r"^-?\d{1,3}(?:\.\d+)?$"
         if not (args == ["off"] or (len(args) == 2 and all(re.match(num, a) for a in args))):
             raise ValueError('say "!thcal T RH" (the room\'s C and %) or "!thcal off"')
     else:
-        raise ValueError("%s is not carried (only !cal, !chime, !ring, !night, !thcal)" % word[:20])
+        raise ValueError("%s is not carried (only !cal, !chime, !ring, !night, !thcal, !thfit)" % word[:20])
     return " ".join(parts)
 
 
@@ -1083,8 +1087,8 @@ class Relay:
                     self.seen["days"] = (msg, now)
                     if got[1]:
                         self.days.set(days_commands(*got))
-            elif word in ("cal", "thcal", "play", "status"):
-                if word in ("cal", "thcal"):
+            elif word in ("cal", "thcal", "thfit", "play", "status"):
+                if word in ("cal", "thcal", "thfit"):
                     self.seen[word] = (msg, now)
                 if word == "status":
                     if not self.status or now - self.status[-1][1] > 2.0:
@@ -1154,7 +1158,7 @@ class Relay:
         out.append("jobs: %s, %d waiting" % (
             "idle" if j is None else "%s %s (%d of %d bytes)" % (j.kind, j.state, j.sent, len(j.data)),
             len(self.jobs.queue)))
-        for key in ("noise", "air", "days", "cal", "thcal"):
+        for key in ("noise", "air", "days", "cal", "thcal", "thfit"):
             if key in self.seen:
                 msg, at = self.seen[key]
                 out.append("%d %s" % (now - at, msg))

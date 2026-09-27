@@ -219,12 +219,14 @@ typedef struct {
     bool    ring;
     uint8_t night_from;     /* the ring dims from this hour ... */
     uint8_t night_to;       /* ... until this one */
-    float   t_off, rh_off;  /* the air module's temperature and humidity, as !thcal set them */
+    float   t_gain, t_off;  /* the air module's temperature: gain x raw + offset (!thfit, !thcal) */
+    float   rh_off;         /* and humidity's offset, after the temperature correction (!thcal) */
 } spk_settings_t;
 
 static volatile spk_settings_t s_set = {
     .cal_offset = SOUNDLEVEL_CAL_EST_DB, .calibrated = false,
     .chime = false, .ring = true, .night_from = 22, .night_to = 7,
+    .t_gain = 1.0f,
 };
 
 /* The chime's gate, and what the reference slot says. Written by one task and
@@ -446,7 +448,8 @@ static void settings_load(void)
     }
     if (nvs_get_u8(h, "chime", &u) == ESP_OK) s_set.chime = u != 0;
     int32_t off;
-    if (nvs_get_i32(h, "t_off_c", &off) == ESP_OK && off > -1000 && off < 1000) s_set.t_off = off / 100.0f;
+    if (nvs_get_i32(h, "t_off_c", &off) == ESP_OK && off > -3000 && off < 3000) s_set.t_off = off / 100.0f;
+    if (nvs_get_i32(h, "t_gain_m", &off) == ESP_OK && off >= 500 && off <= 2000) s_set.t_gain = off / 1000.0f;
     if (nvs_get_i32(h, "rh_off_c", &off) == ESP_OK && off > -4000 && off < 4000) s_set.rh_off = off / 100.0f;
     if (nvs_get_u8(h, "ring", &u) == ESP_OK) s_set.ring = u != 0;
     if (nvs_get_u16(h, "night", &w) == ESP_OK && (w >> 8) < 24 && (w & 0xFF) < 24) {
@@ -470,6 +473,7 @@ static void settings_save(void)
     if (e == ESP_OK) e = nvs_set_u8(h, "ring", s_set.ring ? 1 : 0);
     if (e == ESP_OK) e = nvs_set_u16(h, "night", (uint16_t)(s_set.night_from << 8 | s_set.night_to));
     if (e == ESP_OK) e = nvs_set_i32(h, "t_off_c", (int32_t)lrintf(s_set.t_off * 100.0f));
+    if (e == ESP_OK) e = nvs_set_i32(h, "t_gain_m", (int32_t)lrintf(s_set.t_gain * 1000.0f));
     if (e == ESP_OK) e = nvs_set_i32(h, "rh_off_c", (int32_t)lrintf(s_set.rh_off * 100.0f));
     if (e == ESP_OK) e = nvs_commit(h);
     nvs_close(h);
@@ -652,6 +656,7 @@ static portMUX_TYPE s_air_mux = portMUX_INITIALIZER_UNLOCKED;
 static envs_t *s_envs;          /* in PSRAM: envstate's ring of readings */
 static float s_th_raw_t, s_th_raw_rh;   /* the AHT21's last reading before offsets */
 static bool s_th_raw_ok;
+static void th_correct(float *t, float *rh);   /* the fit, applied: below air_sample */
 
 /* The air's history for AIR 24H and AIR WEEK: a week and a day of 5-minute
    means, one row per day kept by its day number, in PSRAM. The control task
@@ -2362,6 +2367,7 @@ static void command(const char *text)
            reading read that. "!thcal off" puts them back to zero. */
         float tt, hh;
         if (strcmp(arg, "off") == 0) {
+            s_set.t_gain = 1.0f;
             s_set.t_off = s_set.rh_off = 0.0f;
         } else if (sscanf(arg, "%f %f", &tt, &hh) != 2 || !s_th_raw_ok) {
             ESP_LOGW(TAG, "thcal: say \"!thcal T RH\" (the room's C and %%), or \"!thcal off\"%s",
@@ -2372,12 +2378,35 @@ static void command(const char *text)
                      (double)tt, (double)hh, (double)s_th_raw_t, (double)s_th_raw_rh);
             return;
         } else {
+            s_set.t_gain = 1.0f;
             s_set.t_off = tt - s_th_raw_t;
-            s_set.rh_off = hh - s_th_raw_rh;
+            s_set.rh_off = 0.0f;
+            float t = s_th_raw_t, h = s_th_raw_rh;
+            th_correct(&t, &h);
+            s_set.rh_off = hh - h;
         }
         settings_save();
-        ESP_LOGI(TAG, "thcal: offsets %+.1f C, %+.1f %% (the module read %.1f C %.1f %%)", (double)s_set.t_off,
+        ESP_LOGI(TAG, "thcal: T = %.3f x raw %+.2f C, RH %+.1f %% after its temperature correction "
+                 "(the module read %.1f C %.1f %%)", (double)s_set.t_gain, (double)s_set.t_off,
                  (double)s_set.rh_off, (double)s_th_raw_t, (double)s_th_raw_rh);
+        return;
+    }
+    if (word_is(text, "!thfit")) {
+        /* "!thfit A B": temperature = A x raw + B, a straight-line fit of a
+           reference against the module; humidity follows by moisture. */
+        float a, b;
+        if (sscanf(arg, "%f %f", &a, &b) != 2 || !(a >= 0.5f && a <= 2.0f) || !(b > -30.0f && b < 30.0f)) {
+            ESP_LOGW(TAG, "thfit: say \"!thfit A B\", A 0.5..2 and B within 30 C");
+            return;
+        }
+        s_set.t_gain = a;
+        s_set.t_off = b;
+        s_set.rh_off = 0.0f;
+        settings_save();
+        float t = s_th_raw_t, h = s_th_raw_rh;
+        if (s_th_raw_ok) th_correct(&t, &h);
+        ESP_LOGI(TAG, "thfit: T = %.3f x raw %+.2f C; now %.1f C %.1f %% (raw %.1f C %.1f %%)", (double)a, (double)b,
+                 (double)t, (double)h, (double)s_th_raw_t, (double)s_th_raw_rh);
         return;
     }
     if (word_is(text, "!chime") || word_is(text, "!ring")) {
@@ -2943,6 +2972,27 @@ static void air_restore(void)
     ESP_LOGI(TAG, "air: %d five-minute slots restored from the card", got);
 }
 
+/* Saturation vapour pressure over water, hPa (Magnus, Sonntag's constants). */
+static float es_hpa(float c)
+{
+    return 6.112f * expf(17.62f * c / (243.12f + c));
+}
+
+/*
+ * The AHT21's reading corrected: temperature by the fit (gain x raw + offset,
+ * from the overnight study against envo, 2026-09-27); humidity then worked
+ * out again for the corrected temperature at the same moisture -- a sensor
+ * warmed by the board reads the air drier than it is, by exactly the ratio
+ * of the two saturation pressures -- plus any flat offset !thcal left.
+ */
+static void th_correct(float *t, float *rh)
+{
+    float raw = *t, tc = s_set.t_gain * raw + s_set.t_off;
+    float h = *rh * es_hpa(raw) / es_hpa(tc) + s_set.rh_off;
+    *t = tc;
+    *rh = h < 0.0f ? 0.0f : h > 100.0f ? 100.0f : h;
+}
+
 /*
  * The air, every AIR_EVERY_US, as envo reads the same ENS160 + AHT21 pair:
  * the AHT21 first, its reading handed to the ENS160 as compensation (the
@@ -2962,10 +3012,7 @@ static void air_sample(int64_t now)
         s_th_raw_t = t;
         s_th_raw_rh = rh;
         s_th_raw_ok = true;
-        t += s_set.t_off;
-        rh += s_set.rh_off;
-        if (rh < 0.0f) rh = 0.0f;
-        if (rh > 100.0f) rh = 100.0f;
+        th_correct(&t, &rh);
     }
     envs_reading_t r = { .t_us = now };
     if (have_th) {
@@ -3039,9 +3086,9 @@ static void air_sample(int64_t now)
         }
         air_views(day, slot);
     }
-    ESP_LOGI(TAG, "air: tvoc %u ppb eco2 %u ppm aqi %u validity %d%s | %.1f C %.0f %% (%s%s)",
+    ESP_LOGI(TAG, "air: tvoc %u ppb eco2 %u ppm aqi %u validity %d%s | %.1f C %.0f %% (%s%s) raw %.1f C %.0f %%",
              tvoc, eco2, aqi, (int)validity, a.warming ? " warming" : "", (double)t, (double)rh,
-             have_gas ? "gas" : "no gas", have_th ? ", th" : ", no th");
+             have_gas ? "gas" : "no gas", have_th ? ", th" : ", no th", (double)s_th_raw_t, (double)s_th_raw_rh);
 }
 
 /*
