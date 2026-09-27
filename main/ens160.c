@@ -209,14 +209,25 @@ esp_err_t ens160_init(void)
                 continue;
             }
 
-            /* Idle first, then standard: the datasheet wants configuration
-               done from idle, and coming from an unknown state is exactly
-               what a fresh boot is. */
-            write_reg(ENS160_REG_OPMODE, ENS160_OPMODE_IDLE);
-            vTaskDelay(pdMS_TO_TICKS(10));
-            if (!write_reg(ENS160_REG_OPMODE, ENS160_OPMODE_STANDARD)) {
-                i2c_master_bus_rm_device(s_dev);
-                continue;
+            /*
+             * A chip already measuring is left alone. The ESP32 restarts --
+             * a flash, a reset -- without cutting the module's power, and
+             * sending it to idle and back each time may start its warm-up
+             * over; a new part reports "initial start-up" until it has run
+             * 24 hours unbroken (datasheet), and speaker's sat at it for a
+             * night of reboots (2026-09-27). Otherwise idle first, then
+             * standard: the datasheet wants configuration done from idle.
+             */
+            uint8_t mode = 0xFF;
+            if (read_regs(ENS160_REG_OPMODE, &mode, 1) && mode == ENS160_OPMODE_STANDARD) {
+                ESP_LOGI(TAG, "already measuring; left running");
+            } else {
+                write_reg(ENS160_REG_OPMODE, ENS160_OPMODE_IDLE);
+                vTaskDelay(pdMS_TO_TICKS(10));
+                if (!write_reg(ENS160_REG_OPMODE, ENS160_OPMODE_STANDARD)) {
+                    i2c_master_bus_rm_device(s_dev);
+                    continue;
+                }
             }
 
             s_bus = which;
