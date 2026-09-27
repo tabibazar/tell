@@ -195,6 +195,19 @@ bool bme280_read(float *celsius, float *hpa, float *humidity)
     int32_t adc_p, adc_t, adc_h;
     bme280_raw(d, &adc_p, &adc_t, &adc_h);
 
+    /* 0x80000 is what the data registers hold when no measurement was made:
+       a chip that lost power and came back is in sleep mode, and read as it
+       is it gives a steady 22.6 C and 710 hPa that look like readings
+       (envo, 2026-09-26, after a rewire). Put its setup back -- the same
+       three writes as at boot, humidity's first -- and skip this one. */
+    if (adc_t == 0x80000 || adc_p == 0x80000) {
+        write_reg(REG_CTRL_HUM, 0x01);
+        write_reg(REG_CONFIG, 0xA0);
+        write_reg(REG_CTRL_MEAS, 0x27);
+        ESP_LOGW(TAG, "no measurement in the registers (the chip was reset?); set up again");
+        return false;
+    }
+
     /* Temperature first, always: it sets the t_fine the other two need. */
     float t = bme280_temperature(&s_cal, adc_t);
     if (celsius) *celsius = t;

@@ -219,6 +219,7 @@ typedef struct {
     bool    ring;
     uint8_t night_from;     /* the ring dims from this hour ... */
     uint8_t night_to;       /* ... until this one */
+    float   t_off, rh_off;  /* the air module's temperature and humidity, as !thcal set them */
 } spk_settings_t;
 
 static volatile spk_settings_t s_set = {
@@ -444,6 +445,9 @@ static void settings_load(void)
         if (nvs_get_u8(h, "cal_ok", &u) == ESP_OK) s_set.calibrated = u != 0;
     }
     if (nvs_get_u8(h, "chime", &u) == ESP_OK) s_set.chime = u != 0;
+    int32_t off;
+    if (nvs_get_i32(h, "t_off_c", &off) == ESP_OK && off > -1000 && off < 1000) s_set.t_off = off / 100.0f;
+    if (nvs_get_i32(h, "rh_off_c", &off) == ESP_OK && off > -4000 && off < 4000) s_set.rh_off = off / 100.0f;
     if (nvs_get_u8(h, "ring", &u) == ESP_OK) s_set.ring = u != 0;
     if (nvs_get_u16(h, "night", &w) == ESP_OK && (w >> 8) < 24 && (w & 0xFF) < 24) {
         s_set.night_from = (uint8_t)(w >> 8);
@@ -465,6 +469,8 @@ static void settings_save(void)
     if (e == ESP_OK) e = nvs_set_u8(h, "chime", s_set.chime ? 1 : 0);
     if (e == ESP_OK) e = nvs_set_u8(h, "ring", s_set.ring ? 1 : 0);
     if (e == ESP_OK) e = nvs_set_u16(h, "night", (uint16_t)(s_set.night_from << 8 | s_set.night_to));
+    if (e == ESP_OK) e = nvs_set_i32(h, "t_off_c", (int32_t)lrintf(s_set.t_off * 100.0f));
+    if (e == ESP_OK) e = nvs_set_i32(h, "rh_off_c", (int32_t)lrintf(s_set.rh_off * 100.0f));
     if (e == ESP_OK) e = nvs_commit(h);
     nvs_close(h);
     if (e != ESP_OK) ESP_LOGE(TAG, "settings: not saved: %s", esp_err_to_name(e));
@@ -616,7 +622,12 @@ static void touch_identify(void)
  * LAeq, today's, and the hour's strip of 10 s energy means. Drawn into the
  * middle 280 rows of the 240x320 panel, the page's own size.
  */
-static noiseui_t s_scr;
+/* The screen's state lives in PSRAM: speaker's internal RAM is down to a few
+   KB once Bluetooth, the codecs and the tasks' stacks are up, and every
+   static here came out of it (2026-09-26: at 2.6 KB free the USB serial
+   driver stopped taking input, and earlier Bluetooth failed to start). */
+static noiseui_t *s_scrp;
+#define s_scr (*s_scrp)
 /* The last LIVE_RING samples of MIC1, for the Live page: written by the
    audio task after every read, read by the screen task, lock-free -- a
    frame torn by a read in flight is one frame of a picture redrawn 25 times
@@ -626,7 +637,8 @@ static int16_t *s_live;                 /* LIVE_RING samples, in PSRAM (screen_s
 static volatile uint32_t s_live_w;
 /* The days as speaker's Days page takes them, refreshed with every days line. */
 #define SCREEN_DAYS     30
-static daysui_t s_days_scr;
+static daysui_t *s_days_scrp;
+#define s_days_scr (*s_days_scrp)
 static uint32_t s_days_seq;
 static portMUX_TYPE s_days_mux = portMUX_INITIALIZER_UNLOCKED;
 static bool s_screen_ok;     /* the panel came up */
@@ -638,6 +650,8 @@ static airui_t s_air;
 static uint32_t s_air_seq;
 static portMUX_TYPE s_air_mux = portMUX_INITIALIZER_UNLOCKED;
 static envs_t *s_envs;          /* in PSRAM: envstate's ring of readings */
+static float s_th_raw_t, s_th_raw_rh;   /* the AHT21's last reading before offsets */
+static bool s_th_raw_ok;
 
 /* The air's history for AIR 24H and AIR WEEK: a week and a day of 5-minute
    means, one row per day kept by its day number, in PSRAM. The control task
@@ -720,7 +734,8 @@ static void screen_task(void *arg)
         days_page.fb = days_fb + (size_t)top * (size_t)c->w;
     }
     for (int i = 0; i < NOISEUI_POINTS; i++) { s_scr.hist[i] = NAN; s_scr.hist_valid[i] = false; }
-    static daysui_t days;
+    daysui_t *daysp = heap_caps_calloc(1, sizeof(daysui_t), MALLOC_CAP_SPIRAM);
+#define days (*daysp)
     uint32_t days_seen = 0;
     bool days_ready = false;
     double bucket_e = 0.0;
@@ -732,12 +747,17 @@ static void screen_task(void *arg)
     liveui_t *lp = heap_caps_calloc(1, sizeof(liveui_t), MALLOC_CAP_SPIRAM);
     int16_t *snap = heap_caps_malloc(LIVEUI_FFT * sizeof(int16_t), MALLOC_CAP_SPIRAM);
     if (lp == NULL || snap == NULL || s_live == NULL) ESP_LOGW(TAG, "screen: no memory for the Live page");
-    static liveui_t none;
-    liveui_t *livep = lp ? lp : &none;
+    liveui_t *livep = lp;       /* NULL without PSRAM: the Live page then draws nothing */
 #define live (*livep)
-    for (int i = 0; i < LIVEUI_BANDS; i++) live.band[i] = live.peak[i] = NAN;
+    if (livep)
+        for (int i = 0; i < LIVEUI_BANDS; i++) live.band[i] = live.peak[i] = NAN;
     int live_tick = 0;
-    static airui_t air;
+    airui_t *airp = heap_caps_calloc(1, sizeof(airui_t), MALLOC_CAP_SPIRAM);
+#define air (*airp)
+    if (daysp == NULL || airp == NULL) {
+        ESP_LOGE(TAG, "screen: no PSRAM for the pages' state; no screen");
+        vTaskDelete(NULL);
+    }
     uint32_t air_seen = 0, airv_seen = 0;
     const airui_day_t *airday = NULL;
     const airui_week_t *airweek = NULL;
@@ -860,11 +880,11 @@ static void screen_task(void *arg)
             } else if (at == SCR_AIR) {
                 airui_draw(c, &air);
             } else if (at == SCR_AIRDAY) {
-                static airui_day_t none_day;
-                airui_draw_day(c, airday ? airday : &none_day);
+                /* Before the first reading there is no view yet: the copy not
+                   published is as empty as one would be, and in PSRAM. */
+                airui_draw_day(c, airday ? airday : s_airday[0]);
             } else if (at == SCR_AIRWEEK) {
-                static airui_week_t none_week;
-                airui_draw_week(c, airweek ? airweek : &none_week);
+                airui_draw_week(c, airweek ? airweek : s_airweek[0]);
             } else if (at == SCR_DAYS) {
                 if (days_fb) memcpy(c->fb, days_fb, frame);
                 else { canvas_clear(c); daysui_draw(&page, &days); }
@@ -878,6 +898,8 @@ static void screen_task(void *arg)
     }
 }
 #undef live
+#undef days
+#undef air
 
 /*
  * The 2.8" module on the LCD FPC: its reset is EXIO0, made an output only
@@ -906,7 +928,7 @@ static void screen_start(void)
     }
     display_set_brightness(40);            /* no need for full glare, or its heat */
     s_live = heap_caps_calloc(LIVE_RING, sizeof(int16_t), MALLOC_CAP_SPIRAM);
-    s_screen_ok = true;          /* its task starts once the meter and its lock exist */
+    s_screen_ok = s_scrp != NULL;   /* its task starts once the meter and its lock exist */
 }
 
 static void expander_start(void)
@@ -2014,7 +2036,10 @@ static void days_line(void)
     ESP_LOGI(TAG, "days: %s", line);
 
     /* The same days for speaker's own Days page. */
-    static daysui_t d;
+    static daysui_t *dp;
+    if (!dp) dp = heap_caps_malloc(sizeof *dp, MALLOC_CAP_SPIRAM);
+    if (!dp || !s_days_scrp) return;
+#define d (*dp)
     memset(&d, 0, sizeof d);
     d.have_data = true;
     d.calibrated = n.calibrated;
@@ -2034,6 +2059,7 @@ static void days_line(void)
     s_days_scr = d;
     s_days_seq++;
     portEXIT_CRITICAL(&s_days_mux);
+#undef d
 }
 
 /* ---- the chime ------------------------------------------------------------ */
@@ -2328,6 +2354,30 @@ static void command(const char *text)
         settings_save();
         ESP_LOGI(TAG, "cal: the room is %.1f dBA: offset %.2f dB (was %.2f)", (double)nn, (double)off, (double)was);
         s_days_due = true;              /* the history, on the new calibration, straight away */
+        return;
+    }
+    if (word_is(text, "!thcal")) {
+        /* "!thcal T RH": the room is T C and RH % now, by a reference beside
+           the module (envo, a thermometer); the offsets make the last raw
+           reading read that. "!thcal off" puts them back to zero. */
+        float tt, hh;
+        if (strcmp(arg, "off") == 0) {
+            s_set.t_off = s_set.rh_off = 0.0f;
+        } else if (sscanf(arg, "%f %f", &tt, &hh) != 2 || !s_th_raw_ok) {
+            ESP_LOGW(TAG, "thcal: say \"!thcal T RH\" (the room's C and %%), or \"!thcal off\"%s",
+                     s_th_raw_ok ? "" : "; no AHT21 reading yet");
+            return;
+        } else if (fabsf(tt - s_th_raw_t) > 10.0f || fabsf(hh - s_th_raw_rh) > 40.0f || hh < 0.0f || hh > 100.0f) {
+            ESP_LOGW(TAG, "thcal: %.1f C %.0f %% is too far from the module's %.1f C %.0f %% to be the same air",
+                     (double)tt, (double)hh, (double)s_th_raw_t, (double)s_th_raw_rh);
+            return;
+        } else {
+            s_set.t_off = tt - s_th_raw_t;
+            s_set.rh_off = hh - s_th_raw_rh;
+        }
+        settings_save();
+        ESP_LOGI(TAG, "thcal: offsets %+.1f C, %+.1f %% (the module read %.1f C %.1f %%)", (double)s_set.t_off,
+                 (double)s_set.rh_off, (double)s_th_raw_t, (double)s_th_raw_rh);
         return;
     }
     if (word_is(text, "!chime") || word_is(text, "!ring")) {
@@ -2647,6 +2697,8 @@ static void usb_line(const char *line, size_t len)
  * never swallowed. A clip whose bytes stop for PLAY_GAP_MS is given up and the
  * reader goes back to lines; the player sees the same silence and stops.
  */
+static int s_usb_seen;
+
 static void usb_task(void *arg)
 {
     (void)arg;
@@ -2659,6 +2711,7 @@ static void usb_task(void *arg)
         if (s_rx_left > 0 && s_rx_left < want) want = s_rx_left;
         int n = usb_serial_jtag_read_bytes(in, (uint32_t)want, pdMS_TO_TICKS(100));
         uint32_t now_ms = ms_now();
+        if (n > 0 && s_usb_seen++ < 3) ESP_LOGI(TAG, "usb: %d byte(s) in", n);   /* DEBUG */
         if (n <= 0) {
             if (s_rx_left > 0 && now_ms - s_rx_last_ms > PLAY_GAP_MS) {
                 if (!s_rx_keep)
@@ -2712,7 +2765,9 @@ static void usb_start(void)
     }
     usb_serial_jtag_vfs_use_driver();
     xTaskCreate(usb_task, "usbline", 4096, NULL, 7, NULL);
-    ESP_LOGI(TAG, "usb: listening for the relay's commands and plays");
+    ESP_LOGI(TAG, "usb: listening for the relay's commands and plays; internal heap free %u, largest %u",
+             (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+             (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
 }
 
 /* ---- the control task ----------------------------------------------------- */
@@ -2900,6 +2955,18 @@ static void air_sample(int64_t now)
     if (s_envs == NULL) return;
     float t = 0, rh = 0;
     bool have_th = aht21_present() && aht21_read(&t, &rh);
+    if (have_th) {
+        /* The raw reading, for !thcal to work its offsets from; then the
+           offsets, so the page, the log and the ENS160's compensation all
+           take the corrected room. */
+        s_th_raw_t = t;
+        s_th_raw_rh = rh;
+        s_th_raw_ok = true;
+        t += s_set.t_off;
+        rh += s_set.rh_off;
+        if (rh < 0.0f) rh = 0.0f;
+        if (rh > 100.0f) rh = 100.0f;
+    }
     envs_reading_t r = { .t_us = now };
     if (have_th) {
         r.temp_c100 = (int16_t)lrintf(t * 100.0f);
@@ -3104,6 +3171,9 @@ static void control_task(void *arg)
 
 void speaker_app_main(void)
 {
+    /* The screen's shared state, in PSRAM before anything can reach for it. */
+    s_scrp = heap_caps_calloc(1, sizeof(noiseui_t), MALLOC_CAP_SPIRAM);
+    s_days_scrp = heap_caps_calloc(1, sizeof(daysui_t), MALLOC_CAP_SPIRAM);
     ESP_LOGI(TAG, "speaker: noise monitor, no screen");
 
     /* 1. The ring, dark, before anything else. */

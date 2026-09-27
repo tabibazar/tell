@@ -113,6 +113,7 @@ int32_t envs_quantise(envs_series_t s, int32_t v)
     case ENVS_ECO2: return trunc_to(v, 10);
     case ENVS_TEMP: return trunc_to(v, 10);         /* 0.01 C to 0.1 C */
     case ENVS_RH:   return trunc_to(v, 100);        /* 0.01 % to 1 % */
+    case ENVS_HPA:  return trunc_to(v, 10);         /* 0.1 hPa to 1 hPa */
     default:        return v;
     }
 }
@@ -133,6 +134,7 @@ void envs_init(envs_t *e)
     e->state[ENVS_ECO2] = ENVS_WAIT;
     e->state[ENVS_TEMP] = ENVS_OK;
     e->state[ENVS_RH] = ENVS_OK;
+    e->state[ENVS_HPA] = ENVS_OK;
 }
 
 /*
@@ -186,6 +188,10 @@ static bool reading_value(const envs_reading_t *r, envs_series_t s, int32_t *out
         if (!(r->have & ENV_HAVE_RH)) return false;
         *out = r->rh_c100;
         return true;
+    case ENVS_HPA:
+        if (!(r->have & ENV_HAVE_HPA)) return false;
+        *out = r->hpa_x10;
+        return true;
     default:
         return false;
     }
@@ -231,6 +237,7 @@ static int32_t min_move(envs_series_t s)
     case ENVS_ECO2: return 50;
     case ENVS_TEMP: return 50;                      /* 0.01 C */
     case ENVS_RH:   return 300;                     /* 0.01 % */
+    case ENVS_HPA:  return 5;                       /* 0.5 hPa in half an hour: weather moving */
     default:        return 0;
     }
 }
@@ -389,8 +396,8 @@ bool envs_fold5(const envs_t *e, int64_t from_us, int64_t to_us, env_sample_t *o
     memset(out, 0, sizeof *out);
     out->minute = minute;
 
-    int64_t temp_sum = 0, rh_sum = 0, voc_sum = 0, co2_sum = 0;
-    int temp_n = 0, rh_n = 0, gas_n = 0;
+    int64_t temp_sum = 0, rh_sum = 0, voc_sum = 0, co2_sum = 0, hpa_sum = 0;
+    int temp_n = 0, rh_n = 0, gas_n = 0, hpa_n = 0;
     bool any_gas = false;
     uint8_t last_validity = 0, aqi = 0;
     uint16_t voc_max = 0;
@@ -399,6 +406,7 @@ bool envs_fold5(const envs_t *e, int64_t from_us, int64_t to_us, env_sample_t *o
         if (r->t_us < from_us || r->t_us >= to_us) continue;
         if (r->have & ENV_HAVE_TEMP) { temp_sum += r->temp_c100; temp_n++; }
         if (r->have & ENV_HAVE_RH)   { rh_sum += r->rh_c100; rh_n++; }
+        if (r->have & ENV_HAVE_HPA)  { hpa_sum += r->hpa_x10; hpa_n++; }
         if (!(r->have & ENV_HAVE_GAS)) continue;
         any_gas = true;
         last_validity = r->validity;
@@ -428,5 +436,11 @@ bool envs_fold5(const envs_t *e, int64_t from_us, int64_t to_us, env_sample_t *o
     } else if (any_gas) {
         out->flags |= ENV_GAS_FLAGS(last_validity);
     }
-    return temp_n || rh_n || any_gas;
+    /* hpa_x10 is the VOC peak's slot when there is gas; with none -- a
+       barometer and no ENS160 -- it goes back to being the pressure. */
+    if (!gas_n && hpa_n) {
+        out->hpa_x10 = (uint16_t)mean_of(hpa_sum, hpa_n);
+        out->flags |= ENV_HAVE_HPA;
+    }
+    return temp_n || rh_n || hpa_n || any_gas;
 }

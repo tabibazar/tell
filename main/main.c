@@ -49,6 +49,8 @@
    envui draws them. */
 #include "envstate.h"
 #include "envui.h"
+#include "driver/usb_serial_jtag.h"
+#include "driver/usb_serial_jtag_vfs.h"
 #endif
 #if CONFIG_SCREEN_BOARD_AUDIO_S3
 /* speaker has no screen and runs her own app; see the top of app_main. */
@@ -1386,6 +1388,7 @@ static page_t home_page(void)
     /* envo is an air monitor: VOC is what she is for, so it is home, and
        waking the screen always opens it. */
     if (s_pages.available & PAGE_BIT(PAGE_ROOM_VOC)) return PAGE_ROOM_VOC;
+    if (s_pages.available & PAGE_BIT(PAGE_ROOM_TEMP)) return PAGE_ROOM_TEMP;
 #endif
     /* watch comes home to her face, ahead of the sand she also carries. */
     if (s_pages.available & PAGE_BIT(PAGE_FACE)) return PAGE_FACE;
@@ -1453,6 +1456,65 @@ static void on_time(uint32_t secs)
     s_drawn_second = -1;
     s_rtc_pending = true;
 }
+
+#if CONFIG_SCREEN_BOARD_TOUCH_LCD_147
+static void on_message(const char *text, size_t len);   /* below */
+
+/*
+ * envo's link to a Mac, over her USB serial since she has no BLE: what BLE
+ * carries, as lines. "!sync N" is the time, N seconds since local midnight
+ * (BLE's time characteristic); the lines after it up to a lone "." are one
+ * message, handed to on_message as a BLE write would be -- so tools/usb-tell.py
+ * can send push-clock.sh's "!clock" block unchanged. ESP_LOG keeps working
+ * through the driver, which drops output after 50 ms with no host reading.
+ */
+static void envo_usb_task(void *arg)
+{
+    (void)arg;
+    static char line[160], msg[512];
+    size_t len = 0, mlen = 0;
+    bool in_msg = false;
+    uint8_t in[64];
+    for (;;) {
+        int n = usb_serial_jtag_read_bytes(in, sizeof in, pdMS_TO_TICKS(1000));
+        for (int i = 0; i < n; i++) {
+            if (in[i] == '\r') continue;
+            if (in[i] != '\n') {
+                if (len < sizeof line - 1) line[len++] = (char)in[i];
+                continue;
+            }
+            line[len] = '\0';
+            unsigned long secs;
+            if (!in_msg && sscanf(line, "!sync %lu", &secs) == 1 && secs < 86400) {
+                on_time((uint32_t)secs);
+                ESP_LOGI(TAG, "usb: clock set, %lu s past midnight", secs);
+                in_msg = true;
+                mlen = 0;
+            } else if (in_msg && strcmp(line, ".") == 0) {
+                if (mlen > 0) on_message(msg, mlen);
+                in_msg = false;
+            } else if (in_msg && mlen + len + 1 < sizeof msg) {
+                if (mlen) msg[mlen++] = '\n';
+                memcpy(msg + mlen, line, len);
+                mlen += len;
+            }
+            len = 0;
+        }
+    }
+}
+
+static void envo_usb_start(void)
+{
+    usb_serial_jtag_driver_config_t cfg = { .rx_buffer_size = 1024, .tx_buffer_size = 1024 };
+    if (usb_serial_jtag_driver_install(&cfg) != ESP_OK) {
+        ESP_LOGW(TAG, "usb: serial driver not installed; no clock from a Mac");
+        return;
+    }
+    usb_serial_jtag_vfs_use_driver();
+    xTaskCreate(envo_usb_task, "usbline", 3072, NULL, 3, NULL);
+    ESP_LOGI(TAG, "usb: listening for a Mac's clock");
+}
+#endif
 
 /* The board's idea of the time right now. */
 static uint32_t now_secs(int64_t now)
@@ -2200,7 +2262,8 @@ static void air_feed(const env_sample_t *rec, int64_t now)
         .temp_c100 = rec->temp_c100, .rh_c100 = rec->rh_c100,
         .tvoc = rec->tvoc_ppb, .eco2 = rec->eco2_ppm, .aqi = rec->aqi,
         .validity = (uint8_t)ENV_GAS_VALIDITY(rec->flags),
-        .have = (uint8_t)(rec->flags & (ENV_HAVE_TEMP | ENV_HAVE_RH | ENV_HAVE_GAS)),
+        .hpa_x10 = rec->hpa_x10,
+        .have = (uint8_t)(rec->flags & (ENV_HAVE_TEMP | ENV_HAVE_RH | ENV_HAVE_HPA | ENV_HAVE_GAS)),
     };
     envs_push(&s_air, &r);
     if (r.have & ENV_HAVE_GAS) {
@@ -2209,6 +2272,7 @@ static void air_feed(const env_sample_t *rec, int64_t now)
     }
     if (r.have & ENV_HAVE_TEMP) s_air_seen_us[ENVS_TEMP] = now;
     if (r.have & ENV_HAVE_RH)   s_air_seen_us[ENVS_RH] = now;
+    if (r.have & ENV_HAVE_HPA)  s_air_seen_us[ENVS_HPA] = now;
     for (int s = 0; s < ENVS_N; s++) envs_update(&s_air, (envs_series_t)s);
     s_drawn_page = PAGE_COUNT;
 
@@ -2223,6 +2287,8 @@ static void air_feed(const env_sample_t *rec, int64_t now)
         if (s == ENVS_TEMP || s == ENVS_RH)
             snprintf(say[s], sizeof say[s], "%.2f%s %s", (double)v / 100.0,
                      s == ENVS_TEMP ? " C" : "%", trend);
+        else if (s == ENVS_HPA)
+            snprintf(say[s], sizeof say[s], "%.1f hPa %s", (double)v / 10.0, trend);
         else
             snprintf(say[s], sizeof say[s], "%ld %s %s %s", (long)v,
                      s == ENVS_VOC ? "ppb" : "ppm", air_state_name(s_air.state[s]), trend);
@@ -2233,8 +2299,8 @@ static void air_feed(const env_sample_t *rec, int64_t now)
         ESP_LOGI(TAG, "air: gas %s, %d min so far; temp %s; rh %s",
                  error ? "ERROR" : "warming up", minutes, say[ENVS_TEMP], say[ENVS_RH]);
     else
-        ESP_LOGI(TAG, "air: VOC %s; eCO2 %s; temp %s; rh %s",
-                 say[ENVS_VOC], say[ENVS_ECO2], say[ENVS_TEMP], say[ENVS_RH]);
+        ESP_LOGI(TAG, "air: VOC %s; eCO2 %s; temp %s; rh %s; pressure %s",
+                 say[ENVS_VOC], say[ENVS_ECO2], say[ENVS_TEMP], say[ENVS_RH], say[ENVS_HPA]);
 }
 
 /*
@@ -2365,6 +2431,8 @@ static void air_cache_add(const env_sample_t *r, bool live)
         }
         if (r->flags & ENV_HAVE_TEMP) air_slot_add(ENVS_TEMP, i, r->temp_c100);
         if (r->flags & ENV_HAVE_RH)   air_slot_add(ENVS_RH, i, r->rh_c100);
+        /* With ENV_HAVE_HPA the field is the pressure; without it, a VOC peak. */
+        if (r->flags & ENV_HAVE_HPA)  air_slot_add(ENVS_HPA, i, r->hpa_x10);
     }
 
     uint32_t day = r->minute / 1440u;
@@ -2519,7 +2587,7 @@ static void air_week_build(void)
  * pages.h), so envo pages through this list rather than pages_advance.
  */
 static const page_t s_air_order[] = {
-    PAGE_ROOM_VOC, PAGE_ROOM_CO2, PAGE_ROOM_TEMP, PAGE_ROOM_RH, PAGE_WEEK, PAGE_CLOCK,
+    PAGE_ROOM_VOC, PAGE_ROOM_CO2, PAGE_ROOM_TEMP, PAGE_ROOM_RH, PAGE_ROOM_HPA, PAGE_WEEK, PAGE_CLOCK,
 #ifdef ENVO_DEBUG_TEMPS
     PAGE_TEMPS,             /* die against crystal: a debug build's page */
 #endif
@@ -2538,6 +2606,7 @@ static int air_reading_of(page_t p)
     case PAGE_ROOM_CO2:  return ENVS_ECO2;
     case PAGE_ROOM_TEMP: return ENVS_TEMP;
     case PAGE_ROOM_RH:   return ENVS_RH;
+    case PAGE_ROOM_HPA:  return ENVS_HPA;
     default:             return -1;
     }
 }
@@ -2764,19 +2833,22 @@ static void env_sdlog(int64_t now)
     int64_t last_us = s_sdlog_last_us;
     if (last_us != 0 && now - last_us < SDLOG_EVERY_US) return;
 
-    ds3231_date_t date;
-    uint32_t sod;
-    if (!ds3231_read_date(&date) || date.year < 2000 || !ds3231_read(&sod))
-        return;                       /* no trustworthy clock yet; try again */
-    s_sdlog_last_us = now;            /* attempt at most once per 30 s */
+    s_sdlog_last_us = now;            /* at most once per 30 s */
 
     env_sample_t rec;
     memset(&rec, 0, sizeof rec);
     if (!env_read_averaged(&rec)) return;
 
     /* The same reading feeds the pages, whether or not there is a card to
-       write it to: one sensor read every 30 s serves both. */
+       write it to or a clock to date it by: one sensor read every 30 s serves
+       both. (Until 2026-09-26 the clock was asked first, and envo without her
+       DS3231 showed NO READING on every page.) */
     air_feed(&rec, now);
+
+    ds3231_date_t date;
+    uint32_t sod;
+    if (!ds3231_read_date(&date) || date.year < 2000 || !ds3231_read(&sod))
+        return;                       /* no trustworthy clock: the pages only */
 
     /* The columns, and what goes empty when, are envstore.h's -- see
        envcsv_line, where they are tested against the header. */
@@ -3947,14 +4019,22 @@ void app_main(void)
        log's die_c column still carries it. */
     available &= PAGE_BIT(PAGE_ROOM_VOC) | PAGE_BIT(PAGE_ROOM_CO2)
                | PAGE_BIT(PAGE_ROOM_TEMP) | PAGE_BIT(PAGE_ROOM_RH)
+               | PAGE_BIT(PAGE_ROOM_HPA)
                | PAGE_BIT(PAGE_WEEK) | PAGE_BIT(PAGE_CLOCK)
 #ifdef ENVO_DEBUG_TEMPS
                | PAGE_BIT(PAGE_TEMPS)
 #endif
                ;
-    /* A gas page for a gas sensor that did not answer would be an empty room,
-       as elsewhere; the clock is then home. */
-    if (!s_env_gas) available &= ~(PAGE_BIT(PAGE_ROOM_VOC) | PAGE_BIT(PAGE_ROOM_CO2));
+    /* Each page only for a sensor that answered at boot: a page for one that
+       did not would be an empty room. The gas pages and the week (which is
+       the gas's) need the ENS160; humidity an AHT21 or a BME280 proper (a
+       BMP280, id 0x58, has none); pressure any BMx280. With the gas gone,
+       temperature is home. (2026-09-26: envo is down to a BMP280.) */
+    if (!s_env_gas)
+        available &= ~(PAGE_BIT(PAGE_ROOM_VOC) | PAGE_BIT(PAGE_ROOM_CO2) | PAGE_BIT(PAGE_WEEK));
+    if (!aht21_present() && !(bme280_present() && bme280_id() != 0x58))
+        available &= ~PAGE_BIT(PAGE_ROOM_RH);
+    if (!bme280_present()) available &= ~PAGE_BIT(PAGE_ROOM_HPA);
     /* No menu, so no MENU tab: a swipe pages and a tap opens the full chart. */
     vw_set_menu_tab(false);
 #else
@@ -4092,17 +4172,18 @@ void app_main(void)
 #endif
 
 #if CONFIG_SCREEN_BOARD_TOUCH_LCD_147
-    /* envo logs in the field with no Mac: the DS3231 is its only clock, and a
-       radio would both hold the chip awake (no light sleep with BLE up) and
-       warm the sensors. So no BLE -- but NVS still has to come up, which on
-       the other boards ble_uart_start does. */
+    /* envo logs in the field with no Mac: a radio would both hold the chip
+       awake (no light sleep with BLE up) and warm the sensors. So no BLE --
+       but NVS still has to come up, which on the other boards ble_uart_start
+       does. The Mac reaches her over USB instead (envo_usb_start): since
+       2026-09-26 she has no DS3231, and her clock comes from there. */
     {
         esp_err_t e = nvs_flash_init();
         if (e == ESP_ERR_NVS_NO_FREE_PAGES || e == ESP_ERR_NVS_NEW_VERSION_FOUND) {
             nvs_flash_erase();
             nvs_flash_init();
         }
-        (void)on_message;
+        envo_usb_start();
     }
 #else
     if (ble_uart_start(on_message, on_time) != ESP_OK) {
@@ -4714,6 +4795,7 @@ void app_main(void)
                 case PAGE_ROOM_CO2:
                 case PAGE_ROOM_TEMP:
                 case PAGE_ROOM_RH:
+                case PAGE_ROOM_HPA:
                 case PAGE_WEEK:     air_draw(c, now); break;
 #endif
 #if CONFIG_SCREEN_HAVE_CAMERA

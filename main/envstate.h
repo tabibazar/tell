@@ -13,11 +13,12 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-typedef enum { ENVS_VOC = 0, ENVS_ECO2, ENVS_TEMP, ENVS_RH, ENVS_N } envs_series_t;
+typedef enum { ENVS_VOC = 0, ENVS_ECO2, ENVS_TEMP, ENVS_RH, ENVS_HPA, ENVS_N } envs_series_t;
 typedef enum { ENVS_OK = 0, ENVS_FAIR, ENVS_POOR, ENVS_WAIT } envs_state_t;   /* WAIT: gas warming up or invalid */
 typedef enum { ENVS_UNKNOWN = 0, ENVS_STEADY, ENVS_RISING, ENVS_FALLING } envs_trend_t;
 
-/* Values are integers in the series' own unit: VOC ppb, eCO2 ppm, TEMP 0.01 C, RH 0.01 %. */
+/* Values are integers in the series' own unit: VOC ppb, eCO2 ppm, TEMP 0.01 C, RH 0.01 %,
+   HPA 0.1 hPa (sea level, as the flash record keeps it). */
 typedef struct { int32_t fair, poor, top, floor; } envs_limits_t;
 const envs_limits_t *envs_limits(envs_series_t s);        /* NULL for TEMP/RH */
 envs_state_t envs_classify(envs_series_t s, int32_t v, envs_state_t prev);
@@ -28,7 +29,8 @@ typedef struct {
     int64_t t_us;
     int16_t temp_c100; uint16_t rh_c100;
     uint16_t tvoc, eco2; uint8_t aqi, validity;             /* validity: ENS160 0..3 */
-    uint8_t have;                                           /* ENV_HAVE_TEMP|RH|GAS */
+    uint16_t hpa_x10;                                       /* 0.1 hPa, with ENV_HAVE_HPA */
+    uint8_t have;                                           /* ENV_HAVE_TEMP|RH|HPA|GAS */
 } envs_reading_t;
 
 typedef struct {

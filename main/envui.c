@@ -178,6 +178,9 @@ static const meta_t s_meta[ENVS_N] = {
     [ENVS_ECO2] = { "eCO2 est", "ppm",  "eCO2 24H",     "ppm, est.", 400,  1500, { 0, 0 } },
     [ENVS_TEMP] = { "TEMP",     DEG "C", "TEMP 24H",    DEG "C",     1600, 3000, { 2000, 2500 } },
     [ENVS_RH]   = { "HUMIDITY", "%",    "HUMIDITY 24H", "%",         2000, 8000, { 3000, 6000 } },
+    /* Sea-level pressure on a fixed 970..1040 hPa, lines at 1000 and the
+       standard 1013: a storm reaches the bottom, a settled high the top. */
+    [ENVS_HPA]  = { "PRESSURE", "hPa",  "PRESSURE 24H", "hPa",       9700, 10400, { 10000, 10130 } },
 };
 
 /* Through int, because an enum with no negative member may be unsigned and a
@@ -217,6 +220,7 @@ static int64_t shown(envs_series_t s, int32_t v)
     case ENVS_ECO2: q = 10; break;
     case ENVS_TEMP: q = 10; break;           /* 0.1 C, in 0.01 C */
     case ENVS_RH:   q = 100; break;          /* 1 %, in 0.01 % */
+    case ENVS_HPA:  q = 10; break;           /* 1 hPa, in 0.1 hPa */
     default:        q = 1; break;
     }
     return (int64_t)v - (int64_t)v % q;      /* towards zero */
@@ -230,6 +234,8 @@ static void format_value(envs_series_t s, int32_t v, char *out, size_t size)
         snprintf(out, size, "%s%lld.%lld", q < 0 ? "-" : "", a / 100, a % 100 / 10);
     } else if (s == ENVS_RH) {
         snprintf(out, size, "%lld", q / 100);
+    } else if (s == ENVS_HPA) {
+        snprintf(out, size, "%lld", q / 10);
     } else {
         snprintf(out, size, "%lld", q);
     }
@@ -789,7 +795,7 @@ static void key(canvas_t *c, const envui_series_t *s, const plot_t *p)
     }
     const meta_t *m = &s_meta[s->series];
     for (int k = 0; k < 2; k++) {
-        snprintf(b, sizeof b, "%ld", (long)(m->ref[k] / 100));
+        snprintf(b, sizeof b, "%ld", (long)(m->ref[k] / (s->series == ENVS_HPA ? 10 : 100)));
         aafont_draw(c, f, D_KEY_X, yline(p, s->series, m->ref[k]) - half, b, COL_GREY, AAFONT_LEFT);
     }
 }

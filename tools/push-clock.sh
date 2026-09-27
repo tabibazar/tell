@@ -36,8 +36,26 @@ TZ_NAME=$(date '+%Z')
 
 WX=$(./tools/weather.py)
 
+# envo has no BLE (she logs in the field, and a radio would warm her
+# sensors), so her clock goes over USB instead: tools/usb-tell.py sends the
+# time and this same block, found by her MAC. It needs a python3 with
+# pyserial; ESP-IDF's has it.
+send() {
+    if [ "$DEVICE" = "envo" ]; then
+        for PY in python3 /usr/bin/python3 "$HOME/.espressif/python_env/idf5.5_py3.13_env/bin/python"; do
+            if "$PY" -c 'import serial' 2>/dev/null; then
+                "$PY" tools/usb-tell.py --device "$DEVICE" >/dev/null
+                return
+            fi
+        done
+        echo "push-clock: no python3 with pyserial for envo's USB" >&2
+        return 1
+    fi
+    ./tools/tell-locked.sh --device "$DEVICE"
+}
+
 printf '!clock\ndate %s\nymd %s\nutc %s\ntz %s\nwx %s\n' "$DATE" "$YMD" "$UTC_OFF" "$TZ_NAME" "$WX" \
-    | ./tools/tell-locked.sh --device "$DEVICE"
+    | send
 say "clock: $DATE | $WX"
 
 # The multi-day forecast, but only to the weather dashboard (envio). lilly is

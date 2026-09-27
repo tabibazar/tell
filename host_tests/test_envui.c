@@ -160,7 +160,8 @@ static const envui_series_t *series(envs_series_t which, int32_t now, envs_state
     float best = -1.0f;
     for (int i = 0; i < N; i++) {
         float v = which == ENVS_VOC ? s_voc[i] : which == ENVS_ECO2 ? s_co2[i]
-                : which == ENVS_TEMP ? s_tc[i] * 100.0f : s_rh[i] * 100.0f;
+                : which == ENVS_TEMP ? s_tc[i] * 100.0f : which == ENVS_RH ? s_rh[i] * 100.0f
+                : 10080.0f + 60.0f * sinf((float)i / 40.0f) - (float)i * 0.4f;   /* a falling glass */
         s->slot[i] = (int32_t)lroundf(v);
         s->valid[i] = s_ok[i];
         if ((which == ENVS_VOC || which == ENVS_ECO2) && s_ok[i] && v > best) {
@@ -382,6 +383,12 @@ static void test_reading_pages(void)
        rather than crowd it. STEADY has its flat arrow over it, as RISING and
        FALLING have theirs. */
     make_day(0);
+    /* Pressure, envo's barometer page: a falling glass, and its 24 hours. */
+    make_day(0);
+    fb = draw(DRAW_READING, series(ENVS_HPA, 9935, ENVS_OK, ENVS_FALLING), 3, "hpa");
+    expect("the pressure page draws its number", ink_rows(fb, 16, 24, 300, 96, &top, &bottom) > 0);
+    draw(DRAW_DETAIL, series(ENVS_HPA, 9935, ENVS_OK, ENVS_FALLING), 3, "hpa_24h");
+
     fb = draw(DRAW_READING, series(ENVS_TEMP, 2687, ENVS_OK, ENVS_STEADY), 2, "temp_steady");
     {
         int nt, nb, right = -1, left = W, arrow = 0;

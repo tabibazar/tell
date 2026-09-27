@@ -28,7 +28,7 @@ port, so anything else that wants speaker goes through it: a Unix socket at
 ~/.tell/speaker.sock takes one request per connection --
 
     PLAY <nbytes> 16000 <normal|test>   and then the PCM (s16le, mono)
-    CMD <!cal NN | !chime on|off | !ring on|off | !night HH-HH>
+    CMD <!cal NN | !chime on|off | !ring on|off | !night HH-HH | !thcal T RH|off>
     STATUS
 
 -- and answers in lines ending with "END". Jobs run one at a time, in the
@@ -406,8 +406,12 @@ def check_command(text):
         m = re.match(r"^(\d{1,2})-(\d{1,2})$", args[0]) if len(args) == 1 else None
         if m is None or int(m.group(1)) > 23 or int(m.group(2)) > 23:
             raise ValueError('say "!night HH-HH", e.g. !night 22-07')
+    elif word == "!thcal":
+        num = r"^-?\d{1,3}(?:\.\d+)?$"
+        if not (args == ["off"] or (len(args) == 2 and all(re.match(num, a) for a in args))):
+            raise ValueError('say "!thcal T RH" (the room\'s C and %) or "!thcal off"')
     else:
-        raise ValueError("%s is not carried (only !cal, !chime, !ring, !night)" % word[:20])
+        raise ValueError("%s is not carried (only !cal, !chime, !ring, !night, !thcal)" % word[:20])
     return " ".join(parts)
 
 
@@ -1071,15 +1075,17 @@ class Relay:
             word = first_word(msg)
             if word == "noise" and parse_noise(line) is not None:
                 self.seen["noise"] = (msg, now)
+            elif word == "air" and "|" in msg:
+                self.seen["air"] = (msg, now)   # the air module's reading, for STATUS
             elif word == "days":
                 got = parse_days(msg)
                 if got is not None:
                     self.seen["days"] = (msg, now)
                     if got[1]:
                         self.days.set(days_commands(*got))
-            elif word in ("cal", "play", "status"):
-                if word == "cal":
-                    self.seen["cal"] = (msg, now)
+            elif word in ("cal", "thcal", "play", "status"):
+                if word in ("cal", "thcal"):
+                    self.seen[word] = (msg, now)
                 if word == "status":
                     if not self.status or now - self.status[-1][1] > 2.0:
                         self.status = []
@@ -1148,7 +1154,7 @@ class Relay:
         out.append("jobs: %s, %d waiting" % (
             "idle" if j is None else "%s %s (%d of %d bytes)" % (j.kind, j.state, j.sent, len(j.data)),
             len(self.jobs.queue)))
-        for key in ("noise", "days", "cal"):
+        for key in ("noise", "air", "days", "cal", "thcal"):
             if key in self.seen:
                 msg, at = self.seen[key]
                 out.append("%d %s" % (now - at, msg))
