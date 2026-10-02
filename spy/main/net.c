@@ -184,7 +184,9 @@ bool net_up(void)
         if (i % 5 == 0) ESP_LOGI(TAG, "waiting to register (CSQ %d, %s)", rssi, out);
         vTaskDelay(pdMS_TO_TICKS(1000));
     }
-    time_from_modem();
+    /* Only before SNTP: a redial must not step a good clock to the modem's
+       whole seconds -- a step back over 08:00 would send hour 7 twice. */
+    if (!s_time) time_from_modem();
 
     if (esp_modem_set_mode(s_dce, ESP_MODEM_MODE_DATA) != ESP_OK) {
         ESP_LOGE(TAG, "could not enter data mode");

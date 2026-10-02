@@ -229,7 +229,7 @@ static void minute_frame(const struct tm *lt)
 
 static void cam_task(void *arg)
 {
-    int last_min = -1;
+    long last_min = -1;
     for (;;) {
         cam_req_t req;
         if (xQueueReceive(s_cam_q, &req, pdMS_TO_TICKS(500)) == pdTRUE) {
@@ -256,8 +256,10 @@ static void cam_task(void *arg)
         }
         struct tm lt;
         if (!local_now(&lt)) continue;
-        int stamp = lt.tm_yday * 1440 + lt.tm_hour * 60 + lt.tm_min;
-        if (stamp == last_min) continue;
+        /* Minutes since 1970, acted on only going forward: a clock stepped
+           back across a minute must not take a frame or send a clip twice. */
+        long stamp = (long)(time(NULL) / 60);
+        if (stamp <= last_min) continue;
         last_min = stamp;
         if (lt.tm_mday != s_today_mday) {
             s_today_mday = lt.tm_mday;
