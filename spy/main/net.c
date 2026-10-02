@@ -6,6 +6,7 @@
 #include <time.h>
 
 #include "driver/gpio.h"
+#include "driver/uart.h"
 #include "esp_event.h"
 #include "esp_log.h"
 #include "esp_modem_api.h"
@@ -20,6 +21,8 @@
 #define MODEM_RX   17
 #define MODEM_TX   18
 #define APN        "mobile.bm"
+#define FAST_BAUD  921600
+#define FAST_BAUD_STR "921600"
 
 static const char *TAG = "net";
 static esp_modem_dce_t *s_dce;
@@ -119,19 +122,53 @@ bool net_up(void)
     s_dce = esp_modem_new_dev(ESP_MODEM_DCE_SIM7600, &dte, &dce, s_netif);
     if (!s_dce) { ESP_LOGE(TAG, "no modem device"); return false; }
 
-    /* A modem left in data mode by a reset of ours answers nothing to AT until
-       it is brought back to command mode; set_mode tries the escape. */
+    /* The modem may still be at the fast rate from before a reset of ours
+       (it keeps power through one when the "4G" DIP is on), and still in a
+       PPP call: then it answers nothing to AT until it sees "+++" with a
+       second of silence either side. esp_modem sends that escape only once
+       and at whatever rate it is at, so try both rates, then the escape at
+       both rates, and again. */
     bool synced = false;
-    for (int i = 0; i < 20 && !synced; i++) {
-        synced = esp_modem_sync(s_dce) == ESP_OK;
-        if (!synced) {
-            if (i == 3) esp_modem_set_mode(s_dce, ESP_MODEM_MODE_COMMAND);
-            vTaskDelay(pdMS_TO_TICKS(1000));
+    int rate = 115200;
+    for (int round = 0; round < 4 && !synced; round++) {
+        static const int rates[2] = { 115200, FAST_BAUD };
+        for (int k = 0; k < 2 && !synced; k++) {
+            rate = rates[k];
+            uart_set_baudrate(UART_NUM_1, rate);
+            synced = esp_modem_sync(s_dce) == ESP_OK || esp_modem_sync(s_dce) == ESP_OK;
+        }
+        for (int k = 0; k < 2 && !synced; k++) {
+            rate = rates[k];
+            uart_set_baudrate(UART_NUM_1, rate);
+            vTaskDelay(pdMS_TO_TICKS(1100));
+            uart_write_bytes(UART_NUM_1, "+++", 3);
+            vTaskDelay(pdMS_TO_TICKS(1100));
+            synced = esp_modem_sync(s_dce) == ESP_OK || esp_modem_sync(s_dce) == ESP_OK;
+            if (synced) ESP_LOGI(TAG, "modem was still in a call at %d baud", rate);
         }
     }
     if (!synced) { ESP_LOGE(TAG, "modem does not answer AT"); return false; }
+    /* 115200 moves ~10 KB/s, so a 270 KB photo took 40 s. AT+IPR (not
+       IPREX) is the A76xx family's temporary rate: it is forgotten when the
+       modem loses power, so nothing here can strand a later boot. */
+    if (rate != FAST_BAUD) {
+        char out[32] = "";
+        if (esp_modem_at(s_dce, "AT+IPR=" FAST_BAUD_STR, out, 1000) == ESP_OK) {
+            uart_set_baudrate(UART_NUM_1, FAST_BAUD);
+            vTaskDelay(pdMS_TO_TICKS(100));
+            if (esp_modem_sync(s_dce) == ESP_OK && esp_modem_sync(s_dce) == ESP_OK) {
+                rate = FAST_BAUD;
+            } else {
+                ESP_LOGW(TAG, "no answer at %d; back to 115200", FAST_BAUD);
+                uart_set_baudrate(UART_NUM_1, 115200);
+                esp_modem_at(s_dce, "AT+IPR=115200", out, 1000);
+            }
+        }
+    }
+    ESP_LOGI(TAG, "modem at %d baud", rate);
     char echo[32];
     esp_modem_at(s_dce, "ATE0", echo, 1000);
+    esp_modem_at(s_dce, "ATH", echo, 3000);     /* drop a call left over from before */
 
     /* Registered? Wait for it rather than dial into nothing. */
     for (int i = 0; i < 60; i++) {

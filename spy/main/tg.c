@@ -5,6 +5,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <time.h>
 
 #include "cJSON.h"
 #include "esp_crt_bundle.h"
@@ -17,7 +18,16 @@ static const char *TAG = "tg";
 #define BOUNDARY "spyFormBoundary7MA4YWxkTrZu0gW"
 #define RESP_CAP (24 * 1024)
 
-bool tg_configured(void) { return SPY_TG_TOKEN[0] && SPY_TG_CHAT[0]; }
+bool tg_configured(void) { return SPY_TG_TOKEN[0] != 0 && SPY_TG_CHAT[0] != 0; }
+
+/* No buzzing phone between 21:00 and 07:00: messages still arrive, silently. */
+static bool quiet_hours(void)
+{
+    time_t now = time(NULL);
+    struct tm lt;
+    localtime_r(&now, &lt);
+    return lt.tm_year > 100 && (lt.tm_hour >= 21 || lt.tm_hour < 7);
+}
 
 static esp_http_client_handle_t client_for(const char *method, int timeout_ms)
 {
@@ -74,6 +84,7 @@ bool tg_send_text(const char *text)
     cJSON *o = cJSON_CreateObject();
     cJSON_AddStringToObject(o, "chat_id", SPY_TG_CHAT);
     cJSON_AddStringToObject(o, "text", text);
+    if (quiet_hours()) cJSON_AddBoolToObject(o, "disable_notification", true);
     char *json = cJSON_PrintUnformatted(o);
     cJSON_Delete(o);
     bool ok = json && post_json("sendMessage", json, NULL, 0, 30000);
@@ -106,6 +117,7 @@ bool tg_send_file(const char *method, const char *field, const char *path,
     if (!head || !chunk) { free(head); free(chunk); fclose(f); return false; }
     int n = part(head, 2048, "chat_id", SPY_TG_CHAT);
     if (caption && caption[0]) n += part(head + n, 2048 - n, "caption", caption);
+    if (quiet_hours()) n += part(head + n, 2048 - n, "disable_notification", "true");
     while (extra && *extra) {                  /* "name=value\n" lines */
         const char *eq = strchr(extra, '='), *nl = strchr(extra, '\n');
         if (!eq) break;
