@@ -118,7 +118,7 @@ static void settings_save_flip(bool flip)
 /* MAX17048 on the camera's I2C bus (GPIO15/16), so only from the cam task,
    between shots. Its pull-ups are on the camera rail: with the CAM DIP off
    there is no reading. */
-static bool battery(float *volts, float *pct)
+static bool battery(float *volts, float *pct, float *rate)
 {
     i2c_master_bus_config_t bc = {
         .i2c_port = 0, .sda_io_num = 15, .scl_io_num = 16,
@@ -136,6 +136,10 @@ static bool battery(float *volts, float *pct)
             if (i2c_master_transmit_receive(dev, &reg, 1, s, 2, 100) == ESP_OK) {
                 *volts = ((v[0] << 8) | v[1]) * 78.125e-6f;
                 *pct = s[0] + s[1] / 256.0f;
+                uint8_t c[2];
+                reg = 0x16;                         /* CRATE: 0.208 %/h a bit, signed */
+                *rate = i2c_master_transmit_receive(dev, &reg, 1, c, 2, 100) == ESP_OK
+                        ? (int16_t)((c[0] << 8) | c[1]) * 0.208f : 0;
                 if (*pct > 100) *pct = 100;      /* uncalibrated gauges overshoot */
                 ok = true;
             }
@@ -168,12 +172,15 @@ static void status_text(char *out, size_t cap)
     int64_t up = esp_timer_get_time() / 1000000;
     uint32_t fr = 0, tot = 0;
     bool card = store_space(&fr, &tot);
-    float v = 0, pct = 0;
-    bool bat = battery(&v, &pct);
-    char batt[48];
+    float v = 0, pct = 0, rate = 0;
+    bool bat = battery(&v, &pct, &rate);
+    char batt[80];
+    /* The rate tells a cell from none: with no cell (or the holder's switch
+       off) the gauge sees the charger's ~4.2 V and nothing moves. */
     if (!bat) snprintf(batt, sizeof batt, "no reading");
     else if (v < 2.5f) snprintf(batt, sizeof batt, "none fitted (on USB)");
-    else snprintf(batt, sizeof batt, "%.0f%% (%.2f V)", pct, v);
+    else snprintf(batt, sizeof batt, "%.0f%% (%.2f V), %s %.1f%%/h", pct, v,
+                  rate > 0.5f ? "charging" : rate < -0.5f ? "draining" : "steady", rate < 0 ? -rate : rate);
     int n = snprintf(out, cap,
         "spy, %s\n"
         "4G signal %d/31, up %lldh%02lldm\n"
