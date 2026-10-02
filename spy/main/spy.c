@@ -62,7 +62,7 @@ typedef struct {
 
 static QueueHandle_t s_cam_q, s_work_q, s_net_q;
 static int s_frames_today, s_clips_today, s_today_mday = -1;
-static volatile bool s_encoding, s_cam_busy, s_redial, s_uploading, s_gps_req;
+static volatile bool s_encoding, s_cam_busy, s_redial, s_uploading;
 
 static void send_text(const char *text)
 {
@@ -377,15 +377,12 @@ static void command(const char *text)
     } else if (!strcmp(w, "status")) {
         cam_req_t r = CAM_STATUS;
         xQueueSend(s_cam_q, &r, 0);
-    } else if (!strcmp(w, "gps") || !strcmp(w, "where") || !strcmp(w, "location")) {
-        send_text("Looking for satellites, up to 2 minutes. spy is offline while it looks.");
-        s_gps_req = true;
     } else if (!strcmp(w, "flip")) {
         cam_set_flip(!cam_flip());
         settings_save_flip(cam_flip());
         send_text(cam_flip() ? "Picture flipped (upside down)." : "Picture the right way up.");
     } else {
-        send_text("spy knows: pic (pic full for 5 MP), clip (this hour so far), status, gps, flip.");
+        send_text("spy knows: pic (pic full for 5 MP), clip (this hour so far), status, flip.");
     }
 }
 
@@ -449,25 +446,6 @@ static void net_task(void *arg)
             announced = true;
             cam_req_t r = CAM_HELLO;
             xQueueSend(s_cam_q, &r, 0);
-        }
-        if (s_gps_req) {
-            /* Send what is waiting first: the search takes PPP down. */
-            net_job_t *w = NULL;
-            while (xQueueReceive(s_net_q, &w, 0) == pdTRUE) { do_job(w); free(w); }
-            s_gps_req = false;
-            net_fix_t fix = { 0 };
-            bool got = net_gps(120, &fix);
-            tg_reset();                         /* the old connection died with PPP */
-            if (!net_ok()) { s_redial = true; }
-            char t[160];
-            if (got) {
-                snprintf(t, sizeof t, "Found in %d s: %.5f, %.5f, %.0f m up.", fix.secs, fix.lat, fix.lon, fix.alt);
-                send_text(t);
-                tg_send_location(fix.lat, fix.lon);
-            } else {
-                send_text("No GPS fix in 2 minutes. It needs the square antenna plugged into the GNSS socket, and a view of the sky (by a window at least).");
-            }
-            continue;
         }
         net_job_t *j = NULL;
         bool ok;

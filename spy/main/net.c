@@ -9,7 +9,6 @@
 #include "driver/uart.h"
 #include "esp_event.h"
 #include "esp_log.h"
-#include "esp_timer.h"
 #include "esp_modem_api.h"
 #include "esp_netif.h"
 #include "esp_netif_ppp.h"
@@ -220,50 +219,4 @@ bool net_up(void)
         ESP_LOGW(TAG, "SNTP did not answer; %s", s_time ? "keeping the modem's time" : "no time yet");
     }
     return true;
-}
-
-/* "+CGPSINFO: 4346.249480,N,07924.889600,W,021026,101530.0,180.4,0.0," --
-   degrees and minutes run together; empty fields until there is a fix. */
-static bool parse_cgpsinfo(const char *out, net_fix_t *fix)
-{
-    const char *p = strstr(out, "+CGPSINFO:");
-    if (!p) return false;
-    double lat, lon, alt = 0;
-    char ns, ew;
-    if (sscanf(p + 10, " %lf,%c,%lf,%c,%*[^,],%*[^,],%lf", &lat, &ns, &lon, &ew, &alt) < 4) return false;
-    int ld = (int)(lat / 100), od = (int)(lon / 100);
-    fix->lat = (ld + (lat - ld * 100) / 60.0) * (ns == 'S' ? -1 : 1);
-    fix->lon = (od + (lon - od * 100) / 60.0) * (ew == 'W' ? -1 : 1);
-    fix->alt = alt;
-    return true;
-}
-
-bool net_gps(int max_s, net_fix_t *fix)
-{
-    if (!s_dce) return false;
-    /* One UART carries PPP, so the AT commands need command mode: PPP
-       stops for the length of the search. */
-    if (esp_modem_set_mode(s_dce, ESP_MODEM_MODE_COMMAND) != ESP_OK) {
-        ESP_LOGW(TAG, "gps: could not leave data mode");
-        return false;
-    }
-    xEventGroupClearBits(s_ev, EV_IP);
-    char out[160] = "";
-    esp_modem_at(s_dce, "AT+CGNSSPWR=1", out, 3000);
-    int64_t t0 = esp_timer_get_time();
-    bool got = false;
-    while (!got && esp_timer_get_time() - t0 < (int64_t)max_s * 1000000) {
-        vTaskDelay(pdMS_TO_TICKS(3000));
-        out[0] = 0;
-        if (esp_modem_at(s_dce, "AT+CGPSINFO", out, 2000) == ESP_OK) got = parse_cgpsinfo(out, fix);
-    }
-    fix->secs = (int)((esp_timer_get_time() - t0) / 1000000);
-    /* Off again: the receiver draws tens of mA, a lot on the 18650. */
-    esp_modem_at(s_dce, "AT+CGNSSPWR=0", out, 3000);
-    ESP_LOGI(TAG, "gps: %s after %d s", got ? "fix" : "no fix", fix->secs);
-    if (esp_modem_set_mode(s_dce, ESP_MODEM_MODE_DATA) != ESP_OK ||
-        !(xEventGroupWaitBits(s_ev, EV_IP, pdFALSE, pdTRUE, pdMS_TO_TICKS(60000)) & EV_IP)) {
-        ESP_LOGW(TAG, "gps: PPP did not come back");
-    }
-    return got;
 }

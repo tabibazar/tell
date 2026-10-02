@@ -161,15 +161,6 @@ bool tg_send_text(const char *text)
     return ok;
 }
 
-bool tg_send_location(double lat, double lon)
-{
-    if (!tg_configured()) return false;
-    char json[160];
-    snprintf(json, sizeof json, "{\"chat_id\":%s,\"latitude\":%.6f,\"longitude\":%.6f%s}",
-             SPY_TG_CHAT, lat, lon, quiet_hours() ? ",\"disable_notification\":true" : "");
-    return post_json("sendLocation", json, NULL, 0, 30000);
-}
-
 static int part(char *out, size_t cap, const char *name, const char *value)
 {
     return snprintf(out, cap, "--" BOUNDARY "\r\nContent-Disposition: form-data; name=\"%s\"\r\n\r\n%s\r\n",
