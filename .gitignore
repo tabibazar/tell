@@ -84,3 +84,6 @@ host_tests/test_noiseui
 host_tests/test_daysui
 host_tests/test_liveui
 host_tests/test_airui
+
+# Tokens and keys for the boards (spy's Telegram bot): never committed.
+secrets/
