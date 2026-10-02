@@ -18,6 +18,10 @@ bool store_ok(void);
 /* Free and total space in MB, or false without a card. */
 bool store_space(uint32_t *free_mb, uint32_t *total_mb);
 
+/* Wipe the card: one FAT partition over the whole of it. Everything on it
+   is lost. Console only ("format yes"), and only from the cam task. */
+bool store_format(void);
+
 /* mkdir -p for one level under an existing parent; true if it is there. */
 bool store_mkdir(const char *path);
 

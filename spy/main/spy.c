@@ -49,7 +49,7 @@ static const char *TAG = "spy";
 
 /* ---- messages between the tasks ----------------------------------------- */
 
-typedef enum { CAM_PIC, CAM_PIC_FULL, CAM_STATUS, CAM_HELLO, CAM_TEST_FRAMES } cam_req_t;
+typedef enum { CAM_PIC, CAM_PIC_FULL, CAM_STATUS, CAM_HELLO, CAM_TEST_FRAMES, CAM_FORMAT } cam_req_t;
 typedef enum { WORK_CLIP, WORK_CLIP_SO_FAR } work_kind_t;
 typedef struct { work_kind_t kind; char day[9]; int hour, last_min; } work_req_t;
 typedef enum { NET_TEXT, NET_PHOTO, NET_DOC, NET_VIDEO } net_kind_t;
@@ -62,7 +62,7 @@ typedef struct {
 
 static QueueHandle_t s_cam_q, s_work_q, s_net_q;
 static int s_frames_today, s_clips_today, s_today_mday = -1;
-static volatile bool s_encoding, s_cam_busy, s_redial;
+static volatile bool s_encoding, s_cam_busy, s_redial, s_uploading;
 
 static void send_text(const char *text)
 {
@@ -235,6 +235,13 @@ static void cam_task(void *arg)
         if (xQueueReceive(s_cam_q, &req, pdMS_TO_TICKS(500)) == pdTRUE) {
             s_cam_busy = true;
             if (req == CAM_PIC || req == CAM_PIC_FULL) take_pic(req == CAM_PIC_FULL);
+            else if (req == CAM_FORMAT) {
+                /* The cam task is the one that writes frames, so nothing of
+                   its own is open; the encoder and an upload are waited out. */
+                for (int i = 0; i < 300 && (s_encoding || s_uploading); i++) vTaskDelay(pdMS_TO_TICKS(1000));
+                printf("FORMAT %s\n", !s_encoding && !s_uploading && store_format() ? "DONE" : "FAILED");
+                fflush(stdout);
+            }
             else if (req == CAM_TEST_FRAMES) {
                 /* Console only: ten frames now, filed as minutes 00-09 of
                    this hour, to try "clip" outside the working hours. */
@@ -385,7 +392,17 @@ static void on_tg_text(const char *text, int64_t date)
 
 /* ---- net task ------------------------------------------------------------ */
 
+static bool do_job_inner(net_job_t *j);
+
 static bool do_job(net_job_t *j)
+{
+    s_uploading = j->kind != NET_TEXT;
+    bool ok = do_job_inner(j);
+    s_uploading = false;
+    return ok;
+}
+
+static bool do_job_inner(net_job_t *j)
 {
     switch (j->kind) {
     case NET_TEXT:  return tg_send_text(j->text);
@@ -489,6 +506,9 @@ static void console_task(void *arg)
                 while (d && (e = readdir(d))) printf("LS %s\n", e->d_name);
                 if (d) closedir(d);
                 printf("LSEND\n");
+            } else if (!strcmp(line, "format yes")) {
+                cam_req_t r = CAM_FORMAT;
+                xQueueSend(s_cam_q, &r, 0);
             } else if (!strcmp(line, "redial")) {
                 s_redial = true;
             } else if (!strcmp(line, "testframes")) {

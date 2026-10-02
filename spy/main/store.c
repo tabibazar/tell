@@ -38,7 +38,32 @@ bool store_mount(void)
     }
     uint32_t fr, tot;
     store_space(&fr, &tot);
-    ESP_LOGI(TAG, "card %s, %lu MB free of %lu", s_card->cid.name, (unsigned long)fr, (unsigned long)tot);
+    ESP_LOGI(TAG, "card %s (%llu MB), file system %lu MB free of %lu", s_card->cid.name,
+             (unsigned long long)s_card->csd.capacity * s_card->csd.sector_size >> 20,
+             (unsigned long)fr, (unsigned long)tot);
+    store_mkdir("/sdcard/tl");
+    store_mkdir("/sdcard/pics");
+    return true;
+}
+
+bool store_format(void)
+{
+    if (!s_card) return false;
+    esp_vfs_fat_mount_config_t mc = {
+        .format_if_mount_failed = false,
+        .max_files = 6,
+        .allocation_unit_size = 32 * 1024,
+    };
+    /* IDF repartitions the card as one FAT partition over all of it, then
+       makes the file system and remounts it at /sdcard. */
+    esp_err_t e = esp_vfs_fat_sdcard_format_cfg("/sdcard", s_card, &mc);
+    if (e != ESP_OK) {
+        ESP_LOGE(TAG, "format failed: %s", esp_err_to_name(e));
+        return false;
+    }
+    uint32_t fr, tot;
+    store_space(&fr, &tot);
+    ESP_LOGI(TAG, "formatted: %lu MB free of %lu", (unsigned long)fr, (unsigned long)tot);
     store_mkdir("/sdcard/tl");
     store_mkdir("/sdcard/pics");
     return true;
