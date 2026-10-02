@@ -26,4 +26,7 @@ bool net_time_ok(void);
 /* The signal as AT+CSQ gave it at the last net_up (0-31, 99 unknown). */
 int net_csq(void);
 
+/* The carrier's name as the modem gave it at the last net_up. */
+const char *net_operator(void);
+
 #endif /* NET_H */

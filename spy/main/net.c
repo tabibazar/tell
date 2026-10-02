@@ -30,6 +30,7 @@ static esp_netif_t *s_netif;
 static EventGroupHandle_t s_ev;
 #define EV_IP   BIT0
 static int s_csq = 99;
+static char s_operator[40] = "no carrier yet";
 static bool s_time;
 
 static void on_ip(void *arg, esp_event_base_t base, int32_t id, void *data)
@@ -47,6 +48,19 @@ static void on_ip(void *arg, esp_event_base_t base, int32_t id, void *data)
 bool net_ok(void) { return s_ev && (xEventGroupGetBits(s_ev) & EV_IP); }
 bool net_time_ok(void) { return s_time; }
 int net_csq(void) { return s_csq; }
+const char *net_operator(void) { return s_operator; }
+
+/* "+COPS: 0,0,"Freedom Mobile",7": the carrier's long name. Asked while
+   dialling, the only time the UART is free for AT. */
+static void read_operator(void)
+{
+    char out[128] = "";
+    esp_modem_at(s_dce, "AT+COPS=3,0", out, 2000);       /* names, not "302490" */
+    out[0] = 0;
+    if (esp_modem_at(s_dce, "AT+COPS?", out, 3000) != ESP_OK) return;
+    const char *a = strchr(out, '"'), *b = a ? strchr(a + 1, '"') : NULL;
+    if (a && b && b > a + 1) snprintf(s_operator, sizeof s_operator, "%.*s", (int)(b - a - 1), a + 1);
+}
 
 /* The modem's network time, "+CCLK: "26/10/02,01:58:25-16"". On this SIM it
    is UTC -- 01:58 when the Mac said 21:58 EDT -- with the zone after it, so
@@ -187,6 +201,7 @@ bool net_up(void)
     /* Only before SNTP: a redial must not step a good clock to the modem's
        whole seconds -- a step back over 08:00 would send hour 7 twice. */
     if (!s_time) time_from_modem();
+    read_operator();
 
     if (esp_modem_set_mode(s_dce, ESP_MODEM_MODE_DATA) != ESP_OK) {
         ESP_LOGE(TAG, "could not enter data mode");

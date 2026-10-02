@@ -44,3 +44,19 @@ CONFIG_LWIP_TCP_SND_BUF_DEFAULT=32768
 CONFIG_LWIP_TCP_WND_DEFAULT=32768
 CONFIG_LWIP_TCP_RECVMBOX_SIZE=32
 CONFIG_LWIP_TCPIP_RECVMBOX_SIZE=64
+
+# The hotspot: WiFi clients NATed out through PPP.
+CONFIG_LWIP_IP_FORWARD=y
+CONFIG_LWIP_IPV4_NAPT=y
+# WiFi on took internal RAM from 255 KB to 135 KB, too little for an hourly
+# encode (~90 KB) and a TLS upload (~40 KB) together. WiFi and lwIP code
+# stays in flash, not internal RAM, and fewer static receive buffers.
+CONFIG_ESP_WIFI_IRAM_OPT=n
+CONFIG_ESP_WIFI_RX_IRAM_OPT=n
+CONFIG_LWIP_IRAM_OPTIMIZATION=n
+CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM=6
+CONFIG_ESP_WIFI_RX_BA_WIN=6
+CONFIG_ESP_WIFI_DYNAMIC_RX_BUFFER_NUM=16
+# A phone on the hotspot fills PPP faster than lwIP drained it ("pppos_input_tcpip
+# failed with -1", packets dropped): a deeper queue and a busier tcpip task.
+CONFIG_LWIP_TCPIP_TASK_PRIO=20
