@@ -29,10 +29,20 @@ static bool quiet_hours(void)
     return lt.tm_year > 100 && (lt.tm_hour >= 21 || lt.tm_hour < 7);
 }
 
+static bool s_reached;          /* the last request got an HTTP reply at all */
+
+bool tg_reached(void) { return s_reached; }
+
+static void url_for(char *url, size_t cap, const char *method)
+{
+    snprintf(url, cap, "https://api.telegram.org/bot%s/%s", SPY_TG_TOKEN, method);
+}
+
+/* Files go on a connection of their own, streamed from the card. */
 static esp_http_client_handle_t client_for(const char *method, int timeout_ms)
 {
     char url[160];
-    snprintf(url, sizeof url, "https://api.telegram.org/bot%s/%s", SPY_TG_TOKEN, method);
+    url_for(url, sizeof url, method);
     esp_http_client_config_t c = {
         .url = url,
         .method = HTTP_METHOD_POST,
@@ -45,37 +55,96 @@ static esp_http_client_handle_t client_for(const char *method, int timeout_ms)
     return esp_http_client_init(&c);
 }
 
-/* Reads the reply after the body is sent. True for HTTP 200 with "ok":true;
-   the reply's text lands in `resp` (if given) for the caller to parse. */
-static bool finish(esp_http_client_handle_t h, const char *method, char *resp, size_t cap)
+/* Reads the reply after a file's body is sent. True for HTTP 200 with
+   "ok":true. */
+static bool finish(esp_http_client_handle_t h, const char *method)
 {
     if (esp_http_client_fetch_headers(h) < 0) {
         ESP_LOGW(TAG, "%s: no reply", method);
         return false;
     }
+    s_reached = true;
     int status = esp_http_client_get_status_code(h);
-    char small[512];
-    char *buf = resp ? resp : small;
-    size_t lim = resp ? cap : sizeof small;
+    char buf[512];
     int got = 0, n;
-    while (got < (int)lim - 1 && (n = esp_http_client_read(h, buf + got, lim - 1 - got)) > 0) got += n;
+    while (got < (int)sizeof buf - 1 && (n = esp_http_client_read(h, buf + got, sizeof buf - 1 - got)) > 0) got += n;
     buf[got] = 0;
     bool ok = status == 200 && strstr(buf, "\"ok\":true");
     if (!ok) ESP_LOGW(TAG, "%s: HTTP %d %.200s", method, status, buf);
     return ok;
 }
 
+/* Messages and polls share one kept-alive connection. A TLS handshake is
+   ~6 KB over the SIM's data, and a fresh one for every poll came to some
+   25 MB a day; kept alive, a poll costs about a kilobyte. */
+static esp_http_client_handle_t s_json;
+static char *s_body;
+static size_t s_body_cap, s_body_len;
+
+static esp_err_t on_json_event(esp_http_client_event_t *e)
+{
+    if (e->event_id == HTTP_EVENT_ON_CONNECTED) ESP_LOGI(TAG, "new connection to Telegram");
+    if (e->event_id == HTTP_EVENT_ON_DATA && s_body && s_body_len + 1 < s_body_cap) {
+        size_t n = (size_t)e->data_len;
+        if (n > s_body_cap - 1 - s_body_len) n = s_body_cap - 1 - s_body_len;
+        memcpy(s_body + s_body_len, e->data, n);
+        s_body_len += n;
+        s_body[s_body_len] = 0;
+    }
+    return ESP_OK;
+}
+
+void tg_reset(void)
+{
+    if (s_json) esp_http_client_cleanup(s_json);
+    s_json = NULL;
+}
+
 static bool post_json(const char *method, const char *json, char *resp, size_t cap, int timeout_ms)
 {
-    esp_http_client_handle_t h = client_for(method, timeout_ms);
-    if (!h) return false;
-    esp_http_client_set_header(h, "Content-Type", "application/json");
-    size_t len = strlen(json);
-    bool ok = esp_http_client_open(h, len) == ESP_OK &&
-              esp_http_client_write(h, json, len) == (int)len &&
-              finish(h, method, resp, cap);
-    esp_http_client_cleanup(h);
-    return ok;
+    char url[160], small[512];
+    url_for(url, sizeof url, method);
+    s_reached = false;
+    /* Twice: a kept-alive connection the server has since closed fails
+       once, and the second try starts a fresh one. */
+    for (int attempt = 0; attempt < 2; attempt++) {
+        if (!s_json) {
+            esp_http_client_config_t c = {
+                .url = url,
+                .method = HTTP_METHOD_POST,
+                .timeout_ms = timeout_ms,
+                .crt_bundle_attach = esp_crt_bundle_attach,
+                .buffer_size = 4096,
+                .buffer_size_tx = 2048,
+                .keep_alive_enable = true,
+                .event_handler = on_json_event,
+            };
+            s_json = esp_http_client_init(&c);
+            if (!s_json) return false;
+        }
+        esp_http_client_set_url(s_json, url);
+        esp_http_client_set_method(s_json, HTTP_METHOD_POST);
+        esp_http_client_set_timeout_ms(s_json, timeout_ms);
+        esp_http_client_set_header(s_json, "Content-Type", "application/json");
+        esp_http_client_set_post_field(s_json, json, (int)strlen(json));
+        s_body = resp ? resp : small;
+        s_body_cap = resp ? cap : sizeof small;
+        s_body_len = 0;
+        s_body[0] = 0;
+        esp_err_t e = esp_http_client_perform(s_json);
+        s_body = NULL;
+        if (e == ESP_OK) {
+            s_reached = true;
+            int status = esp_http_client_get_status_code(s_json);
+            const char *b = resp ? resp : small;
+            bool ok = status == 200 && strstr(b, "\"ok\":true");
+            if (!ok) ESP_LOGW(TAG, "%s: HTTP %d %.200s", method, status, b);
+            return ok;
+        }
+        ESP_LOGW(TAG, "%s: %s%s", method, esp_err_to_name(e), attempt ? "" : ", again on a new connection");
+        tg_reset();
+    }
+    return false;
 }
 
 bool tg_send_text(const char *text)
@@ -138,6 +207,7 @@ bool tg_send_file(const char *method, const char *field, const char *path,
 
     /* ~11 KB/s over PPP at 115200: allow for that and then some. */
     int timeout = 30000 + (int)(st.st_size / 4);
+    s_reached = false;
     esp_http_client_handle_t h = client_for(method, timeout);
     bool ok = false;
     if (h) {
@@ -151,7 +221,7 @@ bool tg_send_file(const char *method, const char *field, const char *path,
             }
             ok = ok && sent == (size_t)st.st_size &&
                  esp_http_client_write(h, tail, sizeof tail - 1) == (int)(sizeof tail - 1) &&
-                 finish(h, method, NULL, 0);
+                 finish(h, method);
         }
         esp_http_client_cleanup(h);
     }

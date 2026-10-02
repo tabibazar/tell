@@ -202,15 +202,18 @@ bool net_up(void)
         esp_netif_sntp_init(&sc);
         sntp_started = true;
     }
-    if (esp_netif_sntp_sync_wait(pdMS_TO_TICKS(20000)) == ESP_OK) {
-        s_time = true;
+    /* After the first answer SNTP keeps the clock itself (hourly); waiting
+       for another answer on a redial would only wait. */
+    static bool sntp_synced;
+    if (!sntp_synced && esp_netif_sntp_sync_wait(pdMS_TO_TICKS(20000)) == ESP_OK) {
+        sntp_synced = s_time = true;
         time_t now = time(NULL);
         struct tm lt;
         localtime_r(&now, &lt);
         char b[32];
         strftime(b, sizeof b, "%a %F %T %Z", &lt);
         ESP_LOGI(TAG, "SNTP: %s", b);
-    } else {
+    } else if (!sntp_synced) {
         ESP_LOGW(TAG, "SNTP did not answer; %s", s_time ? "keeping the modem's time" : "no time yet");
     }
     return true;

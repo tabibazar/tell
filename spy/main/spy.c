@@ -62,7 +62,7 @@ typedef struct {
 
 static QueueHandle_t s_cam_q, s_work_q, s_net_q;
 static int s_frames_today, s_clips_today, s_today_mday = -1;
-static volatile bool s_encoding, s_cam_busy;
+static volatile bool s_encoding, s_cam_busy, s_redial;
 
 static void send_text(const char *text)
 {
@@ -404,7 +404,9 @@ static void net_task(void *arg)
     int64_t offset = -1, last_ok = esp_timer_get_time();
     bool announced = false;
     for (;;) {
-        if (!net_ok()) {
+        if (!net_ok() || s_redial) {
+            s_redial = false;
+            tg_reset();
             if (!net_up()) {
                 ESP_LOGW(TAG, "no network; trying again in 30 s");
                 /* Half an hour without a link: start over from scratch. */
@@ -432,14 +434,17 @@ static void net_task(void *arg)
         } else {
             /* Short polls while something is being made to send. */
             bool busy = s_encoding || s_cam_busy || uxQueueMessagesWaiting(s_cam_q) > 0;
-            ok = tg_poll(&offset, busy ? 2 : 20, on_tg_text);
+            ok = tg_poll(&offset, busy ? 2 : 45, on_tg_text);
         }
-        if (ok) { fails = 0; last_ok = esp_timer_get_time(); }
+        /* Only failures to reach Telegram count toward a redial: an HTTP
+           error from it (a 409, a refused file) means the link is fine. */
+        if (ok || tg_reached()) { fails = 0; last_ok = esp_timer_get_time(); }
         else if (++fails >= 3) {
             ESP_LOGW(TAG, "three failures in a row: redialling");
-            net_up();
+            s_redial = true;
             fails = 0;
         }
+        if (!ok && tg_reached()) vTaskDelay(pdMS_TO_TICKS(2000));   /* no tight loop on an HTTP error */
     }
 }
 
@@ -482,6 +487,8 @@ static void console_task(void *arg)
                 while (d && (e = readdir(d))) printf("LS %s\n", e->d_name);
                 if (d) closedir(d);
                 printf("LSEND\n");
+            } else if (!strcmp(line, "redial")) {
+                s_redial = true;
             } else if (!strcmp(line, "testframes")) {
                 cam_req_t r = CAM_TEST_FRAMES;
                 xQueueSend(s_cam_q, &r, 0);

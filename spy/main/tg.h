@@ -27,4 +27,11 @@ bool tg_send_file(const char *method, const char *field, const char *path,
    next update id to ask for, kept by the caller. False on a network error. */
 bool tg_poll(int64_t *offset, int timeout_s, void (*on_text)(const char *text, int64_t date));
 
+/* The last request reached Telegram and got an HTTP reply, even an error:
+   the network is fine and redialling would not help. */
+bool tg_reached(void);
+
+/* Drop the kept-alive connection (after a redial its socket is dead). */
+void tg_reset(void);
+
 #endif /* TG_H */
