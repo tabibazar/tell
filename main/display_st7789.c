@@ -442,9 +442,15 @@ static bool IRAM_ATTR blit_done(esp_lcd_panel_io_handle_t io,
 void display_blit(void)
 {
     swap_in_place();
-    esp_lcd_panel_draw_bitmap(s_panel, 0, 0, LCD_W, LCD_H, s_fb);
-    xSemaphoreTake(s_blit_done, pdMS_TO_TICKS(200));
+    esp_err_t e = esp_lcd_panel_draw_bitmap(s_panel, 0, 0, LCD_W, LCD_H, s_fb);
+    if (e == ESP_OK) xSemaphoreTake(s_blit_done, pdMS_TO_TICKS(200));
     swap_in_place();
+    /* A frame that never reached the panel used to fail without a word. */
+    static int said;
+    if (e != ESP_OK && said++ < 5)
+        ESP_LOGE(TAG, "frame not sent: %s; internal DMA largest %u free %u", esp_err_to_name(e),
+                 (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL),
+                 (unsigned)heap_caps_get_free_size(MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL));
 }
 #else
 void display_blit(void)

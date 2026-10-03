@@ -91,6 +91,14 @@ else()
                        "pip.c" "axs_touch.c" "axs5106l_touch.c" "sdcard.c" "camera.c")
 endif()
 
+# display_none.c, the do-nothing display, is no board's any more (speaker has
+# had an ST7789 since 2026-09). Left in, it defines display_init and friends
+# alongside the real driver, and the linker quietly takes whichever comes
+# first in the archive: display_none sorts before display_rgb and
+# display_st7789, so watch (and a fresh CrowPanel or wave build) ran with no
+# picture at all -- found 2026-10-03 on a blank watch. Never compiled now.
+list(APPEND BOARD_EXCLUDES "display_none.c")
+
 # The noise monitor -- the sound level meter (soundlevel.c), the ring's
 # colours (ring.c), the app that drives the codecs, the LEDs and the card
 # (speaker_app.c) and the stand-in for a display (display_none.c) -- is
