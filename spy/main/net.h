@@ -29,4 +29,19 @@ int net_csq(void);
 /* The carrier's name as the modem gave it at the last net_up. */
 const char *net_operator(void);
 
+/* The serving LTE cell, as AT+CPSI? gives it. */
+typedef struct {
+    bool ok;
+    int mcc, mnc, tac, pci, band, earfcn;
+    long cell;                    /* 28-bit E-UTRAN cell id: eNB = cell >> 8 */
+    int rsrq, rsrp, rssi, sinr;   /* dB, dBm, dBm, dB */
+} net_cell_t;
+
+/* The cell as last read: at every dial, and by net_cell_now. */
+net_cell_t net_cell_last(void);
+
+/* Reads the cell now. The one UART carries PPP, so this pauses it for the
+   AT command (a few seconds) and redials. net task only. */
+bool net_cell_now(net_cell_t *c);
+
 #endif /* NET_H */

@@ -51,7 +51,7 @@ static const char *TAG = "spy";
 
 /* ---- messages between the tasks ----------------------------------------- */
 
-typedef enum { CAM_PIC, CAM_PIC_FULL, CAM_STATUS, CAM_HELLO, CAM_TEST_FRAMES, CAM_FORMAT } cam_req_t;
+typedef enum { CAM_PIC, CAM_PIC_FULL, CAM_STATUS, CAM_HELLO, CAM_TEST_FRAMES, CAM_FORMAT, CAM_BATTEST } cam_req_t;
 typedef enum { WORK_CLIP, WORK_CLIP_SO_FAR } work_kind_t;
 typedef struct { work_kind_t kind; char day[9]; int hour, last_min; } work_req_t;
 typedef enum { NET_TEXT, NET_PHOTO, NET_DOC, NET_VIDEO } net_kind_t;
@@ -64,7 +64,7 @@ typedef struct {
 
 static QueueHandle_t s_cam_q, s_work_q, s_net_q;
 static int s_frames_today, s_clips_today, s_today_mday = -1;
-static volatile bool s_encoding, s_cam_busy, s_redial, s_uploading;
+static volatile bool s_encoding, s_cam_busy, s_redial, s_uploading, s_cell_req;
 
 static void send_text(const char *text)
 {
@@ -165,6 +165,41 @@ static float chip_temp(void)
     return t;
 }
 
+/* LTE band to its frequency, for the bands Canadian carriers use. */
+static const char *band_mhz(int band)
+{
+    switch (band) {
+    case 2: case 25: return "1900 MHz";
+    case 4: case 66: return "AWS 1700/2100 MHz";
+    case 5: case 26: return "850 MHz";
+    case 7:  return "2600 MHz";
+    case 12: case 13: case 14: case 17: return "700 MHz";
+    case 30: return "2300 MHz";
+    case 41: return "2500 MHz";
+    case 71: return "600 MHz";
+    default: return "";
+    }
+}
+
+static const char *rsrp_word(int rsrp)
+{
+    return rsrp >= -80 ? "excellent" : rsrp >= -90 ? "good" : rsrp >= -100 ? "fair" : rsrp >= -110 ? "weak" : "very weak";
+}
+
+static void cell_text(const net_cell_t *c, char *out, size_t cap)
+{
+    if (!c->ok) { snprintf(out, cap, "no LTE cell reading"); return; }
+    snprintf(out, cap,
+             "%s (%d-%03d), LTE band %d %s\n"
+             "tower (eNB) %ld, sector %ld, PCI %d, area 0x%X\n"
+             "signal %d dBm (%s), quality %d dB, SINR %d dB\n"
+             "cellmapper.net: network %d-%d, search eNB %ld",
+             net_operator(), c->mcc, c->mnc, c->band, band_mhz(c->band),
+             c->cell >> 8, c->cell & 0xFF, c->pci, c->tac,
+             c->rsrp, rsrp_word(c->rsrp), c->rsrq, c->sinr,
+             c->mcc, c->mnc, c->cell >> 8);
+}
+
 static void status_text(char *out, size_t cap)
 {
     struct tm lt;
@@ -172,7 +207,9 @@ static void status_text(char *out, size_t cap)
     char when[32] = "no clock yet";
     if (timed) strftime(when, sizeof when, "%a %H:%M", &lt);
     int64_t up = esp_timer_get_time() / 1000000;
-    char hs[48] = "";
+    char hs[48] = "", cellline[64] = "";
+    net_cell_t cl = net_cell_last();
+    if (cl.ok) snprintf(cellline, sizeof cellline, "tower %ld band %d, %d dBm\n", cl.cell >> 8, cl.band, cl.rsrp);
     if (hotspot_is_on()) snprintf(hs, sizeof hs, "\nhotspot on, %d connected", hotspot_clients());
     uint32_t fr = 0, tot = 0;
     bool card = store_space(&fr, &tot);
@@ -188,11 +225,12 @@ static void status_text(char *out, size_t cap)
     int n = snprintf(out, cap,
         "spy, %s\n"
         "4G: %s, signal %d/31, up %lldh%02lldm\n"
+        "%s"
         "card: %s%lu MB free of %lu\n"
         "today: %d frames, %d clips sent\n"
         "battery: %s\n"
         "chip %.0f C, RAM %u KB free%s%s%s",
-        when, net_operator(), net_csq(), up / 3600, (up / 60) % 60,
+        when, net_operator(), net_csq(), up / 3600, (up / 60) % 60, cellline,
         card ? "" : "MISSING ", (unsigned long)fr, (unsigned long)tot,
         s_frames_today, s_clips_today, batt, chip_temp(),
         (unsigned)(heap_caps_get_free_size(MALLOC_CAP_INTERNAL) / 1024),
@@ -211,14 +249,26 @@ static volatile int s_batt_pct = -1;
    each once a discharge, with the hours left at the present drain. Charged
    back past 30 % and they are armed again. (2026-10-02 spy ran flat at
    15:51 with no word; Reza: "add the battery warning to telegram".) */
-static void battery_watch(void)
+static void battery_watch(bool test)
 {
     static const int LEVELS[] = { 20, 10, 5 };
     static int warned = 100;                    /* the lowest level warned at */
     float v, pct, rate;
-    if (!battery(&v, &pct, &rate) || v < 2.5f) { s_batt_pct = -1; return; }   /* none fitted */
+    if (!battery(&v, &pct, &rate) || v < 2.5f) {   /* none fitted */
+        s_batt_pct = -1;
+        if (test) send_text("TEST battery warning: no battery reading (none fitted, or the CAM DIP is off).");
+        return;
+    }
     int p = (int)(pct + 0.5f);
     s_batt_pct = p;
+    if (test) {                                 /* console 'battest': the real message, marked */
+        char t[200];
+        int n = snprintf(t, sizeof t, "TEST of the battery warning. spy battery %d%% (%.2f V)", p, (double)v);
+        if (rate < -0.5f) snprintf(t + n, sizeof t - n, ", about %.0f h left at this rate.", (double)(pct / -rate));
+        else snprintf(t + n, sizeof t - n, ", charging or full.");
+        send_text(t);
+        return;
+    }
     if (p >= 30) { warned = 100; return; }
     for (size_t i = 0; i < sizeof LEVELS / sizeof LEVELS[0]; i++) {
         int L = LEVELS[i];
@@ -282,6 +332,7 @@ static void cam_task(void *arg)
         if (xQueueReceive(s_cam_q, &req, pdMS_TO_TICKS(500)) == pdTRUE) {
             s_cam_busy = true;
             if (req == CAM_PIC || req == CAM_PIC_FULL) take_pic(req == CAM_PIC_FULL);
+            else if (req == CAM_BATTEST) battery_watch(true);
             else if (req == CAM_FORMAT) {
                 /* The cam task is the one that writes frames, so nothing of
                    its own is open; the encoder and an upload are waited out. */
@@ -320,7 +371,7 @@ static void cam_task(void *arg)
             s_frames_today = s_clips_today = 0;
         }
         if (store_ok() && sched_capture(&lt)) minute_frame(&lt);
-        battery_watch();                        /* after the frame: the gauge shares the camera's bus */
+        battery_watch(false);                   /* after the frame: the gauge shares the camera's bus */
         int h = sched_clip_hour(&lt);
         if (h >= 0) {
             work_req_t w = { .kind = WORK_CLIP, .hour = h, .last_min = 59 };
@@ -422,6 +473,9 @@ static void command(const char *text)
     } else if (!strcmp(w, "status")) {
         cam_req_t r = CAM_STATUS;
         xQueueSend(s_cam_q, &r, 0);
+    } else if (!strcmp(w, "cell") || !strcmp(w, "tower") || !strcmp(w, "towers")) {
+        send_text("Asking the modem; spy is offline for a few seconds.");
+        s_cell_req = true;
     } else if (!strcmp(w, "hotspot") || !strcmp(w, "wifi")) {
         char t[200];
         if (strstr(text, "off")) {
@@ -442,7 +496,7 @@ static void command(const char *text)
         settings_save_flip(cam_flip());
         send_text(cam_flip() ? "Picture flipped (upside down)." : "Picture the right way up.");
     } else {
-        send_text("spy knows: pic (pic full for 5 MP), clip (this hour so far), status, hotspot on / hotspot off, flip.");
+        send_text("spy knows: pic (pic full for 5 MP), clip (this hour so far), status, cell, hotspot on / hotspot off, flip.");
     }
 }
 
@@ -508,6 +562,21 @@ static void net_task(void *arg)
             xQueueSend(s_cam_q, &r, 0);
         }
         hotspot_tick();
+        if (s_cell_req) {
+            /* What is waiting goes first: the reading takes PPP down. */
+            net_job_t *w = NULL;
+            while (xQueueReceive(s_net_q, &w, 0) == pdTRUE) { do_job(w); free(w); }
+            s_cell_req = false;
+            net_cell_t c;
+            net_cell_now(&c);
+            tg_reset();                         /* the old connection died with PPP */
+            if (!net_ok()) s_redial = true;
+            char t[320];
+            int n = snprintf(t, sizeof t, "spy's cell tower now:\n");
+            cell_text(&c, t + n, sizeof t - n);
+            send_text(t);
+            continue;
+        }
         net_job_t *j = NULL;
         bool ok;
         if (xQueueReceive(s_net_q, &j, 0) == pdTRUE) {
@@ -574,6 +643,9 @@ static void console_task(void *arg)
                 while (d && (e = readdir(d))) printf("LS %s\n", e->d_name);
                 if (d) closedir(d);
                 printf("LSEND\n");
+            } else if (!strcmp(line, "battest")) {
+                cam_req_t r = CAM_BATTEST;
+                xQueueSend(s_cam_q, &r, 0);
             } else if (!strcmp(line, "format yes")) {
                 cam_req_t r = CAM_FORMAT;
                 xQueueSend(s_cam_q, &r, 0);

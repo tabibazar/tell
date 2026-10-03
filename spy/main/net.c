@@ -30,6 +30,7 @@ static esp_netif_t *s_netif;
 static EventGroupHandle_t s_ev;
 #define EV_IP   BIT0
 static int s_csq = 99;
+static net_cell_t s_cell;
 static char s_operator[40] = "no carrier yet";
 static bool s_time;
 
@@ -48,6 +49,45 @@ static void on_ip(void *arg, esp_event_base_t base, int32_t id, void *data)
 bool net_ok(void) { return s_ev && (xEventGroupGetBits(s_ev) & EV_IP); }
 bool net_time_ok(void) { return s_time; }
 int net_csq(void) { return s_csq; }
+net_cell_t net_cell_last(void) { return s_cell; }
+
+/* "+CPSI: LTE,Online,302-490,0x88BB,102607650,368,EUTRAN-BAND7,3200,3,3,-16,-101,-85,-3"
+   mode, state, MCC-MNC, TAC, cell id, PCI, band, EARFCN, DL bw, UL bw,
+   RSRQ, RSRP, RSSI, SINR. */
+static void read_cell(void)
+{
+    char out[192] = "";
+    if (esp_modem_at(s_dce, "AT+CPSI?", out, 3000) != ESP_OK) return;
+    const char *p = strstr(out, "+CPSI: LTE,");
+    net_cell_t c = { 0 };
+    unsigned tac;
+    if (p && sscanf(p, "+CPSI: LTE,%*[^,],%d-%d,%x,%ld,%d,EUTRAN-BAND%d,%d,%*d,%*d,%d,%d,%d,%d",
+                    &c.mcc, &c.mnc, &tac, &c.cell, &c.pci, &c.band, &c.earfcn,
+                    &c.rsrq, &c.rsrp, &c.rssi, &c.sinr) == 11) {
+        c.tac = (int)tac;
+        c.ok = true;
+        s_cell = c;
+        ESP_LOGI(TAG, "cell %ld (eNB %ld), PCI %d, band %d, RSRP %d", c.cell, c.cell >> 8, c.pci, c.band, c.rsrp);
+    } else {
+        ESP_LOGW(TAG, "cell: %s", out);
+    }
+}
+
+bool net_cell_now(net_cell_t *c)
+{
+    if (!s_dce) return false;
+    if (esp_modem_set_mode(s_dce, ESP_MODEM_MODE_COMMAND) != ESP_OK) return false;
+    xEventGroupClearBits(s_ev, EV_IP);
+    s_cell.ok = false;
+    read_cell();
+    *c = s_cell;
+    /* Straight to a fresh dial: going back to data mode on the old session
+       never got an address (tried 2026-10-03: a minute lost before the
+       redial anyway), and a dial takes ten to twenty seconds. */
+    net_up();
+    if (!c->ok) *c = s_cell;                 /* the dial reads it too */
+    return c->ok;
+}
 const char *net_operator(void) { return s_operator; }
 
 /* "+COPS: 0,0,"Freedom Mobile",7": the carrier's long name. Asked while
@@ -202,6 +242,7 @@ bool net_up(void)
        whole seconds -- a step back over 08:00 would send hour 7 twice. */
     if (!s_time) time_from_modem();
     read_operator();
+    read_cell();
 
     if (esp_modem_set_mode(s_dce, ESP_MODEM_MODE_DATA) != ESP_OK) {
         ESP_LOGE(TAG, "could not enter data mode");
