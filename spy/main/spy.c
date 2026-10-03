@@ -52,8 +52,8 @@ static const char *TAG = "spy";
 /* ---- messages between the tasks ----------------------------------------- */
 
 typedef enum { CAM_PIC, CAM_PIC_FULL, CAM_STATUS, CAM_HELLO, CAM_TEST_FRAMES, CAM_FORMAT, CAM_BATTEST, CAM_TINY } cam_req_t;
-typedef enum { WORK_CLIP, WORK_CLIP_SO_FAR } work_kind_t;
-typedef struct { work_kind_t kind; char day[9]; int hour, last_min; } work_req_t;
+typedef enum { WORK_CLIP, WORK_CLIP_SO_FAR, WORK_NIGHT } work_kind_t;
+typedef struct { work_kind_t kind; char day[9]; int hour, last_min; time_t from, to; } work_req_t;
 typedef enum { NET_TEXT, NET_PHOTO, NET_DOC, NET_VIDEO } net_kind_t;
 typedef struct {
     net_kind_t kind;
@@ -235,7 +235,7 @@ static void status_text(char *out, size_t cap)
         (unsigned)(heap_caps_get_free_size(MALLOC_CAP_INTERNAL) / 1024),
         cam_flip() ? ", picture flipped" : "", s_encoding ? ", encoding now" : "");
     if (timed && !sched_capture(&lt) && n > 0 && (size_t)n < cap)
-        snprintf(out + n, cap - n, "\nframes: weekdays 07:00-17:00");
+        snprintf(out + n, cap - n, "\nframes: each minute weekdays 07-17, every 10 min otherwise");
 }
 
 /* ---- battery watch ------------------------------------------------------- */
@@ -391,8 +391,14 @@ static void cam_task(void *arg)
             s_today_mday = lt.tm_mday;
             s_frames_today = s_clips_today = 0;
         }
-        if (store_ok() && sched_capture(&lt)) minute_frame(&lt);
+        if (store_ok() && (sched_capture(&lt) || sched_capture_quiet(&lt))) minute_frame(&lt);
         battery_watch(false);                   /* after the frame: the gauge shares the camera's bus */
+        time_t night_from;
+        if (sched_night_clip(&lt, &night_from)) {   /* 07:00: the night (or weekend) since 17:00 */
+            work_req_t w = { .kind = WORK_NIGHT, .from = night_from, .to = time(NULL) - 60 };
+            sched_day(&lt, w.day);
+            xQueueSend(s_work_q, &w, 0);
+        }
         if (sched_day_clip(&lt)) {                    /* 17:00: the whole day, one clip */
             work_req_t w = { .kind = WORK_CLIP, .hour = SCHED_LAST_HOUR, .last_min = 59 };
             sched_day(&lt, w.day);
@@ -439,10 +445,13 @@ static void work_task(void *arg)
         char dir[32], out[64], cap[128];
         snprintf(dir, sizeof dir, "/sdcard/tl/%s", w.day);
         if (w.kind == WORK_CLIP) snprintf(out, sizeof out, "%s/day.mp4", dir);
+        else if (w.kind == WORK_NIGHT) snprintf(out, sizeof out, "%s/night.mp4", dir);
         else snprintf(out, sizeof out, "%s/sofar.mp4", dir);
+        store_mkdir(dir);
         int frames = 0;
         s_encoding = true;
-        bool ok = store_ok() && clip_make(dir, SCHED_FIRST_HOUR, w.hour, w.last_min, out, &frames);
+        bool ok = store_ok() && (w.kind == WORK_NIGHT ? clip_make_span(w.from, w.to, out, &frames)
+                                                      : clip_make(dir, SCHED_FIRST_HOUR, w.hour, w.last_min, out, &frames));
         s_encoding = false;
         if (!ok) {
             if (w.kind == WORK_CLIP_SO_FAR) send_text("No frames yet today.");
@@ -457,7 +466,13 @@ static void work_task(void *arg)
         mktime(&d);
         char date[24];
         strftime(date, sizeof date, "%a %e %b", &d);
-        if (w.kind == WORK_CLIP)
+        if (w.kind == WORK_NIGHT) {
+            struct tm f;
+            localtime_r(&w.from, &f);
+            char since[24];
+            strftime(since, sizeof since, "%a %H:%M", &f);
+            snprintf(cap, sizeof cap, "Overnight: %s to %s 07:00, every 10 min (%d frames)", since, date, frames);
+        } else if (w.kind == WORK_CLIP)
             snprintf(cap, sizeof cap, "%s, %02d:00-%02d:00 (%d frames)", date, SCHED_FIRST_HOUR, w.hour + 1, frames);
         else
             snprintf(cap, sizeof cap, "%s so far, %02d:00-%02d:%02d (%d frames)", date, SCHED_FIRST_HOUR,
@@ -674,6 +689,15 @@ static void console_task(void *arg)
                 while (d && (e = readdir(d))) printf("LS %s\n", e->d_name);
                 if (d) closedir(d);
                 printf("LSEND\n");
+            } else if (!strcmp(line, "nightclip")) {   /* the 07:00 clip, from 17:00 today to now */
+                struct tm lt;
+                if (local_now(&lt)) {
+                    struct tm f = lt;
+                    f.tm_hour = SCHED_LAST_HOUR + 1; f.tm_min = 0; f.tm_sec = 0; f.tm_isdst = -1;
+                    work_req_t w = { .kind = WORK_NIGHT, .from = mktime(&f), .to = time(NULL) };
+                    sched_day(&lt, w.day);
+                    xQueueSend(s_work_q, &w, 0);
+                }
             } else if (!strcmp(line, "battest")) {
                 cam_req_t r = CAM_BATTEST;
                 xQueueSend(s_cam_q, &r, 0);

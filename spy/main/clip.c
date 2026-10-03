@@ -4,6 +4,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <time.h>
 
 #include "esp_h264_enc_single_sw.h"
 #include "esp_heap_caps.h"
@@ -50,7 +51,7 @@ static void rgb_to_i420(const uint8_t *rgb, uint8_t *yuv)
     }
 }
 
-bool clip_make(const char *day_dir, int first_hour, int last_hour, int last_min, const char *out, int *frames)
+bool clip_make_span(time_t from, time_t to, const char *out, int *frames)
 {
     *frames = 0;
     const size_t yuv_len = CLIP_W * CLIP_H * 3 / 2;
@@ -81,10 +82,15 @@ bool clip_make(const char *day_dir, int first_hour, int last_hour, int last_min,
     if (!mux) goto done;
 
     int64_t t0 = esp_timer_get_time();
-    for (int fm = first_hour * 60; fm <= last_hour * 60 + last_min && fm < 24 * 60; fm++) {
-        int hour = fm / 60, m = fm % 60;
+    /* Minute by minute, across midnight and day folders as need be: every
+       frame on the card between `from` and `to`, whatever its spacing. */
+    for (time_t tt = from - from % 60; tt <= to; tt += 60) {
+        struct tm lt;
+        localtime_r(&tt, &lt);
+        int hour = lt.tm_hour, m = lt.tm_min;
         char path[64];
-        snprintf(path, sizeof path, "%s/%02d%02d.jpg", day_dir, hour, m);
+        snprintf(path, sizeof path, "/sdcard/tl/%04d%02d%02d/%02d%02d.jpg",
+                 (lt.tm_year + 1900) % 10000, (lt.tm_mon + 1) % 100, lt.tm_mday % 100, hour, m);
         size_t jlen = 0;
         uint8_t *jpg = read_file(path, &jlen);
         if (!jpg) continue;
@@ -129,4 +135,19 @@ done:
     free(enc_out);
     free(iobuf);
     return ok;
+}
+
+bool clip_make(const char *day_dir, int first_hour, int last_hour, int last_min, const char *out, int *frames)
+{
+    /* The day from its folder's name, "/sdcard/tl/20261002". */
+    const char *d = strrchr(day_dir, '/');
+    int ymd = atoi(d ? d + 1 : day_dir);
+    struct tm a = { .tm_year = ymd / 10000 - 1900, .tm_mon = ymd / 100 % 100 - 1, .tm_mday = ymd % 100,
+                    .tm_hour = first_hour, .tm_isdst = -1 };
+    struct tm b = a;
+    b.tm_hour = last_hour;
+    b.tm_min = last_min;
+    b.tm_isdst = -1;
+    time_t from = mktime(&a), to = mktime(&b);
+    return clip_make_span(from, to, out, frames);
 }

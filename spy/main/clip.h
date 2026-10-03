@@ -10,6 +10,7 @@
  * About 1.2 s a frame on one core: a full day takes some twelve minutes.
  */
 #include <stdbool.h>
+#include <time.h>
 
 #define CLIP_W   640
 #define CLIP_H   480
@@ -19,5 +20,9 @@
    last_hour:last_min, in order. Writes `out`; `*frames` gets how many went
    in. False if none did. */
 bool clip_make(const char *day_dir, int first_hour, int last_hour, int last_min, const char *out, int *frames);
+
+/* Every frame from `from` to `to` (local time), across midnight and day
+   folders: the night's and weekend's ten-minute frames. */
+bool clip_make_span(time_t from, time_t to, const char *out, int *frames);
 
 #endif /* SPY_CLIP_H */
