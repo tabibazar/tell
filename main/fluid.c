@@ -16,10 +16,10 @@
 #define STIFF_NEAR    2500.0f
 #endif
 #ifndef VISC_LIN
-#define VISC_LIN      1.2f
+#define VISC_LIN      0.3f
 #endif
 #ifndef VISC_QUAD
-#define VISC_QUAD     0.02f
+#define VISC_QUAD     0.005f
 #endif       /* beta: damps drops flying straight at each other */
 #ifndef SUBSTEP
 #define SUBSTEP       (1.0f / 60.0f)   /* watch has the time for two or three a frame */
