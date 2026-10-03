@@ -13,7 +13,14 @@
 #define STIFF         1200.0f     /* pressure, px^2/s^2 per unit density */
 #endif
 #ifndef STIFF_NEAR
-#define STIFF_NEAR    2500.0f
+#define STIFF_NEAR    1800.0f
+#endif
+/* Surface tension: the pull a drop feels towards its neighbours when they
+   are spread thinner than rest (negative pressure), kept at this share.
+   1 is Clavet's full cohesion -- drops cling and spray comes off in strings;
+   lower lets the surface break into separate droplets. */
+#ifndef COHESION
+#define COHESION      0.35f
 #endif
 #ifndef VISC_LIN
 #define VISC_LIN      0.3f
@@ -151,6 +158,7 @@ static void substep(fluid_t *f, float gx, float gy, float dt)
             rhon += q * q * q;
         }
         float P = STIFF * (rho - REST_DENSITY), Pn = STIFF_NEAR * rhon;
+        if (P < 0) P *= COHESION;
         float ddx = 0, ddy = 0;
         for (int k = 0; k < m; k++) {
             float q = qk[k];
