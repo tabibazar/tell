@@ -201,6 +201,42 @@ static void status_text(char *out, size_t cap)
         snprintf(out + n, cap - n, "\nframes: weekdays 07:00-17:00");
 }
 
+/* ---- battery watch ------------------------------------------------------- */
+
+/* The last gauge reading, for captions: -1 until there is one, or with no
+   cell fitted. Written by the cam task only (the gauge is on its bus). */
+static volatile int s_batt_pct = -1;
+
+/* Once a minute from the cam task: a Telegram warning at 20, 10 and 5 %,
+   each once a discharge, with the hours left at the present drain. Charged
+   back past 30 % and they are armed again. (2026-10-02 spy ran flat at
+   15:51 with no word; Reza: "add the battery warning to telegram".) */
+static void battery_watch(void)
+{
+    static const int LEVELS[] = { 20, 10, 5 };
+    static int warned = 100;                    /* the lowest level warned at */
+    float v, pct, rate;
+    if (!battery(&v, &pct, &rate) || v < 2.5f) { s_batt_pct = -1; return; }   /* none fitted */
+    int p = (int)(pct + 0.5f);
+    s_batt_pct = p;
+    if (p >= 30) { warned = 100; return; }
+    for (size_t i = 0; i < sizeof LEVELS / sizeof LEVELS[0]; i++) {
+        int L = LEVELS[i];
+        if (p > L || warned <= L) continue;
+        warned = L;
+        char t[160];
+        int n = snprintf(t, sizeof t, "spy battery %d%% (%.2f V)", p, (double)v);
+        if (rate < -0.5f)
+            snprintf(t + n, sizeof t - n, ", about %.0f h left at this rate.", (double)(pct / -rate));
+        else
+            snprintf(t + n, sizeof t - n, ".");
+        if (L == 5) strlcat(t, " Plug it in or it stops soon.", sizeof t);
+        ESP_LOGW(TAG, "%s", t);
+        send_text(t);
+        break;
+    }
+}
+
 /* ---- cam task ------------------------------------------------------------ */
 
 static void take_pic(bool full)
@@ -284,6 +320,7 @@ static void cam_task(void *arg)
             s_frames_today = s_clips_today = 0;
         }
         if (store_ok() && sched_capture(&lt)) minute_frame(&lt);
+        battery_watch();                        /* after the frame: the gauge shares the camera's bus */
         int h = sched_clip_hour(&lt);
         if (h >= 0) {
             work_req_t w = { .kind = WORK_CLIP, .hour = h, .last_min = 59 };
@@ -351,6 +388,10 @@ static void work_task(void *arg)
         strftime(date, sizeof date, "%a %e %b", &d);
         if (w.kind == WORK_CLIP)
             snprintf(cap, sizeof cap, "%02d:00-%02d:00, %s (%d frames)", w.hour, w.hour + 1, date, frames);
+        if (s_batt_pct >= 0) {
+            size_t n = strlen(cap);
+            snprintf(cap + n, sizeof cap - n, ", battery %d%%", s_batt_pct);
+        }
         else
             snprintf(cap, sizeof cap, "%02d:00-%02d:%02d so far, %s (%d frames)", w.hour, w.hour, w.last_min, date, frames);
         send_file(NET_VIDEO, out, cap);
