@@ -2,8 +2,8 @@
  * spy: a desk time-lapse that reports over 4G.
  *
  * Weekdays from 07:00 to 16:59 it takes a 640x480 frame every minute onto the
- * card; at 17:00 the whole day becomes one MP4 (10 fps, about a minute) and
- * goes to Telegram. Telegram messages to the bot
+ * card, and one every ten minutes the rest of the time; at 07:00 every day
+ * the 24 hours before become one MP4 (10 fps) and go to Telegram. Telegram messages to the bot
  * work any time: "pic" sends a photo, "clip" the hour so far, "status" how
  * spy is, "flip" turns the picture upside down, "help" lists them.
  *
@@ -393,14 +393,9 @@ static void cam_task(void *arg)
         }
         if (store_ok() && (sched_capture(&lt) || sched_capture_quiet(&lt))) minute_frame(&lt);
         battery_watch(false);                   /* after the frame: the gauge shares the camera's bus */
-        time_t night_from;
-        if (sched_night_clip(&lt, &night_from)) {   /* 07:00: the night (or weekend) since 17:00 */
-            work_req_t w = { .kind = WORK_NIGHT, .from = night_from, .to = time(NULL) - 60 };
-            sched_day(&lt, w.day);
-            xQueueSend(s_work_q, &w, 0);
-        }
-        if (sched_day_clip(&lt)) {                    /* 17:00: the whole day, one clip */
-            work_req_t w = { .kind = WORK_CLIP, .hour = SCHED_LAST_HOUR, .last_min = 59 };
+        time_t day_from;
+        if (sched_daily_clip(&lt, &day_from)) {     /* 07:00 every day: the 24 hours before */
+            work_req_t w = { .kind = WORK_NIGHT, .from = day_from, .to = time(NULL) - 60 };
             sched_day(&lt, w.day);
             xQueueSend(s_work_q, &w, 0);
         }
@@ -445,7 +440,7 @@ static void work_task(void *arg)
         char dir[32], out[64], cap[128];
         snprintf(dir, sizeof dir, "/sdcard/tl/%s", w.day);
         if (w.kind == WORK_CLIP) snprintf(out, sizeof out, "%s/day.mp4", dir);
-        else if (w.kind == WORK_NIGHT) snprintf(out, sizeof out, "%s/night.mp4", dir);
+        else if (w.kind == WORK_NIGHT) snprintf(out, sizeof out, "%s/24h.mp4", dir);
         else snprintf(out, sizeof out, "%s/sofar.mp4", dir);
         store_mkdir(dir);
         int frames = 0;
@@ -471,7 +466,7 @@ static void work_task(void *arg)
             localtime_r(&w.from, &f);
             char since[24];
             strftime(since, sizeof since, "%a %H:%M", &f);
-            snprintf(cap, sizeof cap, "Overnight: %s to %s 07:00, every 10 min (%d frames)", since, date, frames);
+            snprintf(cap, sizeof cap, "The last 24 hours: %s to %s 07:00 (%d frames)", since, date, frames);
         } else if (w.kind == WORK_CLIP)
             snprintf(cap, sizeof cap, "%s, %02d:00-%02d:00 (%d frames)", date, SCHED_FIRST_HOUR, w.hour + 1, frames);
         else
@@ -689,12 +684,10 @@ static void console_task(void *arg)
                 while (d && (e = readdir(d))) printf("LS %s\n", e->d_name);
                 if (d) closedir(d);
                 printf("LSEND\n");
-            } else if (!strcmp(line, "nightclip")) {   /* the 07:00 clip, from 17:00 today to now */
+            } else if (!strcmp(line, "dailyclip")) {   /* the 07:00 clip, for the 24 hours to now */
                 struct tm lt;
                 if (local_now(&lt)) {
-                    struct tm f = lt;
-                    f.tm_hour = SCHED_LAST_HOUR + 1; f.tm_min = 0; f.tm_sec = 0; f.tm_isdst = -1;
-                    work_req_t w = { .kind = WORK_NIGHT, .from = mktime(&f), .to = time(NULL) };
+                    work_req_t w = { .kind = WORK_NIGHT, .from = time(NULL) - 24 * 3600, .to = time(NULL) };
                     sched_day(&lt, w.day);
                     xQueueSend(s_work_q, &w, 0);
                 }

@@ -14,36 +14,29 @@ int main(void)
     setenv("TZ", "EST5EDT,M3.2.0,M11.1.0", 1);
     struct tm s = { .tm_year = 126, .tm_mon = 9, .tm_mday = 4, .tm_hour = 0, .tm_isdst = -1 };  /* Sun 4 Oct 2026 */
     time_t t0 = mktime(&s);
-    int frames[7] = { 0 }, quiet[7] = { 0 }, clips[7] = { 0 }, nights[7] = { 0 }, first_clip = -1, last_clip = -1;
+    int frames[7] = { 0 }, quiet[7] = { 0 }, clips[7] = { 0 }, first_clip = -1, last_clip = -1;
     for (time_t t = t0; t < t0 + 7 * 86400; t += 60) {
         struct tm lt;
         localtime_r(&t, &lt);
         if (sched_capture(&lt)) frames[lt.tm_wday]++;
         if (sched_capture_quiet(&lt)) { quiet[lt.tm_wday]++; CHECK(!sched_capture(&lt) && lt.tm_min % 10 == 0); }
         time_t nf;
-        if (sched_night_clip(&lt, &nf)) {
-            nights[lt.tm_wday]++;
+        if (sched_daily_clip(&lt, &nf)) {
+            clips[lt.tm_wday]++;
             struct tm fl;
             localtime_r(&nf, &fl);
-            CHECK(fl.tm_hour == 17 && fl.tm_min == 0);
-            CHECK(fl.tm_wday == (lt.tm_wday == 1 ? 5 : lt.tm_wday - 1));
-            double hours = difftime(t, nf) / 3600.0;
-            CHECK(lt.tm_wday == 1 ? hours == 62 : hours == 14);
-        }
-        if (sched_day_clip(&lt)) {
-            clips[lt.tm_wday]++;
+            CHECK(fl.tm_hour == 7 && fl.tm_min == 0);
+            CHECK(difftime(t, nf) == 24 * 3600.0);
             if (first_clip < 0) first_clip = lt.tm_hour;
             last_clip = lt.tm_hour;
         }
     }
     CHECK(frames[0] == 0 && frames[6] == 0);           /* weekends off */
-    for (int d = 1; d <= 5; d++) { CHECK(frames[d] == 600); CHECK(clips[d] == 1); }
-    CHECK(clips[0] == 0 && clips[6] == 0);
+    for (int d = 1; d <= 5; d++) CHECK(frames[d] == 600);
+    for (int d = 0; d < 7; d++) CHECK(clips[d] == 1);           /* every day, weekends too */
     for (int d = 1; d <= 5; d++) CHECK(quiet[d] == 14 * 6);      /* 17:00-06:59 */
-    for (int d = 1; d <= 5; d++) CHECK(nights[d] == 1);
-    CHECK(nights[0] == 0 && nights[6] == 0);
     CHECK(quiet[0] == 24 * 6 && quiet[6] == 24 * 6);
-    CHECK(first_clip == 17 && last_clip == 17);
+    CHECK(first_clip == 7 && last_clip == 7);
     struct tm d = { .tm_year = 126, .tm_mon = 9, .tm_mday = 2 };
     char day[9];
     sched_day(&d, day);
