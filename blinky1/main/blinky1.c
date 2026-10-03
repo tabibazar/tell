@@ -9,6 +9,7 @@
  */
 #include <string.h>
 
+#include "driver/i2c_master.h"
 #include "esp_event.h"
 #include "esp_log.h"
 #include "esp_mac.h"
@@ -96,6 +97,90 @@ static void target_of(const state_t *s, float out[3])
     out[2] = s->b * k;
 }
 
+/* The I2C devices, on the pins they were actually wired to (found by a pin
+   search on 2026-10-03, one header position down from the plan):
+     bus 0  SDA GPIO5, SCL GPIO6   ENS160 (0x53) + AHT21 (0x38) module
+     bus 1  SDA GPIO7, SCL GPIO15  the display, 0x3C (an SSD1306/SH1106 OLED) */
+static i2c_master_bus_handle_t s_bus[2];
+static i2c_master_dev_handle_t s_aht, s_ens, s_oled;
+
+static i2c_master_dev_handle_t dev(int bus, uint8_t addr)
+{
+    i2c_device_config_t dc = { .dev_addr_length = I2C_ADDR_BIT_LEN_7, .device_address = addr, .scl_speed_hz = 100000 };
+    i2c_master_dev_handle_t d = NULL;
+    if (s_bus[bus] && i2c_master_probe(s_bus[bus], addr, 50) == ESP_OK)
+        i2c_master_bus_add_device(s_bus[bus], &dc, &d);
+    return d;
+}
+
+static void i2c_start(void)
+{
+    static const int sda[2] = { 5, 7 }, scl[2] = { 6, 15 };
+    for (int b = 0; b < 2; b++) {
+        i2c_master_bus_config_t bc = {
+            .i2c_port = b, .sda_io_num = sda[b], .scl_io_num = scl[b],
+            .clk_source = I2C_CLK_SRC_DEFAULT, .glitch_ignore_cnt = 7,
+            .flags.enable_internal_pullup = true,
+        };
+        if (i2c_new_master_bus(&bc, &s_bus[b]) != ESP_OK) s_bus[b] = NULL;
+    }
+    s_aht = dev(0, 0x38);
+    s_ens = dev(0, 0x53);
+    s_oled = dev(1, 0x3C);
+    ESP_LOGI(TAG, "AHT21 %s, ENS160 %s, display %s", s_aht ? "found" : "MISSING",
+             s_ens ? "found" : "MISSING", s_oled ? "found" : "MISSING");
+}
+
+/* One reading of each sensor, to show they work. */
+static void sensors_check(void)
+{
+    if (s_aht) {
+        uint8_t st, cmd[3] = { 0xAC, 0x33, 0x00 }, d[7];
+        uint8_t q = 0x71;
+        i2c_master_transmit_receive(s_aht, &q, 1, &st, 1, 100);
+        if ((st & 0x18) != 0x18) {                 /* not calibrated: initialise */
+            uint8_t init[3] = { 0xBE, 0x08, 0x00 };
+            i2c_master_transmit(s_aht, init, 3, 100);
+            vTaskDelay(pdMS_TO_TICKS(20));
+        }
+        i2c_master_transmit(s_aht, cmd, 3, 100);
+        vTaskDelay(pdMS_TO_TICKS(90));
+        if (i2c_master_receive(s_aht, d, 7, 100) == ESP_OK && !(d[0] & 0x80)) {
+            uint32_t rh = ((uint32_t)d[1] << 12) | ((uint32_t)d[2] << 4) | (d[3] >> 4);
+            uint32_t t = (((uint32_t)d[3] & 0x0F) << 16) | ((uint32_t)d[4] << 8) | d[5];
+            ESP_LOGI(TAG, "AHT21: %.1f C, %.0f %% RH", t * 200.0 / 1048576.0 - 50, rh * 100.0 / 1048576.0);
+        } else {
+            ESP_LOGW(TAG, "AHT21: no reading");
+        }
+    }
+    if (s_ens) {
+        uint8_t reg = 0x00, id[2] = { 0 };
+        i2c_master_transmit_receive(s_ens, &reg, 1, id, 2, 100);
+        uint8_t mode[2] = { 0x10, 0x02 };          /* OPMODE: standard */
+        i2c_master_transmit(s_ens, mode, 2, 100);
+        vTaskDelay(pdMS_TO_TICKS(1500));
+        uint8_t r = 0x20, d[6] = { 0 };            /* status, AQI, TVOC, eCO2 */
+        i2c_master_transmit_receive(s_ens, &r, 1, d, 6, 100);
+        static const char *const VAL[] = { "operating", "warming up", "first start-up", "invalid" };
+        ESP_LOGI(TAG, "ENS160: part 0x%04X, %s, AQI %d, TVOC %d ppb, eCO2 %d ppm", id[0] | (id[1] << 8),
+                 VAL[(d[0] >> 2) & 3], d[1] & 7, d[2] | (d[3] << 8), d[4] | (d[5] << 8));
+    }
+}
+
+/* The display lit all over for a few seconds, then dark: it is alive. */
+static void oled_check(void)
+{
+    if (!s_oled) return;
+    /* 0x00 = a command stream. Charge pump on in both dialects (SSD1306's
+       0x8D 0x14, SH1106's 0xAD 0x8B), display on, every pixel lit. */
+    static const uint8_t on[] = { 0x00, 0xAE, 0x8D, 0x14, 0xAD, 0x8B, 0xAF, 0xA5 };
+    static const uint8_t off[] = { 0x00, 0xA4, 0xAE };
+    i2c_master_transmit(s_oled, on, sizeof on, 100);
+    ESP_LOGI(TAG, "display: every pixel lit for 5 s");
+    vTaskDelay(pdMS_TO_TICKS(5000));
+    i2c_master_transmit(s_oled, off, sizeof off, 100);
+}
+
 void app_main(void)
 {
     esp_err_t e = nvs_flash_init();
@@ -113,6 +198,10 @@ void app_main(void)
     bool had = load(&st);
     ESP_LOGI(TAG, "%s: %s rgb %u,%u,%u at %u%%", had ? "restored" : "first boot",
              st.on ? "on" : "off", st.r, st.g, st.b, st.level);
+
+    i2c_start();
+    sensors_check();
+    oled_check();
 
     s_q = xQueueCreate(8, sizeof(light_msg_t));
     radio_start();
