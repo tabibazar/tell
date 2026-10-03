@@ -215,12 +215,14 @@ static canvas_t s_canvas;
 
 static void backlight_init(void);
 
-#if LCD_SWAP_COLOR_BYTES
-/* Declared here because display_init creates it and display_blit waits on it. */
-static SemaphoreHandle_t s_blit_done;
+/* The frame goes to the panel in bands through two internal DMA buffers of
+   our own (display_blit). Declared here because display_init makes them. */
+#define BAND_ROWS 20
+static uint16_t *s_band[2];
+static SemaphoreHandle_t s_band_free;      /* counts bands not in flight */
 static bool blit_done(esp_lcd_panel_io_handle_t io,
                       esp_lcd_panel_io_event_data_t *ev, void *ctx);
-#endif
+static void blit_at(int y_dst);
 
 
 esp_err_t display_init(void)
@@ -258,16 +260,32 @@ esp_err_t display_init(void)
         .lcd_cmd_bits = 8,
         .lcd_param_bits = 8,
         .spi_mode = 0,
-        .trans_queue_depth = 10,
+        /*
+         * Two, not ten. The S3's SPI moves at most 32 KB a transaction, so a
+         * frame goes as four or five chunks, and with the framebuffer in
+         * PSRAM each queued chunk takes its own internal DMA bounce buffer.
+         * Ten deep, every chunk of the frame wanted one at once (~130 KB);
+         * once watch also linked the WiFi driver (2026-10-02) the later ones
+         * failed silently and only the top third of her screen updated --
+         * visio's "bottom half blank" again (46bc1ec). Two in flight is two
+         * bounces, recycled as each chunk goes.
+         */
+        .trans_queue_depth = 2,
     };
     ESP_ERROR_CHECK(esp_lcd_new_panel_io_spi(
         (esp_lcd_spi_bus_handle_t)LCD_HOST, &io_cfg, &io_handle));
 
-#if LCD_SWAP_COLOR_BYTES
-    s_blit_done = xSemaphoreCreateBinary();
+    /* Taken now, while internal memory is still in one piece: once BLE and
+       the rest are up, watch had 60 KB free but nothing as large as 32 KB,
+       and the SPI driver's per-chunk bounce buffers for a PSRAM frame could
+       not be had at all (2026-10-03: a blank, then a third-updated, screen). */
+    for (int i = 0; i < 2; i++) {
+        s_band[i] = heap_caps_malloc(LCD_W * BAND_ROWS * sizeof(uint16_t), MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
+        if (!s_band[i]) { ESP_LOGE(TAG, "no internal DMA memory for the bands"); return ESP_ERR_NO_MEM; }
+    }
+    s_band_free = xSemaphoreCreateCounting(2, 2);
     const esp_lcd_panel_io_callbacks_t cbs = { .on_color_trans_done = blit_done };
     ESP_ERROR_CHECK(esp_lcd_panel_io_register_event_callbacks(io_handle, &cbs, NULL));
-#endif
 
     esp_lcd_panel_dev_config_t panel_cfg = {
         .reset_gpio_num = PIN_TFT_RST,
@@ -336,9 +354,8 @@ esp_err_t display_init(void)
         ESP_ERROR_CHECK(esp_lcd_panel_set_gap(s_panel, 0, 0));
         /* Two passes, overlapping, because the buffer is shorter than the
            panel: the top LCD_H rows and the bottom LCD_H rows. */
-        esp_lcd_panel_draw_bitmap(s_panel, 0, 0, LCD_W, LCD_H, s_fb);
-        esp_lcd_panel_draw_bitmap(s_panel, 0, LCD_PANEL_FULL_H - LCD_H,
-                                  LCD_W, LCD_PANEL_FULL_H, s_fb);
+        blit_at(0);
+        blit_at(LCD_PANEL_FULL_H - LCD_H);
         ESP_ERROR_CHECK(esp_lcd_panel_set_gap(s_panel, LCD_GAP_X, LCD_GAP_Y));
     }
 #endif
@@ -348,8 +365,10 @@ esp_err_t display_init(void)
     display_set_brightness(CONFIG_SCREEN_BRIGHTNESS);
 
     display_show_text(NULL);
-    ESP_LOGI(TAG, "ST7789 up: %dx%d, %d cols x %d rows",
-             LCD_W, LCD_H, s_canvas.cols, s_canvas.rows);
+    ESP_LOGI(TAG, "ST7789 up: %dx%d, %d cols x %d rows; internal DMA largest %u free %u",
+             LCD_W, LCD_H, s_canvas.cols, s_canvas.rows,
+             (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL),
+             (unsigned)heap_caps_get_free_size(MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL));
     return ESP_OK;
 }
 
@@ -404,60 +423,65 @@ void display_sleep(bool asleep)
 
 canvas_t *display_canvas(void) { return &s_canvas; }
 
-#if LCD_SWAP_COLOR_BYTES
 /*
- * This panel wants the two bytes of each pixel the other way round, and the
- * SPI driver has no flag for it -- only the i80 one does.
+ * The frame out in bands of BAND_ROWS rows, each copied from the PSRAM
+ * framebuffer into one of two internal DMA buffers and sent from there.
  *
- * So the framebuffer is swapped in place, sent, and swapped back. It is
- * already DMA-capable memory, which a scratch buffer of my own was not: a
- * static array lands in .bss, which on this chip can sit in D/IRAM, readable
- * by the CPU and invisible to the SPI DMA. What reached the panel then was
- * whatever the DMA engine did manage to fetch -- colours close but wrong, and
- * debris under the glyphs. One transfer out of the buffer that was always
- * going to work is simpler than a scratch band, and has no second buffer to
- * get the addressing of wrong.
+ * Sending the PSRAM frame itself made the SPI driver find internal bounce
+ * buffers for every 32 KB chunk, mid-frame, from whatever was free. Too
+ * fragmented and the chunks failed without a word: watch's screen blank, or
+ * only its top third ever updating. Two buffers taken at start-up need
+ * nothing at draw time, and while one band is on the wire the next is being
+ * copied.
  *
- * Two passes over 54,000 halfwords, well under a millisecond, on a page that
- * redraws once a second. The wait between them is not optional: draw_bitmap
- * only queues the transfer, so swapping back before it has gone would send
- * the frame half returned to canvas order.
+ * A panel that wants each pixel's two bytes the other way round (speaker's
+ * ST7789T3; the SPI driver has no flag for it) gets them swapped in the copy,
+ * so the framebuffer itself is never disturbed.
  */
-static void swap_in_place(void)
-{
-    uint16_t *p = s_fb;
-    for (size_t i = 0, n = (size_t)LCD_W * LCD_H; i < n; i++)
-        p[i] = (uint16_t)((p[i] >> 8) | (p[i] << 8));
-}
-
 static bool IRAM_ATTR blit_done(esp_lcd_panel_io_handle_t io,
                                 esp_lcd_panel_io_event_data_t *ev, void *ctx)
 {
     (void)io; (void)ev; (void)ctx;
     BaseType_t woken = pdFALSE;
-    xSemaphoreGiveFromISR(s_blit_done, &woken);
+    xSemaphoreGiveFromISR(s_band_free, &woken);
     return woken == pdTRUE;
+}
+
+/* The whole framebuffer to the panel's rows y_dst .. y_dst + LCD_H. */
+static void blit_at(int y_dst)
+{
+    int k = 0, failed = 0;
+    esp_err_t first = ESP_OK;
+    for (int y = 0; y < LCD_H; y += BAND_ROWS, k ^= 1) {
+        int rows = LCD_H - y < BAND_ROWS ? LCD_H - y : BAND_ROWS;
+        /* Bands complete in order, so a token back means the older band --
+           the buffer about to be reused -- has gone. */
+        if (xSemaphoreTake(s_band_free, pdMS_TO_TICKS(200)) != pdTRUE) { failed++; continue; }
+        const uint16_t *src = s_fb + (size_t)y * LCD_W;
+        uint16_t *dst = s_band[k];
+        size_t n = (size_t)rows * LCD_W;
+#if LCD_SWAP_COLOR_BYTES
+        for (size_t i = 0; i < n; i++) dst[i] = (uint16_t)((src[i] >> 8) | (src[i] << 8));
+#else
+        memcpy(dst, src, n * sizeof(uint16_t));
+#endif
+        esp_err_t e = esp_lcd_panel_draw_bitmap(s_panel, 0, y_dst + y, LCD_W, y_dst + y + rows, dst);
+        if (e != ESP_OK) {
+            xSemaphoreGive(s_band_free);            /* nothing in flight for this one */
+            if (!failed++) first = e;
+        }
+    }
+    /* Both back before returning: the caller may draw into the frame again. */
+    for (int i = 0; i < 2; i++) xSemaphoreTake(s_band_free, pdMS_TO_TICKS(200));
+    for (int i = 0; i < 2; i++) xSemaphoreGive(s_band_free);
+    static int said;
+    if (failed && said++ < 5) ESP_LOGE(TAG, "%d band(s) not sent: %s", failed, esp_err_to_name(first));
 }
 
 void display_blit(void)
 {
-    swap_in_place();
-    esp_err_t e = esp_lcd_panel_draw_bitmap(s_panel, 0, 0, LCD_W, LCD_H, s_fb);
-    if (e == ESP_OK) xSemaphoreTake(s_blit_done, pdMS_TO_TICKS(200));
-    swap_in_place();
-    /* A frame that never reached the panel used to fail without a word. */
-    static int said;
-    if (e != ESP_OK && said++ < 5)
-        ESP_LOGE(TAG, "frame not sent: %s; internal DMA largest %u free %u", esp_err_to_name(e),
-                 (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL),
-                 (unsigned)heap_caps_get_free_size(MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL));
+    blit_at(0);
 }
-#else
-void display_blit(void)
-{
-    esp_lcd_panel_draw_bitmap(s_panel, 0, 0, LCD_W, LCD_H, s_fb);
-}
-#endif
 
 void display_show_text(const char *utf8)
 {
