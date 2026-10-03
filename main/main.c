@@ -3750,6 +3750,8 @@ static page_t   s_cam_back = PAGE_FACE;  /* where the viewfinder returns to */
 /* The Mac writes lines to watch's own USB serial port; ESP_LOG keeps working
    through the driver, which drops output after 50 ms when nothing reads it,
    so a watch on a charger never blocks on its log. */
+static volatile int s_light_usb;      /* !light / !lightnext from the Mac, for testing */
+
 static void watch_usb_task(void *arg)
 {
     (void)arg;
@@ -3797,6 +3799,10 @@ static void watch_usb_task(void *arg)
                         } else {
                             ESP_LOGW(TAG, "cam: a %u-byte frame refused", nb);
                         }
+                    } else if (!strcmp(line, "!light")) {
+                        s_light_usb = 1;            /* test hook: open the Light page */
+                    } else if (!strcmp(line, "!lightnext")) {
+                        s_light_usb = 2;            /* test hook: as BOOT on the Light page */
                     } else {
                         watch_noise_line(line, (size_t)len);
                     }
@@ -4124,6 +4130,18 @@ static void light_send_now(int64_t now)
    and resends; the wrist's tilt as brightness. */
 static void light_tick(int64_t now)
 {
+    if (s_light_usb) {
+        int what = s_light_usb;
+        s_light_usb = 0;
+        s_pages.last_activity_us = now;
+        if (s_pages.current != PAGE_LIGHT) { pages_show(&s_pages, PAGE_LIGHT, now); s_drawn_second = -1; }
+        if (what == 2) {
+            light_load();
+            s_light.colour = (s_light.colour + 1) % LIGHT_N_COLOURS;
+            light_changed(now);
+        }
+        ESP_LOGI(TAG, "light (usb): page, colour %s", LIGHT_COLOURS[s_light.colour].name);
+    }
     bool want = s_pages.current == PAGE_LIGHT && !s_watch_dark;
     lightlink_radio(want);
     if (!want) return;
