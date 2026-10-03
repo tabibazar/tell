@@ -41,12 +41,11 @@
 #include "cam.h"
 #include "camlink_tx.h"
 #include "clip.h"
-#include "hotspot.h"
-#include "spy_secrets.h"
 #include "net.h"
 #include "sched.h"
 #include "store.h"
 #include "tg.h"
+#include "where.h"
 
 static const char *TAG = "spy";
 
@@ -65,7 +64,7 @@ typedef struct {
 
 static QueueHandle_t s_cam_q, s_work_q, s_net_q;
 static int s_frames_today, s_clips_today, s_today_mday = -1;
-static volatile bool s_encoding, s_cam_busy, s_redial, s_uploading, s_cell_req;
+static volatile bool s_encoding, s_cam_busy, s_redial, s_uploading, s_cell_req, s_where_req;
 
 static void send_text(const char *text)
 {
@@ -208,10 +207,9 @@ static void status_text(char *out, size_t cap)
     char when[32] = "no clock yet";
     if (timed) strftime(when, sizeof when, "%a %H:%M", &lt);
     int64_t up = esp_timer_get_time() / 1000000;
-    char hs[48] = "", cellline[64] = "";
+    char cellline[64] = "";
     net_cell_t cl = net_cell_last();
     if (cl.ok) snprintf(cellline, sizeof cellline, "tower %ld band %d, %d dBm\n", cl.cell >> 8, cl.band, cl.rsrp);
-    if (hotspot_is_on()) snprintf(hs, sizeof hs, "\nhotspot on, %d connected", hotspot_clients());
     uint32_t fr = 0, tot = 0;
     bool card = store_space(&fr, &tot);
     float v = 0, pct = 0, rate = 0;
@@ -230,12 +228,12 @@ static void status_text(char *out, size_t cap)
         "card: %s%lu MB free of %lu\n"
         "today: %d frames, %d clips sent\n"
         "battery: %s\n"
-        "chip %.0f C, RAM %u KB free%s%s%s",
+        "chip %.0f C, RAM %u KB free%s%s",
         when, net_operator(), net_csq(), up / 3600, (up / 60) % 60, cellline,
         card ? "" : "MISSING ", (unsigned long)fr, (unsigned long)tot,
         s_frames_today, s_clips_today, batt, chip_temp(),
         (unsigned)(heap_caps_get_free_size(MALLOC_CAP_INTERNAL) / 1024),
-        cam_flip() ? ", picture flipped" : "", s_encoding ? ", encoding now" : "", hs);
+        cam_flip() ? ", picture flipped" : "", s_encoding ? ", encoding now" : "");
     if (timed && !sched_capture(&lt) && n > 0 && (size_t)n < cap)
         snprintf(out + n, cap - n, "\nframes: weekdays 07:00-17:00");
 }
@@ -499,27 +497,15 @@ static void command(const char *text)
     } else if (!strcmp(w, "cell") || !strcmp(w, "tower") || !strcmp(w, "towers")) {
         send_text("Asking the modem; spy is offline for a few seconds.");
         s_cell_req = true;
-    } else if (!strcmp(w, "hotspot") || !strcmp(w, "wifi")) {
-        char t[200];
-        if (strstr(text, "off")) {
-            hotspot_off();
-            send_text("Hotspot off.");
-        } else if (!hotspot_configured()) {
-            send_text("No hotspot password in this build (SPY_WIFI_PASS in secrets/spy-telegram.env).");
-        } else if (hotspot_on()) {
-            snprintf(t, sizeof t, "Hotspot on: network \"%s\", password %s. It goes off by itself in %d hours, "
-                     "or send \"hotspot off\". Slow (about 0.5 Mbit/s): fine for messages and maps, not video.",
-                     SPY_WIFI_SSID, SPY_WIFI_PASS, HOTSPOT_HOURS);
-            send_text(t);
-        } else {
-            send_text("The hotspot would not start.");
-        }
+    } else if (!strcmp(w, "where") || !strcmp(w, "location") || !strcmp(w, "gps")) {
+        send_text("Finding spy from its cell tower; offline for a few seconds.");
+        s_where_req = true;
     } else if (!strcmp(w, "flip")) {
         cam_set_flip(!cam_flip());
         settings_save_flip(cam_flip());
         send_text(cam_flip() ? "Picture flipped (upside down)." : "Picture the right way up.");
     } else {
-        send_text("spy knows: pic (pic full for 5 MP), clip (today so far), status, cell, hotspot on / hotspot off, flip.");
+        send_text("spy knows: pic (pic full for 5 MP), clip (today so far), status, cell, where, flip.");
     }
 }
 
@@ -584,7 +570,6 @@ static void net_task(void *arg)
             cam_req_t r = CAM_HELLO;
             xQueueSend(s_cam_q, &r, 0);
         }
-        hotspot_tick();
         if (s_cell_req) {
             /* What is waiting goes first: the reading takes PPP down. */
             net_job_t *w = NULL;
@@ -598,6 +583,29 @@ static void net_task(void *arg)
             int n = snprintf(t, sizeof t, "spy's cell tower now:\n");
             cell_text(&c, t + n, sizeof t - n);
             send_text(t);
+            continue;
+        }
+        if (s_where_req) {
+            net_job_t *w = NULL;
+            while (xQueueReceive(s_net_q, &w, 0) == pdTRUE) { do_job(w); free(w); }
+            s_where_req = false;
+            net_cell_t c;
+            net_cell_now(&c);
+            tg_reset();
+            if (!net_ok()) { s_redial = true; send_text("No network after reading the cell."); continue; }
+            double lat, lon;
+            int acc;
+            char t[200];
+            if (where_lookup(&c, &lat, &lon, &acc)) {
+                snprintf(t, sizeof t, "spy is near %.5f, %.5f (within about %d m, from tower %ld).",
+                         lat, lon, acc, c.cell >> 8);
+                tg_send_text(t);
+                tg_send_location(lat, lon);
+            } else {
+                snprintf(t, sizeof t, "Could not place tower %ld (%d-%d, area 0x%X) on a map.",
+                         c.cell >> 8, c.mcc, c.mnc, c.tac);
+                tg_send_text(t);
+            }
             continue;
         }
         net_job_t *j = NULL;
@@ -695,7 +703,7 @@ void app_main(void)
     setenv("TZ", "EST5EDT,M3.2.0,M11.1.0", 1);
     tzset();
     /* One error line per dropped PPP packet, at 115200 baud, only slows
-       spy further when the hotspot is busy; TCP retransmits them anyway.
+       spy further when PPP is busy; TCP retransmits them anyway.
        (This tag logs nothing else spy relies on: net.c logs the PPP state.) */
     esp_log_level_set("esp-netif_lwip-ppp", ESP_LOG_NONE);
     settings_load();

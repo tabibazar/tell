@@ -86,8 +86,8 @@ bool camlink_start(void (*on_ask)(void))
     s_q = xQueueCreate(2, sizeof(job_t));
     s_sent = xSemaphoreCreateBinary();
     /* The WiFi driver, as a station that never joins anything: ESP-NOW
-       needs the radio, and hotspot.c adds the access point to it on
-       request (APSTA) rather than owning it. */
+       needs the radio, and nothing else on spy uses WiFi (the hotspot went
+       on 2026-10-03). */
     esp_netif_init();
     esp_event_loop_create_default();
     wifi_init_config_t c = WIFI_INIT_CONFIG_DEFAULT();

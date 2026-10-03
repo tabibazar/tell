@@ -16,6 +16,9 @@ bool tg_configured(void);
 /* sendMessage, plain text. */
 bool tg_send_text(const char *text);
 
+/* sendLocation: a pin on a map. */
+bool tg_send_location(double lat, double lon);
+
 /* A file from the card as multipart: method "sendPhoto" with field "photo",
    "sendVideo" with "video", "sendDocument" with "document". `extra` is more
    form fields as "name=value\n" lines (width, height, duration), or NULL. */

@@ -1,5 +1,5 @@
 idf_component_register(
-    SRCS "spy.c" "hotspot.c" "camlink_tx.c" "mp4mux.c" "net.c" "tg.c" "store.c" "cam.c" "clip.c" "stamp.c" "sched.c"
+    SRCS "spy.c" "camlink_tx.c" "where.c" "mp4mux.c" "net.c" "tg.c" "store.c" "cam.c" "clip.c" "stamp.c" "sched.c"
     INCLUDE_DIRS "." "../../main" "${CMAKE_CURRENT_BINARY_DIR}"
     REQUIRES esp_wifi espressif__esp32-camera espressif__esp_h264 espressif__esp_jpeg espressif__esp_modem esp_driver_gpio esp_driver_uart esp_driver_i2c esp_driver_sdmmc fatfs sdmmc esp_driver_tsens
              esp_netif esp_event esp_http_client esp-tls mbedtls nvs_flash json esp_timer)
@@ -10,8 +10,6 @@ idf_component_register(
 set(SPY_SECRETS "${CMAKE_CURRENT_LIST_DIR}/../../secrets/spy-telegram.env")
 set(SPY_TOKEN "")
 set(SPY_CHAT "")
-set(SPY_WIFI_SSID "spy")
-set(SPY_WIFI_PASS "")
 if(EXISTS "${SPY_SECRETS}")
     file(STRINGS "${SPY_SECRETS}" _lines)
     foreach(_l IN LISTS _lines)
@@ -19,13 +17,9 @@ if(EXISTS "${SPY_SECRETS}")
             set(SPY_TOKEN "${CMAKE_MATCH_1}")
         elseif(_l MATCHES "^TELEGRAM_CHAT_ID=(.*)$")
             set(SPY_CHAT "${CMAKE_MATCH_1}")
-        elseif(_l MATCHES "^SPY_WIFI_SSID=(.*)$")
-            set(SPY_WIFI_SSID "${CMAKE_MATCH_1}")
-        elseif(_l MATCHES "^SPY_WIFI_PASS=(.*)$")
-            set(SPY_WIFI_PASS "${CMAKE_MATCH_1}")
         endif()
     endforeach()
     set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${SPY_SECRETS}")
 endif()
 file(CONFIGURE OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/spy_secrets.h" CONTENT
-"#define SPY_TG_TOKEN \"${SPY_TOKEN}\"\n#define SPY_TG_CHAT \"${SPY_CHAT}\"\n#define SPY_WIFI_SSID \"${SPY_WIFI_SSID}\"\n#define SPY_WIFI_PASS \"${SPY_WIFI_PASS}\"\n")
+"#define SPY_TG_TOKEN \"${SPY_TOKEN}\"\n#define SPY_TG_CHAT \"${SPY_CHAT}\"\n")
