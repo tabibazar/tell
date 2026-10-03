@@ -92,3 +92,5 @@ sdkconfig.old
 host_tests/test_spysched
 blinky1/sdkconfig.old
 host_tests/test_fluid
+host_tests/test_airui
+blinky1/sdkconfig

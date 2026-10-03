@@ -1,100 +1,79 @@
-/* airui: speaker's Air page renders in each state (host_tests/renders/airui/, PPM). */
-#include "airui.h"
-
+/* blinky1's air log and OLED pages: rolls a week of synthetic minutes through
+   airlog, checks the roll-ups and the save/load round trip, and renders every
+   page to host_tests/renders/airui/ as PBM. */
+#include "../blinky1/main/airlog.h"
+#include "../blinky1/main/airui.h"
 #include <math.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
-#include <sys/stat.h>
 
-static uint16_t s_fb[AIRUI_WIDTH * AIRUI_HEIGHT];
-static int s_fail;
+static int fails;
+#define CHECK(c, ...) do { if (!(c)) { printf("FAIL %s:%d ", __FILE__, __LINE__); printf(__VA_ARGS__); printf("\n"); fails++; } } while (0)
+static airlog_t L, L2;
 
-static void render(const char *name, const airui_t *s)
-{
-    canvas_t c;
-    canvas_init(&c, s_fb, AIRUI_WIDTH, AIRUI_HEIGHT, 1);
-    airui_draw(&c, s);
-    mkdir("renders", 0755);
-    mkdir("renders/airui", 0755);
-    char path[128];
-    snprintf(path, sizeof path, "renders/airui/%s.ppm", name);
-    FILE *f = fopen(path, "wb");
-    if (!f) { s_fail++; return; }
-    fprintf(f, "P6 %d %d 255\n", AIRUI_WIDTH, AIRUI_HEIGHT);
-    for (int i = 0; i < AIRUI_WIDTH * AIRUI_HEIGHT; i++) {
-        uint16_t p = s_fb[i];
-        unsigned char rgb[3] = { (unsigned char)((p >> 11) * 255 / 31), (unsigned char)(((p >> 5) & 63) * 255 / 63),
-                                 (unsigned char)((p & 31) * 255 / 31) };
-        fwrite(rgb, 1, 3, f);
-    }
-    fclose(f);
-}
-
-static void render_fb(const char *name)
+static void pbm(const uint8_t *fb, const char *name)
 {
     char path[128];
-    snprintf(path, sizeof path, "renders/airui/%s.ppm", name);
-    FILE *f = fopen(path, "wb");
-    if (!f) { s_fail++; return; }
-    fprintf(f, "P6 %d %d 255\n", AIRUI_WIDTH, AIRUI_HEIGHT);
-    for (int i = 0; i < AIRUI_WIDTH * AIRUI_HEIGHT; i++) {
-        uint16_t p = s_fb[i];
-        unsigned char rgb[3] = { (unsigned char)((p >> 11) * 255 / 31), (unsigned char)(((p >> 5) & 63) * 255 / 63),
-                                 (unsigned char)((p & 31) * 255 / 31) };
-        fwrite(rgb, 1, 3, f);
+    snprintf(path, sizeof path, "host_tests/renders/airui/%s.pbm", name);
+    FILE *o = fopen(path, "wb");
+    if (!o) return;
+    fprintf(o, "P1\n128 64\n");
+    for (int y = 0; y < 64; y++) {
+        for (int x = 0; x < 128; x++) fputs(fb[(y >> 3) * 128 + x] & (1 << (y & 7)) ? "1 " : "0 ", o);
+        fputc('\n', o);
     }
-    fclose(f);
+    fclose(o);
 }
 
 int main(void)
 {
-    airui_t s;
-    memset(&s, 0, sizeof s);
-    s.have_sensor = true;
-    s.have_voc = s.have_eco2 = s.have_temp = s.have_rh = true;
-    s.voc_ppb = 45; s.eco2_ppm = 440; s.temp_c = 23.4f; s.rh = 41.0f;
-    s.voc_state = ENVS_OK; s.eco2_state = ENVS_OK; s.voc_trend = ENVS_STEADY;
-    render("good", &s);
-    s.voc_ppb = 260; s.eco2_ppm = 870; s.voc_state = ENVS_FAIR; s.eco2_state = ENVS_FAIR; s.voc_trend = ENVS_RISING;
-    render("fair", &s);
-    s.voc_ppb = 1340; s.eco2_ppm = 1180; s.voc_state = ENVS_POOR; s.eco2_state = ENVS_POOR;
-    render("poor", &s);
-    s.warming = true; s.warm_minutes = 2;
-    render("warming", &s);
-    memset(&s, 0, sizeof s);
-    render("no_sensor", &s);
-
-    /* The 24 hours: clean air with a dinner spike into FAIR and a POOR burst. */
-    static airui_day_t d;
-    d.have_sensor = true;
-    d.now_slot = 14 * 12 + 6;               /* 14:30 */
-    for (int k = 0; k < AIRUI_SLOTS; k++) {
-        float base = 40.0f + 10.0f * sinf((float)k / 20.0f);
-        d.voc[k] = base;
-        d.eco2[k] = 420.0f + base;
-        if (k > 40 && k < 70) { d.voc[k] = 300.0f + (float)(k - 40) * 12.0f; d.eco2[k] = 820.0f + (float)(k - 40) * 8.0f; }
-        if (k > 200 && k < 215) { d.voc[k] = 900.0f; d.eco2[k] = 1100.0f; }
-        if (k > 120 && k < 132) d.voc[k] = d.eco2[k] = NAN;
+    airlog_init(&L);
+    int quarters = 0;
+    for (int m = 0; m < 9 * 24 * 60; m++) {            /* nine days of minutes */
+        float day = sinf(m * 6.2832f / 1440.0f);
+        air_point_t p = { { (int16_t)(240 + 20 * day), (int16_t)(400 + 60 * day),
+                            (int16_t)(500 + 300 * fmaxf(0, day) + (m % 7) * 3), (int16_t)(60 + 40 * fmaxf(0, day)) } };
+        if (m > 3000 && m < 3060) p.v[AIR_ECO2] = AIRLOG_NONE;   /* a gap */
+        quarters += airlog_minute(&L, &p);
     }
-    canvas_t c;
-    canvas_init(&c, s_fb, AIRUI_WIDTH, AIRUI_HEIGHT, 1);
-    airui_draw_day(&c, &d);
-    render_fb("day");
+    CHECK(quarters == 9 * 24 * 4, "quarters %d", quarters);
+    CHECK(L.hour_n == AIRLOG_HOUR && L.day_n == AIRLOG_DAY && L.week_n == AIRLOG_WEEK, "rings %d %d %d", L.hour_n, L.day_n, L.week_n);
+    int16_t s[AIRLOG_DAY];
+    int n = airlog_series(&L, AIR_TEMP, AIR_RANGE_DAY, s);
+    int lo = 9999, hi = -9999;
+    for (int i = 0; i < n; i++) { if (s[i] < lo) lo = s[i]; if (s[i] > hi) hi = s[i]; }
+    CHECK(n == AIRLOG_DAY && lo >= 218 && hi <= 262 && hi - lo > 30, "day series %d..%d", lo, hi);
 
-    static airui_week_t w;
-    w.have_sensor = true;
-    static const char *const dn[7] = { "Sa", "Su", "Mo", "Tu", "We", "Th", "Fr" };
-    for (int i = 0; i < 7; i++) { w.day[i][0] = dn[i][0]; w.day[i][1] = dn[i][1]; }
-    for (int i = 0; i < 7; i++)
-        for (int h = 0; h < 24; h++)
-            w.cell[i][h] = i < 2 && h < 12 ? AIRUI_CELL_NONE : (h >= 18 && h <= 20) ? AIRUI_CELL_FAIR
-                         : (i == 5 && h >= 18 && h <= 19) ? AIRUI_CELL_POOR : AIRUI_CELL_OK;
-    w.cell[5][18] = w.cell[5][19] = AIRUI_CELL_POOR;
-    for (int h = 15; h < 24; h++) w.cell[6][h] = AIRUI_CELL_FUTURE;
-    w.poor_hours = 2;
-    w.fair_hours = 14;
-    airui_draw_week(&c, &w);
-    render_fb("week");
-    printf(s_fail ? "%d FAILED\n" : "all passed\n", s_fail);
-    return s_fail != 0;
+    uint8_t buf[4096];
+    size_t len = airlog_save(&L, buf, sizeof buf);
+    CHECK(len > 0 && airlog_load(&L2, buf, len), "save/load");
+    int16_t s2[AIRLOG_DAY];
+    CHECK(airlog_series(&L2, AIR_TEMP, AIR_RANGE_DAY, s2) == n && !memcmp(s, s2, sizeof s2), "day survives");
+    CHECK(airlog_series(&L2, AIR_TEMP, AIR_RANGE_HOUR, s2) == 0, "hour starts empty after load");
+    buf[0] ^= 1;
+    CHECK(!airlog_load(&L2, buf, len), "bad magic refused");
+    printf("saved %zu bytes\n", len);
+
+    uint8_t fb[1024];
+    air_now_t now = { 24.8f, 41.0f, 612, 87, 2, 0 };
+    for (int p = 0; p < AIRUI_PAGES; p++) {
+        airui_draw(fb, p, &now, &L);
+        char name[16];
+        snprintf(name, sizeof name, "p%02d", p);
+        pbm(fb, name);
+    }
+    air_now_t warm = { 25.3f, 41.0f, 400, 24, 1, 2 };
+    airui_draw(fb, 0, &warm, &L);
+    pbm(fb, "now-warming");
+    airlog_t empty; airlog_init(&empty);
+    airui_draw(fb, 1, &now, &empty);
+    pbm(fb, "empty-chart");
+    uint8_t r, g, b;
+    airui_colour(&now, &r, &g, &b);
+    CHECK(g > r && b == 0, "good air is green-ish: %d %d %d", r, g, b);
+    airui_colour(&warm, &r, &g, &b);
+    CHECK(b > 0 && r == 0 && g == 0, "warming is blue");
+    printf(fails ? "%d FAILED\n" : "airui: all passed\n", fails);
+    return fails != 0;
 }

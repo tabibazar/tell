@@ -54,7 +54,7 @@ void lightlink_radio(bool on)
     }
 }
 
-bool lightlink_send(bool on, uint8_t r, uint8_t g, uint8_t b, uint8_t level)
+bool lightlink_send(uint8_t on, uint8_t r, uint8_t g, uint8_t b, uint8_t level)
 {
     if (!s_on) return false;
     light_msg_t m = { .magic = LIGHT_MAGIC, .version = LIGHT_VERSION, .on = on,

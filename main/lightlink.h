@@ -17,13 +17,16 @@
 #define LIGHT_MAGIC   0x4B4E4C42u      /* "BLNK" */
 #define LIGHT_VERSION 1
 
+#define LIGHT_ON_AIR  2
+
 #define LIGHT_WATCH_MAC   { 0x80, 0x45, 0x6b, 0x35, 0x11, 0xd4 }
 #define LIGHT_BLINKY1_MAC { 0x10, 0x51, 0xdb, 0x79, 0xb3, 0xa8 }
 
 typedef struct __attribute__((packed)) {
     uint32_t magic;
     uint8_t  version;
-    uint8_t  on;            /* 0: dark, whatever the colour */
+    uint8_t  on;            /* 0 dark; 1 the colour below; LIGHT_ON_AIR: blinky1's
+                               own air-quality colour, at `level` */
     uint8_t  r, g, b;       /* the colour at full strength */
     uint8_t  level;         /* brightness, 1..100 % */
     uint16_t seq;           /* for the log only */

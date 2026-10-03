@@ -6,6 +6,7 @@
 
 const light_colour_t LIGHT_COLOURS[LIGHT_N_COLOURS] = {
     { "Off",    0,   0,   0   },
+    { "Air",    0,   200, 90  },   /* drawn green; blinky1 picks the real colour */
     { "Warm",   255, 130, 40  },
     { "White",  255, 230, 200 },
     { "Red",    255, 0,   0   },

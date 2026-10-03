@@ -1,6 +1,7 @@
 #include "display.h"
 #if CONFIG_SCREEN_BOARD_TOUCH_LCD_169
 #include "fluid.h"
+#include "lightlink.h"
 #include "lightlink_tx.h"
 #include "lightui.h"
 #endif
@@ -4266,7 +4267,8 @@ static void light_changed(int64_t now)
 static void light_send_now(int64_t now)
 {
     const light_colour_t *k = &LIGHT_COLOURS[s_light.colour];
-    lightlink_send(s_light.colour != 0, k->r, k->g, k->b, LIGHT_LEVELS[s_light.level]);
+    uint8_t on = s_light.colour == 0 ? 0 : s_light.colour == LIGHT_AIR ? LIGHT_ON_AIR : 1;
+    lightlink_send(on, k->r, k->g, k->b, LIGHT_LEVELS[s_light.level]);
     s_light_sent_us = now;
     s_light_tries++;
 }

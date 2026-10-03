@@ -21,7 +21,10 @@
 #include "freertos/queue.h"
 #include "freertos/task.h"
 #include "led_strip.h"
+#include "airlog.h"
+#include "airui.h"
 #include "lightlink.h"
+#include <math.h>
 #include "nvs.h"
 #include "nvs_flash.h"
 
@@ -68,7 +71,7 @@ static bool load(state_t *s)
     size_t n = sizeof *s;
     bool ok = nvs_open("light", NVS_READONLY, &h) == ESP_OK;
     if (ok) {
-        ok = nvs_get_blob(h, "state", s, &n) == ESP_OK && n == sizeof *s;
+        ok = nvs_get_blob(h, "state2", s, &n) == ESP_OK && n == sizeof *s;
         nvs_close(h);
     }
     return ok;
@@ -78,7 +81,7 @@ static void save(const state_t *s)
 {
     nvs_handle_t h;
     if (nvs_open("light", NVS_READWRITE, &h) != ESP_OK) return;
-    nvs_set_blob(h, "state", s, sizeof *s);
+    nvs_set_blob(h, "state2", s, sizeof *s);
     nvs_commit(h);
     nvs_close(h);
 }
@@ -89,12 +92,21 @@ static void show(float r, float g, float b)
     led_strip_refresh(s_led);
 }
 
+static air_now_t air_now(void);
+
+/* Where the LED should be: dark, the colour watch sent, or -- the default --
+   the colour of the air (airui_colour), at the brightness watch last set. */
 static void target_of(const state_t *s, float out[3])
 {
+    uint8_t r = s->r, g = s->g, b = s->b;
+    if (s->on == LIGHT_ON_AIR) {
+        air_now_t n = air_now();
+        airui_colour(&n, &r, &g, &b);
+    }
     float k = s->on ? s->level / 100.0f : 0;
-    out[0] = s->r * k;
-    out[1] = s->g * k;
-    out[2] = s->b * k;
+    out[0] = r * k;
+    out[1] = g * k;
+    out[2] = b * k;
 }
 
 /* The I2C devices, on the pins they were actually wired to (found by a pin
@@ -131,54 +143,192 @@ static void i2c_start(void)
              s_ens ? "found" : "MISSING", s_oled ? "found" : "MISSING");
 }
 
-/* One reading of each sensor, to show they work. */
-static void sensors_check(void)
+/* ---- the sensors ------------------------------------------------------- */
+
+static air_now_t s_now = { NAN, NAN, 0, 0, 0, 2 };
+static airlog_t s_log;
+static portMUX_TYPE s_now_mux = portMUX_INITIALIZER_UNLOCKED;
+
+static air_now_t air_now(void)
 {
-    if (s_aht) {
-        uint8_t st, cmd[3] = { 0xAC, 0x33, 0x00 }, d[7];
-        uint8_t q = 0x71;
-        i2c_master_transmit_receive(s_aht, &q, 1, &st, 1, 100);
-        if ((st & 0x18) != 0x18) {                 /* not calibrated: initialise */
-            uint8_t init[3] = { 0xBE, 0x08, 0x00 };
-            i2c_master_transmit(s_aht, init, 3, 100);
-            vTaskDelay(pdMS_TO_TICKS(20));
-        }
-        i2c_master_transmit(s_aht, cmd, 3, 100);
-        vTaskDelay(pdMS_TO_TICKS(90));
-        if (i2c_master_receive(s_aht, d, 7, 100) == ESP_OK && !(d[0] & 0x80)) {
-            uint32_t rh = ((uint32_t)d[1] << 12) | ((uint32_t)d[2] << 4) | (d[3] >> 4);
-            uint32_t t = (((uint32_t)d[3] & 0x0F) << 16) | ((uint32_t)d[4] << 8) | d[5];
-            ESP_LOGI(TAG, "AHT21: %.1f C, %.0f %% RH", t * 200.0 / 1048576.0 - 50, rh * 100.0 / 1048576.0);
-        } else {
-            ESP_LOGW(TAG, "AHT21: no reading");
-        }
+    air_now_t n;
+    portENTER_CRITICAL(&s_now_mux);
+    n = s_now;
+    portEXIT_CRITICAL(&s_now_mux);
+    return n;
+}
+
+static bool aht_read(float *t, float *rh)
+{
+    if (!s_aht) return false;
+    uint8_t st = 0, q = 0x71;
+    i2c_master_transmit_receive(s_aht, &q, 1, &st, 1, 100);
+    if ((st & 0x18) != 0x18) {                     /* not calibrated: initialise */
+        uint8_t init[3] = { 0xBE, 0x08, 0x00 };
+        i2c_master_transmit(s_aht, init, 3, 100);
+        vTaskDelay(pdMS_TO_TICKS(20));
     }
-    if (s_ens) {
-        uint8_t reg = 0x00, id[2] = { 0 };
-        i2c_master_transmit_receive(s_ens, &reg, 1, id, 2, 100);
-        uint8_t mode[2] = { 0x10, 0x02 };          /* OPMODE: standard */
-        i2c_master_transmit(s_ens, mode, 2, 100);
-        vTaskDelay(pdMS_TO_TICKS(1500));
-        uint8_t r = 0x20, d[6] = { 0 };            /* status, AQI, TVOC, eCO2 */
-        i2c_master_transmit_receive(s_ens, &r, 1, d, 6, 100);
-        static const char *const VAL[] = { "operating", "warming up", "first start-up", "invalid" };
-        ESP_LOGI(TAG, "ENS160: part 0x%04X, %s, AQI %d, TVOC %d ppb, eCO2 %d ppm", id[0] | (id[1] << 8),
-                 VAL[(d[0] >> 2) & 3], d[1] & 7, d[2] | (d[3] << 8), d[4] | (d[5] << 8));
+    uint8_t cmd[3] = { 0xAC, 0x33, 0x00 }, d[7];
+    if (i2c_master_transmit(s_aht, cmd, 3, 100) != ESP_OK) return false;
+    vTaskDelay(pdMS_TO_TICKS(90));
+    if (i2c_master_receive(s_aht, d, 7, 100) != ESP_OK || (d[0] & 0x80)) return false;
+    uint32_t h = ((uint32_t)d[1] << 12) | ((uint32_t)d[2] << 4) | (d[3] >> 4);
+    uint32_t tt = (((uint32_t)d[3] & 0x0F) << 16) | ((uint32_t)d[4] << 8) | d[5];
+    *rh = h * 100.0f / 1048576.0f;
+    *t = tt * 200.0f / 1048576.0f - 50;
+    return true;
+}
+
+static void ens_start(void)
+{
+    if (!s_ens) return;
+    uint8_t mode[2] = { 0x10, 0x02 };              /* OPMODE: standard */
+    i2c_master_transmit(s_ens, mode, 2, 100);
+}
+
+/* The room's temperature and humidity for the ENS160's own correction. */
+static void ens_compensate(float t, float rh)
+{
+    if (!s_ens) return;
+    uint16_t tk = (uint16_t)((t + 273.15f) * 64), h = (uint16_t)(rh * 512);
+    uint8_t w[5] = { 0x13, (uint8_t)tk, (uint8_t)(tk >> 8), (uint8_t)h, (uint8_t)(h >> 8) };
+    i2c_master_transmit(s_ens, w, 5, 100);
+}
+
+static bool ens_read(int *aqi, int *tvoc, int *eco2, int *validity)
+{
+    if (!s_ens) return false;
+    uint8_t r = 0x20, d[6] = { 0 };
+    if (i2c_master_transmit_receive(s_ens, &r, 1, d, 6, 100) != ESP_OK) return false;
+    *validity = (d[0] >> 2) & 3;
+    *aqi = d[1] & 7;
+    *tvoc = d[2] | (d[3] << 8);
+    *eco2 = d[4] | (d[5] << 8);
+    return true;
+}
+
+static void save_log(void)
+{
+    static uint8_t buf[2048];
+    size_t n = airlog_save(&s_log, buf, sizeof buf);
+    nvs_handle_t h;
+    if (n && nvs_open("air", NVS_READWRITE, &h) == ESP_OK) {
+        nvs_set_blob(h, "log", buf, n);
+        nvs_commit(h);
+        nvs_close(h);
     }
 }
 
-/* The display lit all over for a few seconds, then dark: it is alive. */
-static void oled_check(void)
+static void load_log(void)
+{
+    static uint8_t buf[2048];
+    size_t n = sizeof buf;
+    nvs_handle_t h;
+    airlog_init(&s_log);
+    if (nvs_open("air", NVS_READONLY, &h) != ESP_OK) return;
+    if (nvs_get_blob(h, "log", buf, &n) == ESP_OK && airlog_load(&s_log, buf, n))
+        ESP_LOGI(TAG, "air history restored: %d quarter hours, %d two-hour points", s_log.day_n, s_log.week_n);
+    nvs_close(h);
+}
+
+/* Once a second: the gas sensor; every fifth, temperature and humidity.
+   Minute averages go into the log. */
+static void sensor_task(void *arg)
+{
+    (void)arg;
+    ens_start();
+    int64_t minute_at = esp_timer_get_time() + 60000000;
+    float sum[AIR_N] = { 0 };
+    int cnt[AIR_N] = { 0 };
+    for (int tick = 0;; tick++) {
+        float t, rh;
+        if (tick % 5 == 0 && aht_read(&t, &rh)) {
+            ens_compensate(t, rh);
+            portENTER_CRITICAL(&s_now_mux);
+            s_now.temp = t; s_now.rh = rh;
+            portEXIT_CRITICAL(&s_now_mux);
+            sum[AIR_TEMP] += t * 10; cnt[AIR_TEMP]++;
+            sum[AIR_RH] += rh * 10; cnt[AIR_RH]++;
+        }
+        int aqi, tvoc, eco2, val;
+        if (ens_read(&aqi, &tvoc, &eco2, &val)) {
+            portENTER_CRITICAL(&s_now_mux);
+            s_now.aqi = aqi; s_now.tvoc = tvoc; s_now.eco2 = eco2; s_now.validity = val;
+            portEXIT_CRITICAL(&s_now_mux);
+            if (val == 0) {                        /* only a warmed-up sensor's numbers are kept */
+                sum[AIR_ECO2] += eco2; cnt[AIR_ECO2]++;
+                sum[AIR_TVOC] += tvoc; cnt[AIR_TVOC]++;
+            }
+        }
+        if (esp_timer_get_time() >= minute_at) {
+            minute_at += 60000000;
+            air_point_t p;
+            for (int k = 0; k < AIR_N; k++) {
+                p.v[k] = cnt[k] ? (int16_t)lroundf(sum[k] / cnt[k]) : AIRLOG_NONE;
+                sum[k] = 0; cnt[k] = 0;
+            }
+            if (airlog_minute(&s_log, &p)) save_log();
+        }
+        vTaskDelay(pdMS_TO_TICKS(1000));
+    }
+}
+
+/* ---- the display -------------------------------------------------------- */
+
+#define OLED_COL_OFFSET 0       /* 2 for an SH1106 */
+static uint8_t s_fb[1024];
+
+static void oled_cmds(const uint8_t *c, size_t n)
+{
+    uint8_t b[32];
+    b[0] = 0x00;
+    memcpy(b + 1, c, n);
+    i2c_master_transmit(s_oled, b, n + 1, 100);
+}
+
+static void oled_init(void)
 {
     if (!s_oled) return;
-    /* 0x00 = a command stream. Charge pump on in both dialects (SSD1306's
-       0x8D 0x14, SH1106's 0xAD 0x8B), display on, every pixel lit. */
-    static const uint8_t on[] = { 0x00, 0xAE, 0x8D, 0x14, 0xAD, 0x8B, 0xAF, 0xA5 };
-    static const uint8_t off[] = { 0x00, 0xA4, 0xAE };
-    i2c_master_transmit(s_oled, on, sizeof on, 100);
-    ESP_LOGI(TAG, "display: every pixel lit for 5 s");
-    vTaskDelay(pdMS_TO_TICKS(5000));
-    i2c_master_transmit(s_oled, off, sizeof off, 100);
+    /* SSD1306, 128x64, page addressing (which an SH1106 shares). */
+    static const uint8_t init[] = { 0xAE, 0xD5, 0x80, 0xA8, 0x3F, 0xD3, 0x00, 0x40, 0x8D, 0x14,
+                                    0x20, 0x02, 0xA1, 0xC8, 0xDA, 0x12, 0x81, 0x8F, 0xD9, 0xF1,
+                                    0xDB, 0x40, 0xA4, 0xA6, 0xAF };
+    oled_cmds(init, sizeof init);
+}
+
+static void oled_flush(void)
+{
+    if (!s_oled) return;
+    static uint8_t b[129];
+    for (int p = 0; p < 8; p++) {
+        uint8_t c[3] = { (uint8_t)(0xB0 | p), (uint8_t)(0x00 | (OLED_COL_OFFSET & 0x0F)), (uint8_t)(0x10 | (OLED_COL_OFFSET >> 4)) };
+        oled_cmds(c, 3);
+        b[0] = 0x40;
+        memcpy(b + 1, s_fb + p * 128, 128);
+        i2c_master_transmit(s_oled, b, sizeof b, 100);
+    }
+}
+
+/* A page every 10 s; Now redrawn every 2 s while it is up. */
+static void display_task(void *arg)
+{
+    (void)arg;
+    oled_init();
+    int page = 0;
+    int64_t turn_at = esp_timer_get_time() + 10000000;
+    for (;;) {
+        air_now_t now;
+        portENTER_CRITICAL(&s_now_mux);
+        now = s_now;
+        portEXIT_CRITICAL(&s_now_mux);
+        airui_draw(s_fb, page, &now, &s_log);
+        oled_flush();
+        if (esp_timer_get_time() >= turn_at) {
+            turn_at += 10000000;
+            page = (page + 1) % AIRUI_PAGES;
+        }
+        vTaskDelay(pdMS_TO_TICKS(page == 0 ? 2000 : 1000));
+    }
 }
 
 void app_main(void)
@@ -194,14 +344,17 @@ void app_main(void)
     led_strip_rmt_config_t rc = { .resolution_hz = 10 * 1000 * 1000 };
     ESP_ERROR_CHECK(led_strip_new_rmt_device(&sc, &rc, &s_led));
 
-    state_t st = { .on = 0, .r = 255, .g = 140, .b = 40, .level = 30 };
+    /* Air quality by default (a new key: the old saved colour was from
+       before there was air to show). */
+    state_t st = { .on = LIGHT_ON_AIR, .r = 0, .g = 0, .b = 0, .level = 30 };
     bool had = load(&st);
     ESP_LOGI(TAG, "%s: %s rgb %u,%u,%u at %u%%", had ? "restored" : "first boot",
-             st.on ? "on" : "off", st.r, st.g, st.b, st.level);
+             st.on == LIGHT_ON_AIR ? "air" : st.on ? "on" : "off", st.r, st.g, st.b, st.level);
 
     i2c_start();
-    sensors_check();
-    oled_check();
+    load_log();
+    xTaskCreate(sensor_task, "sensors", 4096, NULL, 4, NULL);
+    xTaskCreate(display_task, "display", 4096, NULL, 3, NULL);
 
     s_q = xQueueCreate(8, sizeof(light_msg_t));
     radio_start();
@@ -223,10 +376,22 @@ void app_main(void)
                 fade_t0 = esp_timer_get_time();
                 dirty_at = fade_t0 + 3000000;
             }
-            ESP_LOGI(TAG, "#%u from watch: %s rgb %u,%u,%u at %u%%", m.seq, m.on ? "on" : "off",
+            ESP_LOGI(TAG, "#%u from watch: %s rgb %u,%u,%u at %u%%", m.seq,
+                     m.on == LIGHT_ON_AIR ? "air" : m.on ? "on" : "off",
                      m.r, m.g, m.b, m.level);
         }
         int64_t now = esp_timer_get_time();
+        static int64_t air_check;
+        if (st.on == LIGHT_ON_AIR && now - air_check > 1000000) {   /* the air changes by itself */
+            air_check = now;
+            float nt[3];
+            target_of(&st, nt);
+            if (memcmp(nt, to, sizeof nt) != 0) {
+                memcpy(from, cur, sizeof from);
+                memcpy(to, nt, sizeof to);
+                fade_t0 = now;
+            }
+        }
         float t = (now - fade_t0) / (float)FADE_US;
         if (t > 1) t = 1;
         float e2 = t * t * (3 - 2 * t);             /* smoothstep */
