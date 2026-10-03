@@ -91,3 +91,4 @@ host_tests/test_mp4mux
 sdkconfig.old
 host_tests/test_spysched
 blinky1/sdkconfig.old
+host_tests/test_fluid

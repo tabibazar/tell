@@ -1,5 +1,6 @@
 #include "display.h"
 #if CONFIG_SCREEN_BOARD_TOUCH_LCD_169
+#include "fluid.h"
 #include "lightlink_tx.h"
 #include "lightui.h"
 #endif
@@ -12,6 +13,8 @@
 #include "particles.h"
 #include "qmi8658.h"
 #include "esp_heap_caps.h"
+#include "esp_memory_utils.h"
+#include "esp_private/esp_clk.h"
 #include "esp_pm.h"
 #include "nvs_flash.h"
 #include "driver/gpio.h"
@@ -590,7 +593,16 @@ static void draw_levelbig(canvas_t *c)
  * Static, not on the stack: a few hundred grains with their bucket grid is
  * tens of kilobytes, and the main task's stack is small.
  */
+#if CONFIG_SCREEN_BOARD_TOUCH_LCD_169
+/* watch pours water (fluid.c) and never the sand, so the two share the
+   static block the sand already had in internal RAM: no new memory, and the
+   only internal block that size watch can count on (a 38 KB allocation
+   after boot failed and fell to PSRAM, at a third of the speed). */
+static union { particles_t sand; fluid_t water; } s_sim;
+#define s_particles (s_sim.sand)
+#else
 static particles_t s_particles;
+#endif
 static int64_t s_particles_last_us;
 static float s_gx, s_gy;      /* low-passed gravity, panel coordinates */
 
@@ -622,8 +634,139 @@ static float s_gravity_px, s_shake_floor, s_shake_max;
 /* Residual px/s^2 -> scatter px/s. Unitless, so it does not scale. */
 #define SHAKE_GAIN 0.06f
 
+#if CONFIG_SCREEN_BOARD_TOUCH_LCD_169
+/*
+ * watch pours water, not sand (fluid.c): drops that hold together, keep
+ * their momentum and splash. Gravity goes in nearly raw -- the bottle's own
+ * acceleration is what makes water slosh, so a shake needs no special case
+ * the way the sand's agitate does. Only sensor noise is filtered out.
+ * ~38 KB of drops and neighbour lists, in the sand's internal block (s_sim).
+ */
+static fluid_t *s_fluid;
+#define FLUID_G_PX     1000.0f     /* px/s^2 per g: tuned in test_fluid */
+#define FLUID_ALPHA    0.6f
+static float s_fgx, s_fgy;
+#if CONFIG_PM_ENABLE
+static esp_pm_lock_handle_t s_fluid_pm;
+static bool s_fluid_pm_held;
+#endif
+
+/* Every loop: the full-speed lock goes when the water is not on screen. */
+static void fluid_idle(bool dark)
+{
+#if CONFIG_PM_ENABLE
+    if (s_fluid_pm_held && (s_pages.current != PAGE_PARTICLES || dark)) {
+        esp_pm_lock_release(s_fluid_pm);
+        s_fluid_pm_held = false;
+    }
+#endif
+}
+
+/*
+ * The water steps on core 1 while core 0 draws and sends the step before.
+ * At 240 MHz a step of 300 drops is ~29 ms and drawing plus sending ~27, so
+ * one after the other was 15 frames a second -- slow enough that each frame
+ * covered less time than had passed, and the water moved in slow motion.
+ * Side by side the frame is the longer of the two. The task only ever
+ * touches s_fluid and the back view; the loop only the front one, and they
+ * swap when the task says it is done.
+ */
+static fluid_view_t *s_view[2];
+static int s_front;
+static TaskHandle_t s_water_task;
+static SemaphoreHandle_t s_water_go, s_water_done;
+static volatile float s_water_gx, s_water_gy, s_water_dt;
+static volatile uint32_t s_water_pour;       /* a fresh pour asked for: its seed */
+static bool s_water_busy;
+
+static void water_task(void *arg)
+{
+    (void)arg;
+    for (;;) {
+        xSemaphoreTake(s_water_go, portMAX_DELAY);
+        if (s_water_pour) {
+            fluid_init(s_fluid, fluid_for(s_fluid->w ? s_fluid->w : 240, s_fluid->h ? s_fluid->h : 280),
+                       240, 280, s_water_pour);
+            s_water_pour = 0;
+        } else {
+            fluid_step(s_fluid, s_water_gx, s_water_gy, s_water_dt);
+        }
+        fluid_snapshot(s_fluid, s_view[s_front ^ 1]);
+        xSemaphoreGive(s_water_done);
+    }
+}
+
+static void fluid_pour(canvas_t *c, uint32_t seed)
+{
+    (void)c;
+    s_water_pour = seed ? seed : 1;              /* the task pours at its next turn */
+}
+
+static void draw_fluid(canvas_t *c, int64_t now)
+{
+    if (!s_water_task) {
+        s_fluid = &s_sim.water;
+        fluid_init(s_fluid, fluid_for(c->w, c->h), c->w, c->h, esp_random());
+        s_view[0] = heap_caps_calloc(1, sizeof(fluid_view_t), MALLOC_CAP_SPIRAM);
+        s_view[1] = heap_caps_calloc(1, sizeof(fluid_view_t), MALLOC_CAP_SPIRAM);
+        s_water_go = xSemaphoreCreateBinary();
+        s_water_done = xSemaphoreCreateBinary();
+        if (!s_view[0] || !s_view[1] || !s_water_go || !s_water_done) return;
+        fluid_snapshot(s_fluid, s_view[0]);
+        xTaskCreatePinnedToCore(water_task, "water", 4096, NULL, 4, &s_water_task, 1);
+    }
+#if CONFIG_PM_ENABLE
+    /* watch idles at 80 MHz; the water wants the full 240 while it is shown.
+       Released by fluid_idle when the page goes. */
+    if (!s_fluid_pm) esp_pm_lock_create(ESP_PM_CPU_FREQ_MAX, 0, "water", &s_fluid_pm);
+    if (s_fluid_pm && !s_fluid_pm_held) { esp_pm_lock_acquire(s_fluid_pm); s_fluid_pm_held = true; }
+#endif
+    /* The step started last frame, done: its view comes to the front. */
+    if (s_water_busy) {
+        if (xSemaphoreTake(s_water_done, pdMS_TO_TICKS(200)) != pdTRUE) return;
+        s_front ^= 1;
+        s_water_busy = false;
+    }
+    float dt = s_particles_last_us ? (float)(now - s_particles_last_us) / 1000000.0f : 0.033f;
+    s_particles_last_us = now;
+    if (dt > 0.1f) dt = 0.1f;
+    qmi8658_sample_t sample;
+    if (qmi8658_read(&sample) == ESP_OK) {
+        float gx, gy;
+        gravity_from(&sample, &gx, &gy);
+        s_fgx += (gx * FLUID_G_PX - s_fgx) * FLUID_ALPHA;
+        s_fgy += (gy * FLUID_G_PX - s_fgy) * FLUID_ALPHA;
+    }
+    /* The next step goes on the other core while this frame is drawn. */
+    s_water_gx = s_fgx;
+    s_water_gy = s_fgy;
+    s_water_dt = dt;
+    s_water_busy = true;
+    xSemaphoreGive(s_water_go);
+
+    int64_t t1 = esp_timer_get_time();
+    fluid_draw(s_view[s_front], c);
+    int64_t t2 = esp_timer_get_time();
+    display_blit();
+    int64_t t3 = esp_timer_get_time();
+    static int64_t sum_draw, sum_blit, since;
+    static int frames;
+    sum_draw += t2 - t1; sum_blit += t3 - t2; frames++;
+    if (now - since > 5000000) {
+        if (since) ESP_LOGI(TAG, "water: %d frames in 5 s; draw %lld, send %lld ms a frame (steps on core 1); CPU %d MHz",
+                            frames, sum_draw / frames / 1000, sum_blit / frames / 1000,
+                            (int)(esp_clk_cpu_freq() / 1000000));
+        since = now; frames = 0; sum_draw = sum_blit = 0;
+    }
+}
+#endif
+
 static void draw_particles(canvas_t *c, int64_t now)
 {
+#if CONFIG_SCREEN_BOARD_TOUCH_LCD_169
+    draw_fluid(c, now);
+    return;
+#endif
     float dt = s_particles_last_us
              ? (float)(now - s_particles_last_us) / 1000000.0f : 0.05f;
     s_particles_last_us = now;
@@ -3801,6 +3944,8 @@ static void watch_usb_task(void *arg)
                         }
                     } else if (!strcmp(line, "!light")) {
                         s_light_usb = 1;            /* test hook: open the Light page */
+                    } else if (!strcmp(line, "!sand")) {
+                        s_light_usb = 3;            /* test hook: the water page */
                     } else if (!strcmp(line, "!lightnext")) {
                         s_light_usb = 2;            /* test hook: as BOOT on the Light page */
                     } else {
@@ -4134,6 +4279,12 @@ static void light_tick(int64_t now)
         int what = s_light_usb;
         s_light_usb = 0;
         s_pages.last_activity_us = now;
+        if (what == 3) {
+            pages_show(&s_pages, PAGE_PARTICLES, now);
+            s_drawn_second = -1;
+            ESP_LOGI(TAG, "sand (usb)");
+            return;
+        }
         if (s_pages.current != PAGE_LIGHT) { pages_show(&s_pages, PAGE_LIGHT, now); s_drawn_second = -1; }
         if (what == 2) {
             light_load();
@@ -4204,7 +4355,7 @@ static void watch_boot_key(canvas_t *c, int64_t now)
     else if (s_pages.current == PAGE_MOON) pages_show(&s_pages, PAGE_FACE, now);
 #if HAVE_PARTICLES
     else if (s_pages.current == PAGE_PARTICLES)
-        particles_init(&s_particles, particles_for(c->w, c->h), c->w, c->h, esp_random());
+        fluid_pour(c, esp_random());            /* watch: a fresh pour */
 #endif
     (void)c;
     ESP_LOGI(TAG, "BOOT -> page %d", (int)s_pages.current);
@@ -4240,10 +4391,18 @@ void app_main(void)
        LEDC and the SD card see no change. No light sleep -- it would drop
        the USB serial console. */
     {
+        /* watch may go to 240 MHz, but only the water page asks for it (a
+           CPU_FREQ_MAX lock while it is on screen): everything else still
+           idles at 80. */
+#if CONFIG_SCREEN_BOARD_TOUCH_LCD_169
+        esp_pm_config_t pm = { .max_freq_mhz = 240, .min_freq_mhz = 80,
+                               .light_sleep_enable = false };
+#else
         esp_pm_config_t pm = { .max_freq_mhz = 160, .min_freq_mhz = 80,
                                .light_sleep_enable = false };
+#endif
         esp_err_t e = esp_pm_configure(&pm);
-        ESP_LOGI(TAG, "power: 80-160 MHz (%s)", esp_err_to_name(e));
+        ESP_LOGI(TAG, "power: 80-%d MHz (%s)", pm.max_freq_mhz, esp_err_to_name(e));
     }
 #endif
     if (display_init() != ESP_OK) {
@@ -4645,6 +4804,7 @@ void app_main(void)
         watch_function_key(now);
         watch_idle(now);
         light_tick(now);
+        fluid_idle(s_watch_dark);
         watch_noise_tick(now);          /* the hour's strip fills even while dark */
 #endif
 

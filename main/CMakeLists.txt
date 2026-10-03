@@ -121,7 +121,7 @@ if(NOT CONFIG_SCREEN_BOARD_TOUCH_LCD_169)
 endif()
 # watch's Light page and her ESP-NOW sender to blinky1 (lightlink.h).
 if(NOT CONFIG_SCREEN_BOARD_TOUCH_LCD_169)
-    list(APPEND BOARD_EXCLUDES "lightui.c" "lightlink_tx.c")
+    list(APPEND BOARD_EXCLUDES "lightui.c" "lightlink_tx.c" "fluid.c")
 endif()
 # speaker's Live and Air pages are hers alone.
 if(NOT CONFIG_SCREEN_BOARD_AUDIO_S3)
@@ -213,3 +213,9 @@ idf_component_register(
     REQUIRES esp_wifi esp_netif esp_lcd esp_lcd_jd9853 driver esp_driver_ledc esp_driver_i2c esp_driver_spi esp_driver_tsens esp_timer bt nvs_flash esp_event fatfs esp_driver_sdmmc sdmmc esp_driver_usb_serial_jtag esp_driver_gpio esp_adc esp_driver_i2s)
 
 
+
+# watch's water is a few hundred drops a frame against their neighbours, and
+# the project builds -Og: at that it ran 5 frames a second. Optimised, alone.
+if(CONFIG_SCREEN_BOARD_TOUCH_LCD_169)
+    set_source_files_properties(fluid.c PROPERTIES COMPILE_OPTIONS "-O2")
+endif()
