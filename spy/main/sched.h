@@ -4,8 +4,8 @@
 /*
  * When spy works, as pure functions of local time so the host tests can walk
  * whole weeks through them. Weekdays only: a frame every minute from 07:00 to
- * 16:59, and at the top of each hour from 08:00 to 17:00 the clip of the hour
- * before goes to Telegram.
+ * 16:59, and at 17:00 the whole day's frames go to Telegram as one clip
+ * (Reza, 2026-10-03: once at the end of the day rather than every hour).
  */
 #include <stdbool.h>
 #include <time.h>
@@ -16,8 +16,8 @@
 /* A time-lapse frame is due in this minute. */
 bool sched_capture(const struct tm *t);
 
-/* The hour whose clip is due now (at minute 0 of the next), or -1. */
-int sched_clip_hour(const struct tm *t);
+/* The day's clip is due now: 17:00 on a weekday. */
+bool sched_day_clip(const struct tm *t);
 
 /* "20261002": the day's folder name. */
 void sched_day(const struct tm *t, char out[9]);

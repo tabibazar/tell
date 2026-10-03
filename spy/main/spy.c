@@ -2,8 +2,8 @@
  * spy: a desk time-lapse that reports over 4G.
  *
  * Weekdays from 07:00 to 16:59 it takes a 640x480 frame every minute onto the
- * card; at the top of each hour from 08:00 to 17:00 the hour before becomes a
- * six-second MP4 (10 fps) and goes to Telegram. Telegram messages to the bot
+ * card; at 17:00 the whole day becomes one MP4 (10 fps, about a minute) and
+ * goes to Telegram. Telegram messages to the bot
  * work any time: "pic" sends a photo, "clip" the hour so far, "status" how
  * spy is, "flip" turns the picture upside down, "help" lists them.
  *
@@ -372,9 +372,8 @@ static void cam_task(void *arg)
         }
         if (store_ok() && sched_capture(&lt)) minute_frame(&lt);
         battery_watch(false);                   /* after the frame: the gauge shares the camera's bus */
-        int h = sched_clip_hour(&lt);
-        if (h >= 0) {
-            work_req_t w = { .kind = WORK_CLIP, .hour = h, .last_min = 59 };
+        if (sched_day_clip(&lt)) {                    /* 17:00: the whole day, one clip */
+            work_req_t w = { .kind = WORK_CLIP, .hour = SCHED_LAST_HOUR, .last_min = 59 };
             sched_day(&lt, w.day);
             xQueueSend(s_work_q, &w, 0);
         }
@@ -416,16 +415,16 @@ static void work_task(void *arg)
     for (;;) {
         work_req_t w;
         if (xQueueReceive(s_work_q, &w, portMAX_DELAY) != pdTRUE) continue;
-        char dir[32], out[64], cap[96];
+        char dir[32], out[64], cap[128];
         snprintf(dir, sizeof dir, "/sdcard/tl/%s", w.day);
-        if (w.kind == WORK_CLIP) snprintf(out, sizeof out, "%s/%02d.mp4", dir, w.hour);
-        else snprintf(out, sizeof out, "%s/%02d-sofar.mp4", dir, w.hour);
+        if (w.kind == WORK_CLIP) snprintf(out, sizeof out, "%s/day.mp4", dir);
+        else snprintf(out, sizeof out, "%s/sofar.mp4", dir);
         int frames = 0;
         s_encoding = true;
-        bool ok = store_ok() && clip_make(dir, w.hour, w.last_min, out, &frames);
+        bool ok = store_ok() && clip_make(dir, SCHED_FIRST_HOUR, w.hour, w.last_min, out, &frames);
         s_encoding = false;
         if (!ok) {
-            if (w.kind == WORK_CLIP_SO_FAR) send_text("No frames yet this hour.");
+            if (w.kind == WORK_CLIP_SO_FAR) send_text("No frames yet today.");
             else ESP_LOGW(TAG, "no clip for %s %02d:00", w.day, w.hour);
             continue;
         }
@@ -438,13 +437,14 @@ static void work_task(void *arg)
         char date[24];
         strftime(date, sizeof date, "%a %e %b", &d);
         if (w.kind == WORK_CLIP)
-            snprintf(cap, sizeof cap, "%02d:00-%02d:00, %s (%d frames)", w.hour, w.hour + 1, date, frames);
-        if (s_batt_pct >= 0) {
+            snprintf(cap, sizeof cap, "%s, %02d:00-%02d:00 (%d frames)", date, SCHED_FIRST_HOUR, w.hour + 1, frames);
+        else
+            snprintf(cap, sizeof cap, "%s so far, %02d:00-%02d:%02d (%d frames)", date, SCHED_FIRST_HOUR,
+                     w.hour, w.last_min, frames);
+        if (s_batt_pct >= 0) {                  /* after either: the caption is always set first */
             size_t n = strlen(cap);
             snprintf(cap + n, sizeof cap - n, ", battery %d%%", s_batt_pct);
         }
-        else
-            snprintf(cap, sizeof cap, "%02d:00-%02d:%02d so far, %s (%d frames)", w.hour, w.hour, w.last_min, date, frames);
         send_file(NET_VIDEO, out, cap);
         make_room();
     }
@@ -468,7 +468,7 @@ static void command(const char *text)
         if (!local_now(&lt)) { send_text("No clock yet, so no clip."); return; }
         work_req_t r = { .kind = WORK_CLIP_SO_FAR, .hour = lt.tm_hour, .last_min = lt.tm_min };
         sched_day(&lt, r.day);
-        send_text("Making the clip of this hour so far...");
+        send_text("Making today's clip so far; a minute of encoding for every fifty frames...");
         xQueueSend(s_work_q, &r, 0);
     } else if (!strcmp(w, "status")) {
         cam_req_t r = CAM_STATUS;
@@ -496,7 +496,7 @@ static void command(const char *text)
         settings_save_flip(cam_flip());
         send_text(cam_flip() ? "Picture flipped (upside down)." : "Picture the right way up.");
     } else {
-        send_text("spy knows: pic (pic full for 5 MP), clip (this hour so far), status, cell, hotspot on / hotspot off, flip.");
+        send_text("spy knows: pic (pic full for 5 MP), clip (today so far), status, cell, hotspot on / hotspot off, flip.");
     }
 }
 

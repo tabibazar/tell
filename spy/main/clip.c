@@ -50,7 +50,7 @@ static void rgb_to_i420(const uint8_t *rgb, uint8_t *yuv)
     }
 }
 
-bool clip_make(const char *day_dir, int hour, int last_min, const char *out, int *frames)
+bool clip_make(const char *day_dir, int first_hour, int last_hour, int last_min, const char *out, int *frames)
 {
     *frames = 0;
     const size_t yuv_len = CLIP_W * CLIP_H * 3 / 2;
@@ -67,7 +67,8 @@ bool clip_make(const char *day_dir, int hour, int last_min, const char *out, int
     esp_h264_enc_cfg_sw_t cfg = {
         .pic_type = ESP_H264_RAW_FMT_I420, .gop = CLIP_FPS * 3, .fps = CLIP_FPS,
         .res = { .width = CLIP_W, .height = CLIP_H },
-        .rc = { .bitrate = 1000000, .qp_min = 22, .qp_max = 36 },
+        /* 800 kbit/s: a day's minute of video is ~6 MB, three minutes up. */
+        .rc = { .bitrate = 800000, .qp_min = 22, .qp_max = 38 },
     };
     if (esp_h264_enc_sw_new(&cfg, &enc) != ESP_H264_ERR_OK || esp_h264_enc_open(enc) != ESP_H264_ERR_OK) {
         ESP_LOGE(TAG, "encoder would not open");
@@ -80,7 +81,8 @@ bool clip_make(const char *day_dir, int hour, int last_min, const char *out, int
     if (!mux) goto done;
 
     int64_t t0 = esp_timer_get_time();
-    for (int m = 0; m <= last_min && m < 60; m++) {
+    for (int fm = first_hour * 60; fm <= last_hour * 60 + last_min && fm < 24 * 60; fm++) {
+        int hour = fm / 60, m = fm % 60;
         char path[64];
         snprintf(path, sizeof path, "%s/%02d%02d.jpg", day_dir, hour, m);
         size_t jlen = 0;

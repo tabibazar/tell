@@ -9,11 +9,9 @@ bool sched_capture(const struct tm *t)
     return weekday(t) && t->tm_hour >= SCHED_FIRST_HOUR && t->tm_hour <= SCHED_LAST_HOUR;
 }
 
-int sched_clip_hour(const struct tm *t)
+bool sched_day_clip(const struct tm *t)
 {
-    if (!weekday(t) || t->tm_min != 0) return -1;
-    int h = t->tm_hour - 1;
-    return h >= SCHED_FIRST_HOUR && h <= SCHED_LAST_HOUR ? h : -1;
+    return weekday(t) && t->tm_hour == SCHED_LAST_HOUR + 1 && t->tm_min == 0;
 }
 
 void sched_day(const struct tm *t, char out[9])

@@ -19,17 +19,16 @@ int main(void)
         struct tm lt;
         localtime_r(&t, &lt);
         if (sched_capture(&lt)) frames[lt.tm_wday]++;
-        int h = sched_clip_hour(&lt);
-        if (h >= 0) {
+        if (sched_day_clip(&lt)) {
             clips[lt.tm_wday]++;
-            CHECK(h == lt.tm_hour - 1);
             if (first_clip < 0) first_clip = lt.tm_hour;
             last_clip = lt.tm_hour;
         }
     }
     CHECK(frames[0] == 0 && frames[6] == 0);           /* weekends off */
-    for (int d = 1; d <= 5; d++) { CHECK(frames[d] == 600); CHECK(clips[d] == 10); }
-    CHECK(first_clip == 8 && last_clip == 17);
+    for (int d = 1; d <= 5; d++) { CHECK(frames[d] == 600); CHECK(clips[d] == 1); }
+    CHECK(clips[0] == 0 && clips[6] == 0);
+    CHECK(first_clip == 17 && last_clip == 17);
     struct tm d = { .tm_year = 126, .tm_mon = 9, .tm_mday = 2 };
     char day[9];
     sched_day(&d, day);
