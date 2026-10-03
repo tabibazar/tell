@@ -64,6 +64,7 @@ typedef enum {
     PAGE_SOUND,      /* watch: speaker's sound level, relayed by the Mac */
     PAGE_DAYS,       /* watch: speaker's daily levels, today vs a usual day */
     PAGE_VIEWFINDER, /* watch: a camera's frames, streamed from the Mac over USB */
+    PAGE_LIGHT,      /* watch: blinky1's lamp, switched over ESP-NOW */
     PAGE_COUNT
 } page_t;
 

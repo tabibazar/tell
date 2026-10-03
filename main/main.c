@@ -1,4 +1,8 @@
 #include "display.h"
+#if CONFIG_SCREEN_BOARD_TOUCH_LCD_169
+#include "lightlink_tx.h"
+#include "lightui.h"
+#endif
 #include "drift.h"
 #include "ble_uart.h"
 #include "bme280.h"
@@ -3944,9 +3948,12 @@ static bool watch_days_tick(int64_t now)
     return changed;
 }
 
+static void light_draw(canvas_t *c);       /* the Light page, further down */
+
 static void watch_draw(canvas_t *c, int64_t now)
 {
     if (watch_cam_tick(c, now)) return;      /* the viewfinder has the screen */
+    if (s_pages.current == PAGE_LIGHT) { light_draw(c); return; }
     if (s_pages.current == PAGE_DAYS) {
         bool changed = watch_days_tick(now);
         int minute = (int)(now / 60000000);
@@ -4040,11 +4047,11 @@ static void watch_function_key(int64_t now)
     }
     s_pages.last_activity_us = now;
     if (k == WATCH_KEY_SHORT) {
-        /* Face -> Sand -> Face; a page the board lacks (no IMU, no sand) is
+        /* Face -> Sand -> Light -> Face; a page the board lacks (no IMU, no sand) is
            stepped over. Sound and Days are off the cycle since speaker got a
            screen of her own (2026-09-26); their code stays for a relay run
            with --to-watch. */
-        static const page_t order[] = { PAGE_FACE, PAGE_PARTICLES };
+        static const page_t order[] = { PAGE_FACE, PAGE_PARTICLES, PAGE_LIGHT };
         enum { N_ORDER = sizeof order / sizeof order[0] };
         int at = 0;
         for (int i = 0; i < N_ORDER; i++) if (order[i] == s_pages.current) at = i;
@@ -4063,10 +4070,118 @@ static void watch_function_key(int64_t now)
     }
 }
 
+/* ---- the Light page: blinky1's lamp over ESP-NOW (lightlink.h) ---------- */
+
+static light_state_t s_light = { .colour = 0, .level = 2, .heard = LIGHT_HEARD_UNKNOWN };
+static bool s_light_loaded, s_light_dirty;
+static int s_light_tries;
+static int64_t s_light_sent_us, s_light_drawn_key = -1;
+
+static void light_load(void)
+{
+    if (s_light_loaded) return;
+    s_light_loaded = true;
+    nvs_handle_t h;
+    if (nvs_open("light", NVS_READONLY, &h) == ESP_OK) {
+        uint8_t col = 0, lev = 2;
+        nvs_get_u8(h, "colour", &col);
+        nvs_get_u8(h, "level", &lev);
+        nvs_close(h);
+        if (col < LIGHT_N_COLOURS) s_light.colour = col;
+        if (lev < LIGHT_N_LEVELS) s_light.level = lev;
+    }
+}
+
+static void light_save(void)
+{
+    nvs_handle_t h;
+    if (nvs_open("light", NVS_READWRITE, &h) != ESP_OK) return;
+    nvs_set_u8(h, "colour", (uint8_t)s_light.colour);
+    nvs_set_u8(h, "level", (uint8_t)s_light.level);
+    nvs_commit(h);
+    nvs_close(h);
+}
+
+/* Whatever changed, the whole state goes; up to three tries if unheard. */
+static void light_changed(int64_t now)
+{
+    s_light_dirty = true;
+    s_light_tries = 0;
+    s_light_sent_us = 0;
+    s_pages.last_activity_us = now;
+    light_save();
+}
+
+static void light_send_now(int64_t now)
+{
+    const light_colour_t *k = &LIGHT_COLOURS[s_light.colour];
+    lightlink_send(s_light.colour != 0, k->r, k->g, k->b, LIGHT_LEVELS[s_light.level]);
+    s_light_sent_us = now;
+    s_light_tries++;
+}
+
+/* Every loop: the radio up only while the page is showing and awake; sends
+   and resends; the wrist's tilt as brightness. */
+static void light_tick(int64_t now)
+{
+    bool want = s_pages.current == PAGE_LIGHT && !s_watch_dark;
+    lightlink_radio(want);
+    if (!want) return;
+    light_load();
+    light_heard_t heard = lightlink_heard();
+    if (s_light_dirty) {
+        if (s_light_sent_us == 0) light_send_now(now);
+        else if (heard == LIGHT_HEARD_YES) s_light_dirty = false;
+        else if (heard == LIGHT_HEARD_NO && s_light_tries < 3 && now - s_light_sent_us > 250000) light_send_now(now);
+        else if (s_light_tries >= 3 && heard != LIGHT_SENDING) s_light_dirty = false;
+    }
+    s_light.heard = heard;
+
+    /* Tilt: the wrist rolled past ~27 degrees for 0.3 s steps the brightness,
+       then again every 0.7 s while it stays there. Right is brighter. */
+    static int64_t sample_us, held_since, last_step;
+    static int held_dir;
+    if (s_imu && now - sample_us >= 100000) {
+        sample_us = now;
+        qmi8658_sample_t a;
+        if (qmi8658_read(&a) == ESP_OK) {
+            int dir = a.ax > 0.45f ? 1 : a.ax < -0.45f ? -1 : 0;
+            if (dir != held_dir) { held_dir = dir; held_since = now; last_step = 0; }
+            if (dir && s_light.colour != 0 && now - held_since > 300000
+                && (last_step == 0 || now - last_step > 700000)) {
+                int lv = s_light.level + dir;
+                if (lv >= 0 && lv < LIGHT_N_LEVELS) {
+                    s_light.level = lv;
+                    light_changed(now);
+                    ESP_LOGI(TAG, "light level %d%%", LIGHT_LEVELS[lv]);
+                }
+                last_step = now;
+            }
+        }
+    }
+}
+
+static void light_draw(canvas_t *c)
+{
+    int64_t key = s_light.colour * 100 + s_light.level * 10 + (int)s_light.heard;
+    if (key == s_light_drawn_key && s_drawn_second != -1) return;
+    s_light_drawn_key = key;
+    s_drawn_second = 0;
+    lightui_draw(c, &s_light);
+    display_blit();
+}
+
 /* BOOT: the moon page from the face and back; a fresh pile in the sand. */
 static void watch_boot_key(canvas_t *c, int64_t now)
 {
     s_pages.last_activity_us = now;
+    if (s_pages.current == PAGE_LIGHT) {
+        light_load();
+        s_light.colour = (s_light.colour + 1) % LIGHT_N_COLOURS;
+        light_changed(now);
+        ESP_LOGI(TAG, "light: %s", LIGHT_COLOURS[s_light.colour].name);
+        return;
+    }
     if (s_pages.current == PAGE_FACE) pages_show(&s_pages, PAGE_MOON, now);
     else if (s_pages.current == PAGE_MOON) pages_show(&s_pages, PAGE_FACE, now);
 #if HAVE_PARTICLES
@@ -4323,10 +4438,11 @@ void app_main(void)
        the function button (when the IMU answered). Nothing else -- the timer,
        stopwatch and chip pages ride in with the sand and the RTC elsewhere. */
     available = (available & PAGE_BIT(PAGE_PARTICLES))
-              | PAGE_BIT(PAGE_FACE) | PAGE_BIT(PAGE_MOON) | PAGE_BIT(PAGE_VIEWFINDER);
+              | PAGE_BIT(PAGE_FACE) | PAGE_BIT(PAGE_MOON) | PAGE_BIT(PAGE_VIEWFINDER)
+              | PAGE_BIT(PAGE_LIGHT);
 #else
     available &= ~(PAGE_BIT(PAGE_FACE) | PAGE_BIT(PAGE_MOON) | PAGE_BIT(PAGE_SOUND)
-                   | PAGE_BIT(PAGE_DAYS) | PAGE_BIT(PAGE_VIEWFINDER));
+                   | PAGE_BIT(PAGE_DAYS) | PAGE_BIT(PAGE_VIEWFINDER) | PAGE_BIT(PAGE_LIGHT));
 #endif
 
     uint32_t rtc_secs;
@@ -4510,6 +4626,7 @@ void app_main(void)
 #if CONFIG_SCREEN_BOARD_TOUCH_LCD_169
         watch_function_key(now);
         watch_idle(now);
+        light_tick(now);
         watch_noise_tick(now);          /* the hour's strip fills even while dark */
 #endif
 

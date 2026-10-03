@@ -111,6 +111,10 @@ if(NOT CONFIG_SCREEN_BOARD_TOUCH_LCD_169)
         list(APPEND BOARD_EXCLUDES "noiseui.c" "daysui.c")
     endif()
 endif()
+# watch's Light page and her ESP-NOW sender to blinky1 (lightlink.h).
+if(NOT CONFIG_SCREEN_BOARD_TOUCH_LCD_169)
+    list(APPEND BOARD_EXCLUDES "lightui.c" "lightlink_tx.c")
+endif()
 # speaker's Live and Air pages are hers alone.
 if(NOT CONFIG_SCREEN_BOARD_AUDIO_S3)
     list(APPEND BOARD_EXCLUDES "liveui.c" "airui.c")
@@ -198,6 +202,6 @@ idf_component_register(
     EXCLUDE_SRCS ${BOARD_EXCLUDES}
     INCLUDE_DIRS "."
     EMBED_FILES ${BOARD_EMBEDS}
-    REQUIRES esp_lcd esp_lcd_jd9853 driver esp_driver_ledc esp_driver_i2c esp_driver_spi esp_driver_tsens esp_timer bt nvs_flash esp_event fatfs esp_driver_sdmmc sdmmc esp_driver_usb_serial_jtag esp_driver_gpio esp_adc esp_driver_i2s)
+    REQUIRES esp_wifi esp_netif esp_lcd esp_lcd_jd9853 driver esp_driver_ledc esp_driver_i2c esp_driver_spi esp_driver_tsens esp_timer bt nvs_flash esp_event fatfs esp_driver_sdmmc sdmmc esp_driver_usb_serial_jtag esp_driver_gpio esp_adc esp_driver_i2s)
 
 
