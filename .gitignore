@@ -94,3 +94,4 @@ blinky1/sdkconfig.old
 host_tests/test_fluid
 host_tests/test_airui
 blinky1/sdkconfig
+tiny1/sdkconfig
