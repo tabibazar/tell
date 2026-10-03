@@ -12,6 +12,7 @@
 static const char *TAG = "hotspot";
 static esp_netif_t *s_ap;
 static bool s_inited, s_on;
+static wifi_config_t s_ap_cfg;
 static int64_t s_until;
 
 bool hotspot_configured(void) { return strlen(SPY_WIFI_PASS) >= 8; }
@@ -29,9 +30,14 @@ static bool init_once(void)
     /* The driver only once asked for: it holds internal RAM spy otherwise
        keeps for the camera, the encoder and TLS. */
     s_ap = esp_netif_create_default_wifi_ap();
-    wifi_init_config_t c = WIFI_INIT_CONFIG_DEFAULT();
-    if (esp_wifi_init(&c) != ESP_OK) return false;
-    esp_wifi_set_storage(WIFI_STORAGE_RAM);
+    /* camlink (tiny1's photos) normally has the driver up already, as a
+       station on channel 6; the access point joins it there (APSTA). */
+    wifi_mode_t m;
+    if (esp_wifi_get_mode(&m) != ESP_OK) {
+        wifi_init_config_t c = WIFI_INIT_CONFIG_DEFAULT();
+        if (esp_wifi_init(&c) != ESP_OK) return false;
+        esp_wifi_set_storage(WIFI_STORAGE_RAM);
+    }
     wifi_config_t ap = {
         .ap = {
             .channel = 6,
@@ -43,8 +49,7 @@ static bool init_once(void)
     strlcpy((char *)ap.ap.ssid, SPY_WIFI_SSID, sizeof ap.ap.ssid);
     ap.ap.ssid_len = strlen(SPY_WIFI_SSID);
     strlcpy((char *)ap.ap.password, SPY_WIFI_PASS, sizeof ap.ap.password);
-    esp_wifi_set_mode(WIFI_MODE_AP);
-    esp_wifi_set_config(WIFI_IF_AP, &ap);
+    s_ap_cfg = ap;
 
     /* Clients are told to use a public DNS, which reaches it through the NAT:
        it outlives a redial, unlike the carrier's servers. */
@@ -64,7 +69,10 @@ bool hotspot_on(void)
 {
     if (!hotspot_configured() || !init_once()) return false;
     if (!s_on) {
-        if (esp_wifi_start() != ESP_OK) return false;
+        esp_wifi_set_mode(WIFI_MODE_APSTA);
+        esp_wifi_set_config(WIFI_IF_AP, &s_ap_cfg);
+        esp_err_t e = esp_wifi_start();          /* already running for camlink: fine */
+        if (e != ESP_OK && e != ESP_ERR_WIFI_CONN) ESP_LOGW(TAG, "start: %s", esp_err_to_name(e));
         if (esp_netif_napt_enable(s_ap) != ESP_OK) ESP_LOGW(TAG, "NAT would not start");
         s_on = true;
         ESP_LOGI(TAG, "on: \"%s\"", SPY_WIFI_SSID);
@@ -76,7 +84,7 @@ bool hotspot_on(void)
 void hotspot_off(void)
 {
     if (!s_on) return;
-    esp_wifi_stop();
+    esp_wifi_set_mode(WIFI_MODE_STA);            /* the radio stays up for camlink */
     s_on = false;
     ESP_LOGI(TAG, "off");
 }

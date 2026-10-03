@@ -1,6 +1,6 @@
 idf_component_register(
-    SRCS "spy.c" "hotspot.c" "mp4mux.c" "net.c" "tg.c" "store.c" "cam.c" "clip.c" "stamp.c" "sched.c"
-    INCLUDE_DIRS "." "${CMAKE_CURRENT_BINARY_DIR}"
+    SRCS "spy.c" "hotspot.c" "camlink_tx.c" "mp4mux.c" "net.c" "tg.c" "store.c" "cam.c" "clip.c" "stamp.c" "sched.c"
+    INCLUDE_DIRS "." "../../main" "${CMAKE_CURRENT_BINARY_DIR}"
     REQUIRES esp_wifi espressif__esp32-camera espressif__esp_h264 espressif__esp_jpeg espressif__esp_modem esp_driver_gpio esp_driver_uart esp_driver_i2c esp_driver_sdmmc fatfs sdmmc esp_driver_tsens
              esp_netif esp_event esp_http_client esp-tls mbedtls nvs_flash json esp_timer)
 

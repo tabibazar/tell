@@ -39,6 +39,7 @@
 #include "nvs_flash.h"
 
 #include "cam.h"
+#include "camlink_tx.h"
 #include "clip.h"
 #include "hotspot.h"
 #include "spy_secrets.h"
@@ -51,7 +52,7 @@ static const char *TAG = "spy";
 
 /* ---- messages between the tasks ----------------------------------------- */
 
-typedef enum { CAM_PIC, CAM_PIC_FULL, CAM_STATUS, CAM_HELLO, CAM_TEST_FRAMES, CAM_FORMAT, CAM_BATTEST } cam_req_t;
+typedef enum { CAM_PIC, CAM_PIC_FULL, CAM_STATUS, CAM_HELLO, CAM_TEST_FRAMES, CAM_FORMAT, CAM_BATTEST, CAM_TINY } cam_req_t;
 typedef enum { WORK_CLIP, WORK_CLIP_SO_FAR } work_kind_t;
 typedef struct { work_kind_t kind; char day[9]; int hour, last_min; } work_req_t;
 typedef enum { NET_TEXT, NET_PHOTO, NET_DOC, NET_VIDEO } net_kind_t;
@@ -321,7 +322,28 @@ static void minute_frame(const struct tm *lt)
     if (!store_mkdir(dir)) return;
     snprintf(path, sizeof path, "%s/%02d%02d.jpg", dir, lt->tm_hour, lt->tm_min);
     size_t bytes;
-    if (cam_shot(FRAMESIZE_VGA, 12, path, &bytes)) s_frames_today++;
+    if (cam_shot(FRAMESIZE_VGA, 12, path, &bytes)) {
+        s_frames_today++;
+        camlink_send_file(path, lt->tm_hour, lt->tm_min, lt->tm_wday);   /* tiny1's screen */
+    }
+}
+
+/* tiny1 asked (its BOOT button): a fresh frame, sent to it alone. */
+static void tiny_pic(void)
+{
+    if (!store_ok()) return;
+    struct tm lt;
+    bool timed = local_now(&lt);
+    size_t bytes;
+    if (cam_shot(FRAMESIZE_VGA, 12, "/sdcard/pics/tiny1.jpg", &bytes))
+        camlink_send_file("/sdcard/pics/tiny1.jpg", timed ? lt.tm_hour : 0, timed ? lt.tm_min : 0,
+                          timed ? lt.tm_wday : 0xFF);
+}
+
+static void on_tiny_ask(void)          /* WiFi task: hand it to the camera's owner */
+{
+    cam_req_t r = CAM_TINY;
+    if (s_cam_q) xQueueSend(s_cam_q, &r, 0);
 }
 
 static void cam_task(void *arg)
@@ -333,6 +355,7 @@ static void cam_task(void *arg)
             s_cam_busy = true;
             if (req == CAM_PIC || req == CAM_PIC_FULL) take_pic(req == CAM_PIC_FULL);
             else if (req == CAM_BATTEST) battery_watch(true);
+            else if (req == CAM_TINY) tiny_pic();
             else if (req == CAM_FORMAT) {
                 /* The cam task is the one that writes frames, so nothing of
                    its own is open; the encoder and an upload are waited out. */
@@ -682,6 +705,7 @@ void app_main(void)
              store_ok() ? "in" : "MISSING", (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
 
     s_cam_q = xQueueCreate(4, sizeof(cam_req_t));
+    if (!camlink_start(on_tiny_ask)) ESP_LOGW(TAG, "camlink (tiny1's photos) did not start");
     s_work_q = xQueueCreate(16, sizeof(work_req_t));
     s_net_q = xQueueCreate(16, sizeof(net_job_t *));
     xTaskCreatePinnedToCore(cam_task, "cam", 8192, NULL, 5, NULL, 0);
