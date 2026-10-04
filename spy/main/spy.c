@@ -27,6 +27,7 @@
 #include "driver/i2c_master.h"
 #include "driver/temperature_sensor.h"
 #include "driver/uart.h"
+#include "esp_attr.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_system.h"
@@ -238,6 +239,86 @@ static void status_text(char *out, size_t cap)
         snprintf(out + n, cap - n, "\nframes: each minute weekdays 07-17, every 10 min otherwise");
 }
 
+/* ---- the watchdog -------------------------------------------------------- */
+
+/* spy went silent once (2026-10-03, ~20:10, not reproduced): not even the
+   console answered. Each task now stamps when it last went round its loop,
+   and a watchdog task restarts spy if one stops: the camera's loop turns
+   twice a second (3 minutes allowed: a shot is ~6 s), the network's at
+   least every few minutes (20 allowed: a day's clip uploads in ~4). The
+   reason survives the restart in RTC memory and goes out with "spy is on". */
+static volatile int64_t s_beat_cam, s_beat_net;
+static RTC_NOINIT_ATTR char s_why[48];
+static RTC_NOINIT_ATTR uint32_t s_why_magic;
+#define WHY_MAGIC 0x57485921u
+
+static void watchdog_task(void *arg)
+{
+    (void)arg;
+    for (;;) {
+        vTaskDelay(pdMS_TO_TICKS(10000));
+        int64_t now = esp_timer_get_time();
+        const char *why = NULL;
+        if (s_beat_cam && now - s_beat_cam > 3LL * 60 * 1000000) why = "camera task stuck";
+        else if (s_beat_net && now - s_beat_net > 20LL * 60 * 1000000) why = "network task stuck";
+        if (why) {
+            ESP_LOGE(TAG, "watchdog: %s; restarting", why);
+            strlcpy(s_why, why, sizeof s_why);
+            s_why_magic = WHY_MAGIC;
+            vTaskDelay(pdMS_TO_TICKS(200));
+            esp_restart();
+        }
+    }
+}
+
+/* Why the last restart happened, if spy did it itself, once; else "". */
+static const char *restart_reason(void)
+{
+    static char why[64];
+    if (s_why_magic == WHY_MAGIC) {
+        snprintf(why, sizeof why, " (restarted itself: %.40s)", s_why);
+        s_why_magic = 0;
+    } else {
+        esp_reset_reason_t r = esp_reset_reason();
+        snprintf(why, sizeof why, "%s", r == ESP_RST_PANIC ? " (restarted after a crash)" :
+                                       r == ESP_RST_TASK_WDT || r == ESP_RST_INT_WDT || r == ESP_RST_WDT ? " (restarted by the watchdog)" :
+                                       r == ESP_RST_BROWNOUT ? " (restarted: power dipped)" : "");
+    }
+    return why;
+}
+
+/* ---- where spy is ---------------------------------------------------------- */
+
+/* The last cell position (where.c / BeaconDB): refreshed after every dial
+   from the cell read while dialling, and by 'where'. For pic captions. */
+static portMUX_TYPE s_loc_mux = portMUX_INITIALIZER_UNLOCKED;
+static struct { bool ok; double lat, lon; int acc; long cell; } s_loc;
+
+static void loc_refresh(const net_cell_t *c)
+{
+    if (!c->ok) return;
+    if (s_loc.ok && s_loc.cell == c->cell) return;     /* same tower, same place */
+    double lat, lon;
+    int acc;
+    if (!where_lookup(c, &lat, &lon, &acc)) return;
+    portENTER_CRITICAL(&s_loc_mux);
+    s_loc.ok = true; s_loc.lat = lat; s_loc.lon = lon; s_loc.acc = acc; s_loc.cell = c->cell;
+    portEXIT_CRITICAL(&s_loc_mux);
+}
+
+/* " · 43.76041, -79.41173 (±3124 m)  maps.google.com/?q=..." or nothing. */
+static void loc_caption(char *out, size_t cap)
+{
+    out[0] = 0;
+    portENTER_CRITICAL(&s_loc_mux);
+    bool ok = s_loc.ok;
+    double lat = s_loc.lat, lon = s_loc.lon;
+    int acc = s_loc.acc;
+    portEXIT_CRITICAL(&s_loc_mux);
+    if (ok) snprintf(out, cap, "\n%.5f, %.5f (within ~%d m, from the cell tower)\nhttps://maps.google.com/?q=%.5f,%.5f",
+                     lat, lon, acc, lat, lon);
+}
+
 /* ---- battery watch ------------------------------------------------------- */
 
 /* The last gauge reading, for captions: -1 until there is one, or with no
@@ -306,9 +387,12 @@ static void take_pic(bool full)
         send_text("The camera did not give a picture.");
         return;
     }
-    char cap[64];
+    char cap[200];
     if (net_time_ok()) strftime(cap, sizeof cap, "%a %H:%M:%S", &lt);
     else snprintf(cap, sizeof cap, "spy");
+    char where[140];
+    loc_caption(where, sizeof where);
+    strlcat(cap, where, sizeof cap);
     send_file(full ? NET_DOC : NET_PHOTO, path, cap);
 }
 
@@ -349,6 +433,7 @@ static void cam_task(void *arg)
     long last_min = -1;
     for (;;) {
         cam_req_t req;
+        s_beat_cam = esp_timer_get_time();
         if (xQueueReceive(s_cam_q, &req, pdMS_TO_TICKS(500)) == pdTRUE) {
             s_cam_busy = true;
             if (req == CAM_PIC || req == CAM_PIC_FULL) take_pic(req == CAM_PIC_FULL);
@@ -357,7 +442,10 @@ static void cam_task(void *arg)
             else if (req == CAM_FORMAT) {
                 /* The cam task is the one that writes frames, so nothing of
                    its own is open; the encoder and an upload are waited out. */
-                for (int i = 0; i < 300 && (s_encoding || s_uploading); i++) vTaskDelay(pdMS_TO_TICKS(1000));
+                for (int i = 0; i < 300 && (s_encoding || s_uploading); i++) {
+                    s_beat_cam = esp_timer_get_time();          /* waiting, not stuck */
+                    vTaskDelay(pdMS_TO_TICKS(1000));
+                }
                 printf("FORMAT %s\n", !s_encoding && !s_uploading && store_format() ? "DONE" : "FAILED");
                 fflush(stdout);
             }
@@ -371,7 +459,7 @@ static void cam_task(void *arg)
             else {                              /* the gauge is on the camera's bus */
                 char *t = malloc(600);
                 if (t) {
-                    int n = req == CAM_HELLO ? snprintf(t, 600, "spy is on.\n") : 0;
+                    int n = req == CAM_HELLO ? snprintf(t, 600, "spy is on%s.\n", restart_reason()) : 0;
                     status_text(t + n, 600 - n);
                     ESP_LOGI(TAG, "%s", t);
                     send_text(t);
@@ -616,6 +704,7 @@ static void net_task(void *arg)
     int64_t offset = -1, last_ok = esp_timer_get_time();
     bool announced = false;
     for (;;) {
+        s_beat_net = esp_timer_get_time();
         if (!net_ok() || s_redial) {
             s_redial = false;
             tg_reset();
@@ -627,6 +716,8 @@ static void net_task(void *arg)
                 continue;
             }
             fails = 0;
+            net_cell_t cl = net_cell_last();
+            loc_refresh(&cl);                   /* the tower read while dialling */
         }
         if (!announced) {
             announced = true;
@@ -660,6 +751,9 @@ static void net_task(void *arg)
             int acc;
             char t[200];
             if (where_lookup(&c, &lat, &lon, &acc)) {
+                portENTER_CRITICAL(&s_loc_mux);
+                s_loc.ok = true; s_loc.lat = lat; s_loc.lon = lon; s_loc.acc = acc; s_loc.cell = c.cell;
+                portEXIT_CRITICAL(&s_loc_mux);
                 snprintf(t, sizeof t, "spy is near %.5f, %.5f (within about %d m, from tower %ld).",
                          lat, lon, acc, c.cell >> 8);
                 tg_send_text(t);
@@ -794,4 +888,5 @@ void app_main(void)
     }
     xTaskCreatePinnedToCore(net_task, "net", 12288, NULL, 4, NULL, 0);
     xTaskCreatePinnedToCore(console_task, "console", 6144, NULL, 2, NULL, 0);
+    xTaskCreate(watchdog_task, "watchdog", 3072, NULL, 10, NULL);
 }

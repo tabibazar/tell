@@ -18,7 +18,9 @@ CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC=y
 
 CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192
 # The encoder holds a core ~1.2 s per frame; the idle task survives that.
+# A task that spins and starves an idle task for 20 s is a hang: restart.
 CONFIG_ESP_TASK_WDT_TIMEOUT_S=20
+CONFIG_ESP_TASK_WDT_PANIC=y
 
 # 4G over PPP; TLS to api.telegram.org against the bundled roots.
 CONFIG_LWIP_PPP_SUPPORT=y
