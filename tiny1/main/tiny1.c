@@ -26,6 +26,7 @@
 #include "esp_lcd_panel_ops.h"
 #include "esp_lcd_panel_vendor.h"
 #include "esp_log.h"
+#include "esp_pm.h"
 #include "esp_netif.h"
 #include "esp_now.h"
 #include "esp_timer.h"
@@ -86,9 +87,35 @@ static void screen_init(void)
     gpio_set_level(45, 1);           /* backlight */
 }
 
+/* The screen is on only to show something, ten seconds at a time (Reza,
+   2026-10-03: "just show the pic for 10 seconds and then turn off the
+   screen"). Off is the backlight off and the panel asleep. */
+#define SHOW_US (10LL * 1000000)
+static bool s_screen_on = true;
+static int64_t s_off_at;
+
 static void screen_show(void)
 {
     esp_lcd_panel_draw_bitmap(s_panel, 0, 0, W, H, s_fb);
+    if (!s_screen_on) {
+        esp_lcd_panel_disp_sleep(s_panel, false);
+        vTaskDelay(pdMS_TO_TICKS(10));
+        esp_lcd_panel_disp_on_off(s_panel, true);
+        gpio_set_level(45, 1);
+        s_screen_on = true;
+    }
+    int64_t until = esp_timer_get_time() + SHOW_US;
+    if (until > s_off_at) s_off_at = until;
+}
+
+static void screen_tick(void)
+{
+    if (s_screen_on && esp_timer_get_time() > s_off_at) {
+        gpio_set_level(45, 0);
+        esp_lcd_panel_disp_on_off(s_panel, false);
+        esp_lcd_panel_disp_sleep(s_panel, true);
+        s_screen_on = false;
+    }
 }
 
 static void fill(int x, int y, int w, int h, uint16_t c)
@@ -246,6 +273,8 @@ static void neopixel_off(void)
 
 void app_main(void)
 {
+    esp_pm_config_t pm = { .max_freq_mhz = 240, .min_freq_mhz = 80, .light_sleep_enable = false };
+    esp_pm_configure(&pm);
     neopixel_off();
     screen_init();
     s_rx[0] = heap_caps_malloc(CAMLINK_MAX, MALLOC_CAP_SPIRAM);
@@ -280,14 +309,15 @@ void app_main(void)
                 ESP_LOGI(TAG, "photo %u, %u bytes, taken %s", h.frame, (unsigned)h.total, last);
             }
         }
-        /* Three minutes without a frame: say when the last one was. */
+        /* Three minutes without a frame: the last one gets "last seen" for
+           when the screen next wakes (not waking it just for that). */
         if (last_us && !stale_shown && esp_timer_get_time() - last_us > 3LL * 60 * 1000000) {
             char s[24];
             snprintf(s, sizeof s, "last seen %s", last[0] ? last : "--");
             status_line(s, px(255, 170, 0));
-            screen_show();
             stale_shown = true;
         }
+        screen_tick();
         /* spy heard the ask but no photo came: the one small ask got through
            where a photo's twenty-odd chunks could not -- the edge of range. */
         if (asked_us && esp_timer_get_time() - asked_us > 20000000) {
