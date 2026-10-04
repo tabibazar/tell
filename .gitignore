@@ -95,3 +95,4 @@ host_tests/test_fluid
 host_tests/test_airui
 blinky1/sdkconfig
 tiny1/sdkconfig
+tiny2/sdkconfig
