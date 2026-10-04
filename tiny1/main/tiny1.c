@@ -15,10 +15,12 @@
  *   GPIO0   BOOT button (low when pressed)
  */
 #include <stdio.h>
+#include <math.h>
 #include <string.h>
 
 #include "camlink.h"
 #include "driver/gpio.h"
+#include "driver/i2c_master.h"
 #include "driver/spi_master.h"
 #include "esp_event.h"
 #include "esp_heap_caps.h"
@@ -191,7 +193,13 @@ static void on_sent(const esp_now_send_info_t *info, esp_now_send_status_t st)
     xSemaphoreGive(s_sent);
 }
 
-static void radio_start(void)
+/* The radio, on only when a photo is due (or asked for): listening all the
+   time drew ~90 mA and made tiny1 warm -- warm enough to read high on its
+   own BMP280 (Reza, 2026-10-03: "tiny is running hot"). */
+static bool s_radio_on;
+static int64_t s_radio_on_us, s_radio_since;     /* time on, for the log */
+
+static void radio_init(void)
 {
     nvs_flash_init();
     esp_netif_init();
@@ -200,15 +208,138 @@ static void radio_start(void)
     ESP_ERROR_CHECK(esp_wifi_init(&c));
     esp_wifi_set_storage(WIFI_STORAGE_RAM);
     esp_wifi_set_mode(WIFI_MODE_STA);
-    ESP_ERROR_CHECK(esp_wifi_start());
-    esp_wifi_set_channel(CAMLINK_CHANNEL, WIFI_SECOND_CHAN_NONE);
-    esp_wifi_set_ps(WIFI_PS_NONE);
-    ESP_ERROR_CHECK(esp_now_init());
-    esp_now_register_recv_cb(on_recv);
-    esp_now_register_send_cb(on_sent);
-    esp_now_peer_info_t p = { .channel = CAMLINK_CHANNEL, .ifidx = WIFI_IF_STA, .encrypt = false };
-    memcpy(p.peer_addr, SPY, 6);
-    esp_now_add_peer(&p);
+}
+
+static void radio(bool on)
+{
+    if (on == s_radio_on) return;
+    if (on) {
+        if (esp_wifi_start() != ESP_OK) return;
+        esp_wifi_set_channel(CAMLINK_CHANNEL, WIFI_SECOND_CHAN_NONE);
+        esp_wifi_set_ps(WIFI_PS_NONE);
+        if (esp_now_init() != ESP_OK) { esp_wifi_stop(); return; }
+        esp_now_register_recv_cb(on_recv);
+        esp_now_register_send_cb(on_sent);
+        esp_now_peer_info_t p = { .channel = CAMLINK_CHANNEL, .ifidx = WIFI_IF_STA, .encrypt = false };
+        memcpy(p.peer_addr, SPY, 6);
+        esp_now_add_peer(&p);
+        s_radio_since = esp_timer_get_time();
+    } else {
+        esp_now_deinit();
+        esp_wifi_stop();
+        s_radio_on_us += esp_timer_get_time() - s_radio_since;
+    }
+    s_radio_on = on;
+}
+
+/* ---- spy's clock, learnt from its photos ---------------------------------- */
+
+/* A photo says when it was taken (weekday, hour, minute); it arrives some
+   four seconds after spy's minute starts (a VGA shot is ~3 s, the send
+   ~0.5). From that tiny1 knows spy's schedule -- every minute weekdays
+   07:00-16:59, every ten minutes otherwise (spy/main/sched.c) -- and opens
+   the radio only around each frame. */
+static bool s_clock;
+static int s_clock_wmin;               /* minute of the week (0 = Sunday 00:00) */
+static int64_t s_clock_us;             /* when that minute began, by esp_timer */
+
+static void clock_set(const camlink_hdr_t *h, int64_t arrived_us)
+{
+    if (h->weekday > 6) return;
+    s_clock_wmin = h->weekday * 1440 + h->hour * 60 + h->minute;
+    s_clock_us = arrived_us - 4000000;
+    s_clock = true;
+}
+
+static bool spy_shoots(int wmin)       /* sched_capture || sched_capture_quiet */
+{
+    int day = (wmin / 1440) % 7, hour = (wmin % 1440) / 60, minute = wmin % 60;
+    bool working = day >= 1 && day <= 5 && hour >= 7 && hour <= 16;
+    return working || minute % 10 == 0;
+}
+
+/* When the next frame's minute begins, by esp_timer. */
+static int64_t next_frame_us(int64_t now)
+{
+    int64_t since = (now - s_clock_us) / 60000000;      /* whole minutes since the anchor */
+    for (int64_t k = since + 1; k < since + 24 * 60; k++)
+        if (spy_shoots((int)((s_clock_wmin + k) % (7 * 1440)))) return s_clock_us + k * 60000000;
+    return now + 60000000;
+}
+
+/* ---- warmth ---------------------------------------------------------------- */
+
+#include "driver/temperature_sensor.h"
+static temperature_sensor_handle_t s_tsens;
+static i2c_master_dev_handle_t s_bmp, s_imu;
+static uint16_t s_t1;
+static int16_t s_t2, s_t3;
+
+static void warmth_init(void)
+{
+    temperature_sensor_config_t tc = TEMPERATURE_SENSOR_CONFIG_DEFAULT(10, 80);
+    if (temperature_sensor_install(&tc, &s_tsens) == ESP_OK) temperature_sensor_enable(s_tsens);
+    i2c_master_bus_config_t bc = { .i2c_port = 0, .sda_io_num = 42, .scl_io_num = 41,
+        .clk_source = I2C_CLK_SRC_DEFAULT, .glitch_ignore_cnt = 7, .flags.enable_internal_pullup = true };
+    i2c_master_bus_handle_t bus;
+    if (i2c_new_master_bus(&bc, &bus) != ESP_OK) return;
+    i2c_device_config_t dc = { .dev_addr_length = I2C_ADDR_BIT_LEN_7, .device_address = 0x77, .scl_speed_hz = 100000 };
+    /* The QMI8658 too, for shake-to-show: accelerometer only, +-4 g at
+       ~117 Hz, auto-increment on. */
+    i2c_device_config_t ic = { .dev_addr_length = I2C_ADDR_BIT_LEN_7, .device_address = 0x6B, .scl_speed_hz = 400000 };
+    if (i2c_master_bus_add_device(bus, &ic, &s_imu) == ESP_OK) {
+        static const uint8_t init[][2] = { { 0x02, 0x40 }, { 0x03, 0x16 }, { 0x08, 0x01 } };
+        for (size_t i = 0; i < sizeof init / sizeof init[0]; i++)
+            if (i2c_master_transmit(s_imu, init[i], 2, 100) != ESP_OK) { s_imu = NULL; break; }
+    }
+    if (i2c_master_bus_add_device(bus, &dc, &s_bmp) != ESP_OK) { s_bmp = NULL; return; }
+    uint8_t reg = 0x88, cal[6];
+    if (i2c_master_transmit_receive(s_bmp, &reg, 1, cal, 6, 100) != ESP_OK) { s_bmp = NULL; return; }
+    s_t1 = (uint16_t)(cal[0] | cal[1] << 8);
+    s_t2 = (int16_t)(cal[2] | cal[3] << 8);
+    s_t3 = (int16_t)(cal[4] | cal[5] << 8);
+}
+
+/* The BMP280's temperature, one forced conversion (datasheet 3.11.3). */
+static float bmp_temp(void)
+{
+    if (!s_bmp) return NAN;
+    uint8_t ctrl[2] = { 0xF4, 0x21 };           /* temperature x1, pressure off, forced */
+    i2c_master_transmit(s_bmp, ctrl, 2, 100);
+    vTaskDelay(pdMS_TO_TICKS(10));
+    uint8_t reg = 0xFA, d[3];
+    if (i2c_master_transmit_receive(s_bmp, &reg, 1, d, 3, 100) != ESP_OK) return NAN;
+    int32_t adc = (int32_t)d[0] << 12 | (int32_t)d[1] << 4 | d[2] >> 4;
+    int32_t v1 = ((((adc >> 3) - ((int32_t)s_t1 << 1))) * s_t2) >> 11;
+    int32_t v2 = (((((adc >> 4) - (int32_t)s_t1) * ((adc >> 4) - (int32_t)s_t1)) >> 12) * s_t3) >> 14;
+    return (float)(((v1 + v2) * 5 + 128) >> 8) / 100.0f;
+}
+
+/* A shake: the acceleration jumping by more than ~1.2 g between samples
+   twice within 0.6 s (one bump is not a shake). Reza, 2026-10-03: "if i
+   shake it i want to see the last pic". */
+static bool shaken(int64_t now)
+{
+    static int64_t last_sample, first_jolt, quiet_until;
+    static float px, py, pz;
+    static bool have;
+    if (!s_imu || now - last_sample < 50000) return false;
+    last_sample = now;
+    uint8_t reg = 0x35, d[6];
+    if (i2c_master_transmit_receive(s_imu, &reg, 1, d, 6, 50) != ESP_OK) return false;
+    float x = (int16_t)(d[0] | d[1] << 8) / 8192.0f, y = (int16_t)(d[2] | d[3] << 8) / 8192.0f,
+          z = (int16_t)(d[4] | d[5] << 8) / 8192.0f;
+    float jolt = fabsf(x - px) + fabsf(y - py) + fabsf(z - pz);
+    px = x; py = y; pz = z;
+    if (!have) { have = true; quiet_until = now + 2000000; return false; }   /* the sensor settling */
+    if (now < quiet_until || jolt < 1.2f) return false;
+    if (first_jolt && now - first_jolt < 600000) {
+        first_jolt = 0;
+        quiet_until = now + 2000000;
+        return true;
+    }
+    first_jolt = now;
+    return false;
 }
 
 /* BOOT: ask spy for a photo, again and again for up to three seconds, since
@@ -285,7 +416,9 @@ void app_main(void)
     text((W - 12 * 6) / 2, 30, "tiny1", px(255, 255, 255));
     status_line("waiting for spy", px(150, 150, 150));
     screen_show();
-    radio_start();
+    radio_init();
+    radio(true);                               /* on until spy's clock is known */
+    warmth_init();
     gpio_config_t boot = { .pin_bit_mask = 1ULL << 0, .mode = GPIO_MODE_INPUT, .pull_up_en = GPIO_PULLUP_ENABLE };
     gpio_config(&boot);
     ESP_LOGI(TAG, "waiting for spy on channel %d", CAMLINK_CHANNEL);
@@ -306,6 +439,7 @@ void app_main(void)
                 last_us = esp_timer_get_time();
                 stale_shown = false;
                 asked_us = 0;
+                clock_set(&h, last_us);
                 ESP_LOGI(TAG, "photo %u, %u bytes, taken %s", h.frame, (unsigned)h.total, last);
             }
         }
@@ -318,6 +452,36 @@ void app_main(void)
             stale_shown = true;
         }
         screen_tick();
+        if (shaken(esp_timer_get_time())) {        /* the last photo, ten seconds */
+            ESP_LOGI(TAG, "shaken: showing the last photo");
+            screen_show();
+        }
+
+        /* The radio: on while asking, before the first photo (no clock yet),
+           and from three seconds before each frame's minute to twelve after;
+           off otherwise. A frame that came early closes the window. */
+        {
+            int64_t now = esp_timer_get_time();
+            bool want = !s_clock || asked_us != 0;
+            if (s_clock && !want) {
+                int64_t next = next_frame_us(now - 12000000);
+                bool got_it = last_us > next - 3000000;
+                want = now > next - 3000000 && now < next + 12000000 && !got_it;
+            }
+            radio(want);
+            static int64_t logged;
+            if (now - logged > 60000000) {
+                int64_t on = s_radio_on_us + (s_radio_on ? now - s_radio_since : 0);
+                static int64_t on_before;
+                float die = NAN;
+                if (s_tsens) temperature_sensor_get_celsius(s_tsens, &die);
+                ESP_LOGI(TAG, "warmth: chip %.1f C, BMP280 %.1f C; radio on %lld%% of the last minute%s",
+                         (double)die, (double)bmp_temp(), logged ? (on - on_before) * 100 / (now - logged) : 100,
+                         s_clock ? "" : " (no clock yet)");
+                on_before = on;
+                logged = now;
+            }
+        }
         /* spy heard the ask but no photo came: the one small ask got through
            where a photo's twenty-odd chunks could not -- the edge of range. */
         if (asked_us && esp_timer_get_time() - asked_us > 20000000) {
@@ -329,6 +493,7 @@ void app_main(void)
         if (!gpio_get_level(0)) {                    /* BOOT */
             status_line("asking spy...", px(120, 200, 255));
             screen_show();
+            radio(true);
             bool ok = ask_spy();
             status_line(ok ? "spy is taking it" : "spy not in range", ok ? px(120, 255, 120) : px(255, 120, 80));
             screen_show();
