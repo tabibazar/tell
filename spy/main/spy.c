@@ -52,7 +52,7 @@ static const char *TAG = "spy";
 /* ---- messages between the tasks ----------------------------------------- */
 
 typedef enum { CAM_PIC, CAM_PIC_FULL, CAM_STATUS, CAM_HELLO, CAM_TEST_FRAMES, CAM_FORMAT, CAM_BATTEST, CAM_TINY } cam_req_t;
-typedef enum { WORK_CLIP, WORK_CLIP_SO_FAR, WORK_NIGHT } work_kind_t;
+typedef enum { WORK_CLIP, WORK_CLIP_SO_FAR, WORK_NIGHT, WORK_ROOM } work_kind_t;
 typedef struct { work_kind_t kind; char day[9]; int hour, last_min; time_t from, to; } work_req_t;
 typedef enum { NET_TEXT, NET_PHOTO, NET_DOC, NET_VIDEO } net_kind_t;
 typedef struct {
@@ -393,6 +393,10 @@ static void cam_task(void *arg)
         }
         if (store_ok() && (sched_capture(&lt) || sched_capture_quiet(&lt))) minute_frame(&lt);
         battery_watch(false);                   /* after the frame: the gauge shares the camera's bus */
+        if (lt.tm_min == 30) {                       /* hourly: room on the card */
+            work_req_t r = { .kind = WORK_ROOM };
+            xQueueSend(s_work_q, &r, 0);
+        }
         time_t day_from;
         if (sched_daily_clip(&lt, &day_from)) {     /* 07:00 every day: the 24 hours before */
             work_req_t w = { .kind = WORK_NIGHT, .from = day_from, .to = time(NULL) - 60 };
@@ -405,30 +409,78 @@ static void cam_task(void *arg)
 /* ---- work task ----------------------------------------------------------- */
 
 /* Oldest day folder off the card while it is short of room. */
+/* Room on the card. Below CARD_KEEP_MB free (a little over 3 % of the
+   30 GB card -- weeks of frames at ~35 MB a day), the oldest day of frames
+   goes, then the next, never today's; if only today is left, the oldest
+   asked-for pics. Run hourly, at boot and after every clip, from the work
+   task (nothing else deletes, and the encoder reads only today's or the
+   last 24 hours'). Reza, 2026-10-03: "delete fotos when the disk space
+   [is] getting close to full". */
+#define CARD_KEEP_MB 1024
+
+static int remove_dir(const char *dir)
+{
+    char path[300];
+    int n = 0;
+    DIR *d = opendir(dir);
+    struct dirent *e;
+    while (d && (e = readdir(d))) {
+        strlcpy(path, dir, sizeof path);
+        strlcat(path, "/", sizeof path);
+        strlcat(path, e->d_name, sizeof path);
+        if (remove(path) == 0) n++;
+    }
+    if (d) closedir(d);
+    rmdir(dir);
+    return n;
+}
+
+static bool oldest_entry(const char *dir, size_t want_len, char *out, size_t cap)
+{
+    DIR *d = opendir(dir);
+    if (!d) return false;
+    out[0] = 0;
+    struct dirent *e;
+    while ((e = readdir(d)))
+        if ((!want_len || strlen(e->d_name) == want_len) && (!out[0] || strcmp(e->d_name, out) < 0))
+            strlcpy(out, e->d_name, cap);
+    closedir(d);
+    return out[0] != 0;
+}
+
 static void make_room(void)
 {
     uint32_t fr, tot;
-    while (store_space(&fr, &tot) && fr < 30) {
-        DIR *d = opendir("/sdcard/tl");
-        if (!d) return;
-        char oldest[16] = "";
-        struct dirent *e;
-        while ((e = readdir(d))) {
-            if (strlen(e->d_name) == 8 && (!oldest[0] || strcmp(e->d_name, oldest) < 0))
-                snprintf(oldest, sizeof oldest, "%s", e->d_name);
+    if (!store_space(&fr, &tot) || fr >= CARD_KEEP_MB) return;
+    struct tm lt;
+    char today[9] = "";
+    if (local_now(&lt)) sched_day(&lt, today);
+    int days = 0, files = 0, pics = 0;
+    while (store_space(&fr, &tot) && fr < CARD_KEEP_MB) {
+        char oldest[16], path[48];
+        if (oldest_entry("/sdcard/tl", 8, oldest, sizeof oldest) && strcmp(oldest, today) != 0) {
+            snprintf(path, sizeof path, "/sdcard/tl/%s", oldest);
+            files += remove_dir(path);
+            days++;
+            ESP_LOGW(TAG, "card short of room: removed %s", path);
+            continue;
         }
-        closedir(d);
-        if (!oldest[0]) return;
-        char dir[32], path[300];
-        snprintf(dir, sizeof dir, "/sdcard/tl/%s", oldest);
-        d = opendir(dir);
-        while (d && (e = readdir(d))) {
-            snprintf(path, sizeof path, "%s/%s", dir, e->d_name);
-            remove(path);
+        /* Only today's frames left: the pics, oldest first (their names sort
+           by date and time). */
+        char pic[64];
+        if (oldest_entry("/sdcard/pics", 0, pic, sizeof pic) && pic[0] != '.') {
+            char pp[96];
+            snprintf(pp, sizeof pp, "/sdcard/pics/%s", pic);
+            if (remove(pp) == 0) { pics++; continue; }
         }
-        if (d) closedir(d);
-        rmdir(dir);
-        ESP_LOGW(TAG, "card short of room: removed %s", dir);
+        break;                                  /* nothing more it may delete */
+    }
+    if (days || pics) {
+        char t[160];
+        store_space(&fr, &tot);
+        snprintf(t, sizeof t, "spy's card was nearly full: deleted %d day(s) of frames (%d files) and %d pic(s). "
+                 "%lu MB free now.", days, files, pics, (unsigned long)fr);
+        send_text(t);
     }
 }
 
@@ -437,6 +489,7 @@ static void work_task(void *arg)
     for (;;) {
         work_req_t w;
         if (xQueueReceive(s_work_q, &w, portMAX_DELAY) != pdTRUE) continue;
+        if (w.kind == WORK_ROOM) { make_room(); continue; }
         char dir[32], out[64], cap[128];
         snprintf(dir, sizeof dir, "/sdcard/tl/%s", w.day);
         if (w.kind == WORK_CLIP) snprintf(out, sizeof out, "%s/day.mp4", dir);
@@ -735,6 +788,10 @@ void app_main(void)
     s_net_q = xQueueCreate(16, sizeof(net_job_t *));
     xTaskCreatePinnedToCore(cam_task, "cam", 8192, NULL, 5, NULL, 0);
     xTaskCreatePinnedToCore(work_task, "work", 32768, NULL, 3, NULL, 1);
+    {
+        work_req_t r = { .kind = WORK_ROOM };       /* room on the card, at boot */
+        xQueueSend(s_work_q, &r, 0);
+    }
     xTaskCreatePinnedToCore(net_task, "net", 12288, NULL, 4, NULL, 0);
     xTaskCreatePinnedToCore(console_task, "console", 6144, NULL, 2, NULL, 0);
 }
