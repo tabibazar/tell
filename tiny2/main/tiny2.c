@@ -21,6 +21,8 @@
 #include "freertos/task.h"
 #include "img_converters.h"
 #include "mbedtls/base64.h"
+#include "soc/gpio_reg.h"
+#include "soc/soc.h"
 
 static const char *TAG = "tiny2";
 
@@ -43,6 +45,35 @@ void app_main(void)
     if (e != ESP_OK) { ESP_LOGE(TAG, "camera init: %s", esp_err_to_name(e)); return; }
     sensor_t *s = esp_camera_sensor_get();
     ESP_LOGI(TAG, "camera up: PID 0x%02X", s ? s->id.PID : 0);
+    if (s) {                                         /* auto white balance and exposure */
+        s->set_whitebal(s, 1);
+        s->set_awb_gain(s, 1);
+        s->set_exposure_ctrl(s, 1);
+        s->set_gain_ctrl(s, 1);
+    }
+    /* Where did D3 land? Pins not already the camera's that toggle while it
+       streams. */
+    {
+        const int cand[] = { 0, 1, 2, 4, 7, 8, 15, 21, 38, 39, 40, 41, 42, 45, 47 };
+        for (size_t i = 0; i < sizeof cand / sizeof cand[0]; i++) {
+            if (cand[i] == 21) continue;
+            gpio_reset_pin(cand[i]);
+            gpio_set_direction(cand[i], GPIO_MODE_INPUT);
+            gpio_set_pull_mode(cand[i], GPIO_PULLDOWN_ONLY);
+        }
+        vTaskDelay(pdMS_TO_TICKS(100));
+        int edges[49] = { 0 };
+        uint64_t prev = (uint64_t)REG_READ(GPIO_IN_REG) | ((uint64_t)REG_READ(GPIO_IN1_REG) << 32);
+        for (int n = 0; n < 200000; n++) {
+            uint64_t v = (uint64_t)REG_READ(GPIO_IN_REG) | ((uint64_t)REG_READ(GPIO_IN1_REG) << 32), ch = v ^ prev;
+            prev = v;
+            for (size_t i = 0; i < sizeof cand / sizeof cand[0]; i++) if (ch >> cand[i] & 1) edges[cand[i]]++;
+        }
+        char l[200] = "spare pins toggling (D3?):";
+        for (size_t i = 0; i < sizeof cand / sizeof cand[0]; i++)
+            if (edges[cand[i]] > 20) snprintf(l + strlen(l), sizeof l - strlen(l), " %d(%d)", cand[i], edges[cand[i]]);
+        ESP_LOGI(TAG, "%s", l);
+    }
     for (;;) {
         camera_fb_t *fb = NULL;
         for (int i = 0; i < 6; i++) {               /* exposure settles */
@@ -50,6 +81,16 @@ void app_main(void)
             fb = esp_camera_fb_get();
         }
         if (!fb) { ESP_LOGW(TAG, "no frame"); vTaskDelay(pdMS_TO_TICKS(3000)); continue; }
+        /* Each data bit's share of the frame's bytes: a line not arriving
+           shows as 0 %. */
+        {
+            uint32_t on[8] = { 0 };
+            for (size_t i = 0; i < fb->len; i++)
+                for (int b = 0; b < 8; b++) on[b] += fb->buf[i] >> b & 1;
+            ESP_LOGI(TAG, "bits set: D0 %lu%% D1 %lu%% D2 %lu%% D3 %lu%% D4 %lu%% D5 %lu%% D6 %lu%% D7 %lu%%",
+                     on[0] * 100 / fb->len, on[1] * 100 / fb->len, on[2] * 100 / fb->len, on[3] * 100 / fb->len,
+                     on[4] * 100 / fb->len, on[5] * 100 / fb->len, on[6] * 100 / fb->len, on[7] * 100 / fb->len);
+        }
         uint8_t *jpg = NULL;
         size_t jl = 0;
         bool ok = frame2jpg(fb, 80, &jpg, &jl);
