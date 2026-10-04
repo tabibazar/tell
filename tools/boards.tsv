@@ -17,3 +17,4 @@ speaker	28:84:85:56:f6:b0	Waveshare ESP32-S3-AUDIO-Board: ES8311 + ES7210 2 mics
 spy	28:84:85:91:87:c4	Waveshare ESP32-S3-SIM7670G-4G: SIM7670G LTE Cat-1 + GNSS, OV5640, SD, 18650 + MAX17048, CH343 + CH334 hub
 blinky1	10:51:db:79:b3:a8	generic ESP32-S3-DevKitC-1 N16R8 clone: ESP32-S3R8 (8 MB PSRAM), 16 MB Boya flash, CP2102 bridge, WS2812 on GPIO48; factory MicroPython 1.19.1 RGB blink demo
 tiny1	68:ee:8f:da:6c:78	Adafruit Feather ESP32-S3 TFT clone: ESP32-S3FH4R2 (4 MB flash, 2 MB PSRAM), 1.14in 240x135 TFT, BMP280 0x77 + QMI8658 0x6B on I2C SDA42/SCL41 (GPIO21 powers TFT+I2C), LiPo connector, no gauge; native USB
+tiny2	30:ed:a0:29:4f:d0	generic ESP32-S3-DevKitC-1 N16R8 clone (like blinky1): ESP32-S3R8 (8 MB PSRAM), 16 MB Boya flash, CP2102, WS2812 on GPIO48; an I2C camera wired on; factory MicroPython RGB demo
