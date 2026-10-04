@@ -261,7 +261,7 @@ void app_main(void)
     gpio_config(&boot);
     ESP_LOGI(TAG, "waiting for spy on channel %d", CAMLINK_CHANNEL);
 
-    int64_t last_us = 0;
+    int64_t last_us = 0, asked_us = 0;
     char last[8] = "";
     bool stale_shown = false;
     for (;;) {
@@ -276,6 +276,7 @@ void app_main(void)
                 screen_show();
                 last_us = esp_timer_get_time();
                 stale_shown = false;
+                asked_us = 0;
                 ESP_LOGI(TAG, "photo %u, %u bytes, taken %s", h.frame, (unsigned)h.total, last);
             }
         }
@@ -287,12 +288,21 @@ void app_main(void)
             screen_show();
             stale_shown = true;
         }
+        /* spy heard the ask but no photo came: the one small ask got through
+           where a photo's twenty-odd chunks could not -- the edge of range. */
+        if (asked_us && esp_timer_get_time() - asked_us > 20000000) {
+            status_line("photo lost: too far?", px(255, 170, 0));
+            screen_show();
+            ESP_LOGW(TAG, "spy heard the ask but no photo arrived in 20 s");
+            asked_us = 0;
+        }
         if (!gpio_get_level(0)) {                    /* BOOT */
             status_line("asking spy...", px(120, 200, 255));
             screen_show();
             bool ok = ask_spy();
             status_line(ok ? "spy is taking it" : "spy not in range", ok ? px(120, 255, 120) : px(255, 120, 80));
             screen_show();
+            if (ok) asked_us = esp_timer_get_time();
             ESP_LOGI(TAG, "asked spy: %s", ok ? "heard" : "no answer");
             while (!gpio_get_level(0)) vTaskDelay(pdMS_TO_TICKS(20));
         }
