@@ -158,6 +158,25 @@ static air_now_t air_now(void)
     return n;
 }
 
+/* The AHT21 sits beside the ENS160's heater and the ESP32 and reads warm.
+   Against Reza's hygrometer on 2026-10-06 (23.2 C, 29 %; the module read
+   26.05 C, 27.7 %): the temperature 2.85 C high, and the humidity -- once
+   moved from the sensor's warmer air to the room's temperature at the same
+   vapour pressure (x es(raw)/es(room), 1.186 here) -- 3.8 % high. The same
+   correction speaker uses (!thcal). */
+#define AHT_T_OFF  (-2.85f)
+#define AHT_RH_OFF (-3.84f)
+
+static float sat_vp(float t) { return 6.112f * expf(17.62f * t / (243.12f + t)); }
+
+static void aht_correct(float *t, float *rh)
+{
+    float tc = *t + AHT_T_OFF;
+    float h = *rh * sat_vp(*t) / sat_vp(tc) + AHT_RH_OFF;
+    *t = tc;
+    *rh = h < 0 ? 0 : h > 100 ? 100 : h;
+}
+
 static bool aht_read(float *t, float *rh)
 {
     if (!s_aht) return false;
@@ -243,6 +262,7 @@ static void sensor_task(void *arg)
     for (int tick = 0;; tick++) {
         float t, rh;
         if (tick % 5 == 0 && aht_read(&t, &rh)) {
+            aht_correct(&t, &rh);                  /* the room's, not the module's */
             ens_compensate(t, rh);
             portENTER_CRITICAL(&s_now_mux);
             s_now.temp = t; s_now.rh = rh;
@@ -259,6 +279,11 @@ static void sensor_task(void *arg)
                 sum[AIR_ECO2] += eco2; cnt[AIR_ECO2]++;
                 sum[AIR_TVOC] += tvoc; cnt[AIR_TVOC]++;
             }
+        }
+        if (tick % 20 == 0) {                      /* the console too, every 20 s */
+            air_now_t n = air_now();
+            ESP_LOGI(TAG, "air: %.1f C, %.0f %% RH, AQI %d, TVOC %d ppb, eCO2 %d ppm, validity %d",
+                     (double)n.temp, (double)n.rh, n.aqi, n.tvoc, n.eco2, n.validity);
         }
         if (esp_timer_get_time() >= minute_at) {
             minute_at += 60000000;
