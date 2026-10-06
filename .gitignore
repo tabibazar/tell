@@ -96,3 +96,6 @@ host_tests/test_airui
 blinky1/sdkconfig
 tiny1/sdkconfig
 tiny2/sdkconfig
+host_tests/test_rooms
+panel1/sdkconfig
+panel1/sdkconfig.old
