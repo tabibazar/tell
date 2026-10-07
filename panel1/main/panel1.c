@@ -7,6 +7,8 @@
  * after 18:00 and at weekends, on the next working day -- and a swipe left or
  * right moves a day; a minute untouched brings it home again. A tap on a
  * booking opens a card with all of it -- who booked it, who is invited.
+ * Five minutes untouched, it dims to a clock that wanders the screen; a tap
+ * wakes it on the home day.
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -40,6 +42,9 @@ static const char *TAG = "panel1";
 #define SPAN           14           /* days either way a swipe may go */
 #define CACHE_N        8
 #define DETAIL_FOR     20           /* s a booking's card stays up untouched */
+#define SAVER_AFTER    (5 * 60)     /* s untouched before the screen saver */
+#define SAVER_LIGHT    15           /* % backlight while it is on */
+#define NOTE_AFTER     (3 * 60)     /* s of failed fetches before the header says so */
 
 typedef struct {
     int y, m, d;          /* 0 = empty slot */
@@ -55,6 +60,8 @@ static volatile bool s_dirty = true;
 static volatile int64_t s_last_ok;    /* s, monotonic; last good fetch */
 static volatile time_t s_last_ok_wall;
 static volatile bool s_failing;
+static volatile int64_t s_fail_since;  /* s, monotonic; when the failing began */
+static bool s_saver;
 
 /* The booking whose card is up, copied: the day under it may be refetched. */
 static bool s_det;
@@ -141,6 +148,7 @@ static bool fetch_if_due(int off, int every, rooms_day_t *tmp)
         s_last_ok = s->fetched;
         s_last_ok_wall = time(NULL);
     }
+    if (!ok && !s_failing) s_fail_since = now_s();
     s_failing = !ok;
     s_dirty = true;
     xSemaphoreGive(s_lock);
@@ -184,7 +192,8 @@ static void draw(canvas_t *c, rooms_day_t *buf)
             day = buf;
         }
         s_buf_ok = day != NULL;
-        bool failing = s_failing;
+        /* Apps Script stalls now and then; say so only when it keeps on. */
+        bool failing = s_failing && now_s() - s_fail_since >= NOTE_AFTER;
         xSemaphoreGive(s_lock);
         if (!net_have_relay()) {
             snprintf(note, sizeof note, "no relay URL");
@@ -200,6 +209,12 @@ static void draw(canvas_t *c, rooms_day_t *buf)
         }
     }
     v.note = note;
+    if (s_saver && v.now >= 0) {
+        struct tm d = day_at(0);
+        roomsui_saver(c, v.now, d.tm_wday, d.tm_mday, d.tm_mon + 1, (int)(time(NULL) / 60));
+        lcd_show();
+        return;
+    }
     roomsui_draw(c, day, &v);
     if (s_det && v.now >= 0) roomsui_detail(c, s_det_room, &s_det_ev, &v);
     lcd_show();
@@ -228,7 +243,7 @@ void app_main(void)
     net_start();
     xTaskCreatePinnedToCore(fetch_task, "fetch", 8192, NULL, 4, NULL, 0);
 
-    bool down = false, moved = false;
+    bool down = false, moved = false, waking = false;
     int x0 = 0, y0 = 0, lx = 0;
     int64_t last_touch = now_s();
     int last_min = -1, last_home = -1;
@@ -236,10 +251,23 @@ void app_main(void)
         vTaskDelay(pdMS_TO_TICKS(30));
         int x, y;
         if (touch && touch_read(&x, &y)) {
-            if (!down) { down = true; moved = false; x0 = x; y0 = y; }
+            if (!down) {
+                down = true; moved = false; x0 = x; y0 = y;
+                if (s_saver) {
+                    /* This touch only wakes: home, bright, and nothing else. */
+                    waking = true;
+                    s_saver = false;
+                    s_det = false;
+                    if (net_time_ok()) s_offset = home_offset();
+                    draw(c, buf);
+                    lcd_backlight(100);
+                }
+            }
             lx = x;
             if (abs(x - x0) > SWIPE_PX / 2) moved = true;
             last_touch = now_s();
+        } else if (down && waking) {
+            down = waking = false;
         } else if (down) {
             down = false;
             int dx = lx - x0;
@@ -278,6 +306,12 @@ void app_main(void)
             last_home = h;
             if (s_offset != h && now_s() - last_touch >= IDLE_HOME && !down) { s_offset = h; s_det = false; s_dirty = true; }
             if (s_det && now_s() - s_det_at >= DETAIL_FOR && now_s() - last_touch >= DETAIL_FOR) { s_det = false; s_dirty = true; }
+            if (!s_saver && !down && touch && now_s() - last_touch >= SAVER_AFTER) {
+                s_saver = true;
+                s_det = false;
+                s_dirty = true;
+                lcd_backlight(SAVER_LIGHT);
+            }
             time_t t = time(NULL);
             struct tm lt;
             localtime_r(&t, &lt);

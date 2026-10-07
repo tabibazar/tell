@@ -38,6 +38,11 @@ const room_ev_t *roomsui_hit(const rooms_day_t *day, int x, int y, int *room);
    whole title, the time, who booked it and who is invited. */
 void roomsui_detail(canvas_t *c, const room_t *r, const room_ev_t *e, const roomsui_view_t *v);
 
+/* The screen saver: the time and date, large and grey on black, at one of
+   many places picked by `step` (the caller's minute count), so that nothing
+   stands still on the panel for long. */
+void roomsui_saver(canvas_t *c, int now, int wday, int d, int m, int step);
+
 /* The timeline's first and last hour for `day`, as roomsui_draw picks them. */
 void roomsui_hours(const rooms_day_t *day, int *first, int *last);
 

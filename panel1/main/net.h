@@ -14,7 +14,7 @@ void net_start(void);
 bool net_up(void);          /* joined, with an address */
 bool net_time_ok(void);     /* the clock has been set */
 
-/* Fetches y-m-d from the relay into `out`. Blocks up to ~20 s. False on any
+/* Fetches y-m-d from the relay into `out`. Blocks up to ~35 s. False on any
    failure, and `out` is left as it was. */
 bool net_fetch_day(int y, int m, int d, rooms_day_t *out);
 

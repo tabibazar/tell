@@ -85,7 +85,7 @@ bool net_fetch_day(int y, int m, int d, rooms_day_t *out)
     esp_http_client_config_t cfg = {
         .url = url,
         .crt_bundle_attach = esp_crt_bundle_attach,
-        .timeout_ms = 15000,
+        .timeout_ms = 30000,      /* Apps Script can take 20 s to wake */
         .buffer_size = 4096,
         .buffer_size_tx = 2048,
         .max_redirection_count = 5,
