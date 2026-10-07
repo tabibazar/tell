@@ -41,9 +41,9 @@ static void bmp(const char *name)
    plus a few bookings to try the edges: long titles, back to back, early. */
 static const char *DAY =
     "{\"d\":\"2026-10-07\",\"tz\":\"America/Toronto\",\"rooms\":["
-    "{\"n\":\"CEDAR (8)\",\"ev\":[[660,720,\"Design review\",\"Lena\"],[765,780,\"Hiring sync\",\"Nora\"],"
+    "{\"n\":\"CEDAR (8) [TV with HDMI and WebCam]\",\"ev\":[[660,720,\"Design review\",\"Lena\"],[765,780,\"Hiring sync\",\"Nora\"],"
     "[780,810,\"Budget planning\",\"Omar\"],[810,840,\"Ops weekly\",\"Theo\"]]},"
-    "{\"n\":\"Pine-1\",\"ev\":[[540,570,\"Daily standup\",\"Priya\"],[600,690,\"Quarterly roadmap review with the platform team\",\"Jordan\"]]},"
+    "{\"n\":\"Pine-1 (Closest to the door) (1)\",\"ev\":[[540,570,\"Daily standup\",\"Priya\"],[600,690,\"Quarterly roadmap review with the platform team\",\"Jordan\"]]},"
     "{\"n\":\"Pine-2\",\"ev\":[[450,480,\"Early call \\u2013 Tokyo\",\"Ken\"],[840,960,\"Interview: Senior engineer\",\"Alex\"]]},"
     "{\"n\":\"MAPLE (5)\",\"ev\":[[570,600,\"1:1 \\u00c9milie / Omar \\ud83d\\ude00\",\"\\u00c9milie\"],[900,930,\"\",\"\"]]},"
     "{\"n\":\"BIRCH (10)\",\"ev\":[[600,660,\"All hands prep\",\"Dana\"],[720,780,\"Lunch & learn\",\"Chris\"],[1020,1110,\"Board call\",\"Omar\"]]}"
@@ -56,7 +56,7 @@ int main(void)
     CHECK(d.y == 2026 && d.m == 10 && d.d == 7);
     CHECK(d.nrooms == 5);
     CHECK(strcmp(d.room[0].name, "CEDAR") == 0 && d.room[0].cap == 8);
-    CHECK(strcmp(d.room[1].name, "PINE-1") == 0 && d.room[1].cap == 0);
+    CHECK(strcmp(d.room[1].name, "PINE-1") == 0 && d.room[1].cap == 1);
     CHECK(d.room[0].n == 4 && d.room[0].ev[0].start == 660 && strcmp(d.room[0].ev[0].who, "Lena") == 0);
     CHECK(strcmp(d.room[2].ev[0].title, "Early call - Tokyo") == 0);
     CHECK(strcmp(d.room[3].ev[0].title, "1:1 Emilie / Omar") == 0);   /* accent folded, emoji gone */
@@ -106,7 +106,7 @@ int main(void)
     roomsui_draw(&c, &d, &v);
     bmp("offline");
 
-    const char *empty = "{\"d\":\"2026-10-10\",\"rooms\":[{\"n\":\"CEDAR (8)\",\"ev\":[]},{\"n\":\"Pine-1\",\"ev\":[]},"
+    const char *empty = "{\"d\":\"2026-10-10\",\"rooms\":[{\"n\":\"CEDAR (8)\",\"ev\":[]},{\"n\":\"Pine-1 (Closest to the door) (1)\",\"ev\":[]},"
                         "{\"n\":\"Pine-2\",\"ev\":[]},{\"n\":\"MAPLE (5)\",\"ev\":[]},{\"n\":\"BIRCH (10)\",\"ev\":[]}]}";
     CHECK(rooms_parse(empty, strlen(empty), &o));
     v = (roomsui_view_t){ .offset = 4, .wday = 6, .now = 19 * 60 + 24 };

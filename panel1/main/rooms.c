@@ -69,12 +69,22 @@ bool rooms_parse(const char *json, size_t len, rooms_day_t *out)
         if (!cJSON_IsString(n) || !cJSON_IsArray(ev)) continue;
         char name[48];
         ascii(name, sizeof name, n->valuestring);
-        char *paren = strchr(name, '(');
-        if (paren) {
-            rm->cap = atoi(paren + 1);
-            *paren = 0;
+        /* "GRANDE (8) [TV with HDMI and WebCam]", "Short-1 (Closest to the
+           door) (1)": the seats are the bracket that is all figures; every
+           bracket, round or square, comes out of the name. */
+        char bare[48];
+        size_t o = 0;
+        for (const char *p = name; *p && o + 1 < sizeof bare; p++) {
+            char close = *p == '(' ? ')' : *p == '[' ? ']' : 0;
+            const char *q = close ? strchr(p, close) : NULL;
+            if (!q) { bare[o++] = *p; continue; }
+            bool figures = q > p + 1;
+            for (const char *f = p + 1; f < q; f++) if (*f < '0' || *f > '9') figures = false;
+            if (close == ')' && figures) rm->cap = atoi(p + 1);
+            p = q;
         }
-        ascii(rm->name, sizeof rm->name, name);   /* trims what the ( left */
+        bare[o] = 0;
+        ascii(rm->name, sizeof rm->name, bare);   /* closes up the spaces left */
         for (char *c = rm->name; *c; c++) *c = (char)toupper((unsigned char)*c);
         const cJSON *e;
         cJSON_ArrayForEach(e, ev) {

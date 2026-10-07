@@ -218,7 +218,7 @@ static void draw_room_head(canvas_t *c, const room_t *r, int x, int w, const roo
             snprintf(line, sizeof line, "free");
         }
     } else if (r->cap) {
-        snprintf(line, sizeof line, "%d seats", r->cap);
+        snprintf(line, sizeof line, "%d seat%s", r->cap, r->cap == 1 ? "" : "s");
     } else {
         line[0] = 0;
     }

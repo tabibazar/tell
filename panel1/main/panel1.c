@@ -245,6 +245,8 @@ void app_main(void)
         if (net_time_ok()) {
             int h = home_offset();
             /* Home moves at EVENING and at midnight; follow it if we were there. */
+            /* The clock just came: start on the home day. */
+            if (last_home < 0 && s_offset != h) { s_offset = h; s_dirty = true; }
             if (last_home >= 0 && h != last_home && s_offset == last_home) { s_offset = h; s_dirty = true; }
             last_home = h;
             if (s_offset != h && now_s() - last_touch >= IDLE_HOME && !down) { s_offset = h; s_dirty = true; }
