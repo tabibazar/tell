@@ -1,6 +1,7 @@
 #include "roomsui.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "aafont.h"
@@ -322,4 +323,115 @@ void roomsui_draw(canvas_t *c, const rooms_day_t *day, const roomsui_view_t *v)
         canvas_disc(c, GUTTER - 4, y, 4, C_NOW);
     }
 #undef YOF
+}
+
+const room_ev_t *roomsui_hit(const rooms_day_t *day, int x, int y, int *room)
+{
+    if (!day || y < GRID_Y) return NULL;
+    int first, last;
+    roomsui_hours(day, &first, &last);
+    int span = (last - first) * 60, gh = GRID_B - GRID_Y;
+    for (int r = 0; r < day->nrooms; r++) {
+        int cx, cw;
+        col_span(day->nrooms, r, &cx, &cw);
+        if (x < cx - COL_GAP / 2 || x >= cx + cw + COL_GAP / 2) continue;
+        /* The nearest booking whose block, grown to 28 px for a finger, holds y. */
+        const room_ev_t *best = NULL;
+        int bestd = 1 << 30;
+        for (int i = 0; i < day->room[r].n; i++) {
+            const room_ev_t *e = &day->room[r].ev[i];
+            int y0 = GRID_Y + (e->start - first * 60) * gh / span;
+            int y1 = GRID_Y + (e->end - first * 60) * gh / span;
+            int mid = (y0 + y1) / 2, half = (y1 - y0) / 2 < 14 ? 14 : (y1 - y0) / 2;
+            int d = abs(y - mid);
+            if (d <= half && d < bestd) { best = e; bestd = d; }
+        }
+        if (best) *room = r;
+        return best;
+    }
+    return NULL;
+}
+
+#define C_CARD  RGB(0x1C, 0x20, 0x28)
+#define C_LINE  RGB(0x30, 0x35, 0x40)
+
+void roomsui_detail(canvas_t *c, const room_t *r, const room_ev_t *e, const roomsui_view_t *v)
+{
+    /* The page behind, at half brightness: each channel halved. */
+    for (int i = 0; i < W * H; i++) c->fb[i] = (c->fb[i] >> 1) & 0x7BEF;
+
+    const int x = 20, w = W - 40, in = x + 22, iw = w - 44;
+    const aafont_t *big = &aafont_rooms_head, *sub = &aafont_inter_sub;
+    const aafont_t *tf = &aafont_rooms_title, *sf = &aafont_rooms_small;
+
+    /* Lay out first, to size the card to what it holds. */
+    char title[3][LINE_LEN];
+    int nt = wrap(big, e->title, iw, title, 3);
+    char guests[192];
+    int named = 0;
+    for (const char *p = e->guests; *p; p++) if (*p == ',') named++;
+    if (e->guests[0]) named++;
+    if (e->nguests > named)
+        snprintf(guests, sizeof guests, "%s%s%d more", e->guests, e->guests[0] ? " and " : "", e->nguests - named);
+    else
+        snprintf(guests, sizeof guests, "%s", e->guests);
+    char gl[5][LINE_LEN];
+    int ng = guests[0] ? wrap(tf, guests, iw, gl, 5) : 0;
+
+    int h = 22 + sf->cap + 16                      /* room */
+          + big->cap + (nt - 1) * 38 + 18          /* title */
+          + sub->cap + 26                          /* time */
+          + 1 + 20 + sf->cap + 10 + sub->cap + (e->email[0] ? 10 + sf->cap : 0) + 22;   /* booked by */
+    if (ng) h += 1 + 20 + sf->cap + 10 + tf->cap + (ng - 1) * 22 + 22;
+    h += sf->cap + 18;                             /* the hint */
+    int y = (H - h) / 2;
+    if (y < 8) y = 8;
+    round_rect(c, x, y, w, h, 10, C_CARD);
+
+    int yy = y + 22;
+    char line[96];
+    if (r->cap) snprintf(line, sizeof line, "%s  -  %d seat%s", r->name, r->cap, r->cap == 1 ? "" : "s");
+    else snprintf(line, sizeof line, "%s", r->name);
+    aafont_draw(c, sf, in, yy, line, C_EV_BAR, AAFONT_LEFT);
+    yy += sf->cap + 16;
+
+    for (int i = 0; i < nt; i++) aafont_draw(c, big, in, yy + i * 38, title[i], C_TEXT, AAFONT_LEFT);
+    yy += big->cap + (nt - 1) * 38 + 18;
+
+    int len = e->end - e->start;
+    char dur[16];
+    if (len < 60) snprintf(dur, sizeof dur, "%d min", len);
+    else if (len % 60) snprintf(dur, sizeof dur, "%d h %d", len / 60, len % 60);
+    else snprintf(dur, sizeof dur, "%d h", len / 60);
+    snprintf(line, sizeof line, "%.3s  %d:%02d - %d:%02d  (%s)", WDAY[v->wday % 7],
+             e->start / 60, e->start % 60, e->end / 60, e->end % 60, dur);
+    aafont_draw(c, sub, in, yy, line, C_DIM, AAFONT_LEFT);
+    yy += sub->cap + 26;
+
+    canvas_fill_rect(c, in, yy, iw, 1, C_LINE);
+    yy += 20;
+    aafont_draw(c, sf, in, yy, "BOOKED BY", C_FAINT, AAFONT_LEFT);
+    yy += sf->cap + 10;
+    char t[64];
+    ellipsize(sub, e->full[0] ? e->full : (e->who[0] ? e->who : "Unknown"), iw, t, sizeof t);
+    aafont_draw(c, sub, in, yy, t, C_TEXT, AAFONT_LEFT);
+    yy += sub->cap;
+    if (e->email[0]) {
+        yy += 10;
+        ellipsize(sf, e->email, iw, t, sizeof t);
+        aafont_draw(c, sf, in, yy, t, C_DIM, AAFONT_LEFT);
+        yy += sf->cap;
+    }
+    yy += 22;
+
+    if (ng) {
+        canvas_fill_rect(c, in, yy, iw, 1, C_LINE);
+        yy += 20;
+        snprintf(line, sizeof line, "GUESTS  %d", e->nguests);
+        aafont_draw(c, sf, in, yy, line, C_FAINT, AAFONT_LEFT);
+        yy += sf->cap + 10;
+        for (int i = 0; i < ng; i++) aafont_draw(c, tf, in, yy + i * 22, gl[i], C_TEXT, AAFONT_LEFT);
+        yy += tf->cap + (ng - 1) * 22 + 22;
+    }
+    aafont_draw(c, sf, x + w / 2, y + h - 18 - sf->cap, "tap to close", C_FAINT, AAFONT_CENTRE);
 }

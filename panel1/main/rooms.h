@@ -17,6 +17,10 @@ typedef struct {
     int16_t start, end;      /* minutes from midnight, 0..1440, start < end */
     char title[56];          /* ASCII only: the panel's faces have nothing else */
     char who[24];            /* the organiser's first name */
+    char full[40];           /* and full name, for the details card */
+    char email[56];
+    char guests[160];        /* "Omar Haddad, Ana Silva", rooms and organiser left out */
+    int nguests;             /* how many in all; more than `guests` may name */
 } room_ev_t;
 
 typedef struct {

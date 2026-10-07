@@ -102,6 +102,23 @@ bool rooms_parse(const char *json, size_t len, rooms_day_t *out)
             ascii(x->title, sizeof x->title, cJSON_IsString(ti) ? ti->valuestring : "");
             if (!x->title[0]) strcpy(x->title, "Busy");
             ascii(x->who, sizeof x->who, cJSON_IsString(who) ? who->valuestring : "");
+            /* The details, from a relay new enough to send them. */
+            const cJSON *full = cJSON_GetArrayItem(e, 4), *mail = cJSON_GetArrayItem(e, 5);
+            const cJSON *gl = cJSON_GetArrayItem(e, 6), *gn = cJSON_GetArrayItem(e, 7);
+            ascii(x->full, sizeof x->full, cJSON_IsString(full) ? full->valuestring : x->who);
+            ascii(x->email, sizeof x->email, cJSON_IsString(mail) ? mail->valuestring : "");
+            const cJSON *g;
+            size_t o = 0;
+            int named = 0;
+            cJSON_ArrayForEach(g, gl) {
+                if (!cJSON_IsString(g)) continue;
+                char nm[40];
+                ascii(nm, sizeof nm, g->valuestring);
+                if (!nm[0] || o + strlen(nm) + 3 >= sizeof x->guests) continue;
+                o += snprintf(x->guests + o, sizeof x->guests - o, "%s%s", o ? ", " : "", nm);
+                named++;
+            }
+            x->nguests = cJSON_IsNumber(gn) && gn->valueint > named ? gn->valueint : named;
         }
         qsort(rm->ev, rm->n, sizeof rm->ev[0], by_start);
         t->nrooms++;

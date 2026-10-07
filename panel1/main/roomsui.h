@@ -30,6 +30,14 @@ typedef struct {
    must be 480x480. `v->now` lights the timeline only when `v->offset` is 0. */
 void roomsui_draw(canvas_t *c, const rooms_day_t *day, const roomsui_view_t *v);
 
+/* The booking drawn under (x, y) by roomsui_draw, or NULL; its room in
+   *room. Small bookings answer a little beyond their edges, for a finger. */
+const room_ev_t *roomsui_hit(const rooms_day_t *day, int x, int y, int *room);
+
+/* A card over the page, darkened, with all of booking `e` in room `r`: the
+   whole title, the time, who booked it and who is invited. */
+void roomsui_detail(canvas_t *c, const room_t *r, const room_ev_t *e, const roomsui_view_t *v);
+
 /* The timeline's first and last hour for `day`, as roomsui_draw picks them. */
 void roomsui_hours(const rooms_day_t *day, int *first, int *last);
 

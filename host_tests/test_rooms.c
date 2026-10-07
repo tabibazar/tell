@@ -41,7 +41,7 @@ static void bmp(const char *name)
    plus a few bookings to try the edges: long titles, back to back, early. */
 static const char *DAY =
     "{\"d\":\"2026-10-07\",\"tz\":\"America/Toronto\",\"rooms\":["
-    "{\"n\":\"CEDAR (8) [TV with HDMI and WebCam]\",\"ev\":[[660,720,\"Design review\",\"Lena\"],[765,780,\"Hiring sync\",\"Nora\"],"
+    "{\"n\":\"CEDAR (8) [TV with HDMI and WebCam]\",\"ev\":[[660,720,\"Design review: onboarding flow for the new mobile app\",\"Lena\",\"Lena Ortiz\",\"lena.ortiz@example.com\",[\"Omar Haddad\",\"Ana Silva\",\"Ken Watanabe\",\"Priya Raman\",\"Jordan Lee\",\"Chris Doyle\",\"\\u00c9milie Roy\"],9],[765,780,\"Hiring sync\",\"Nora\"],"
     "[780,810,\"Budget planning\",\"Omar\"],[810,840,\"Ops weekly\",\"Theo\"]]},"
     "{\"n\":\"Pine-1 (Closest to the door) (1)\",\"ev\":[[540,570,\"Daily standup\",\"Priya\"],[600,690,\"Quarterly roadmap review with the platform team\",\"Jordan\"]]},"
     "{\"n\":\"Pine-2\",\"ev\":[[450,480,\"Early call \\u2013 Tokyo\",\"Ken\"],[840,960,\"Interview: Senior engineer\",\"Alex\"]]},"
@@ -58,6 +58,9 @@ int main(void)
     CHECK(strcmp(d.room[0].name, "CEDAR") == 0 && d.room[0].cap == 8);
     CHECK(strcmp(d.room[1].name, "PINE-1") == 0 && d.room[1].cap == 1);
     CHECK(d.room[0].n == 4 && d.room[0].ev[0].start == 660 && strcmp(d.room[0].ev[0].who, "Lena") == 0);
+    CHECK(strcmp(d.room[0].ev[0].full, "Lena Ortiz") == 0 && strcmp(d.room[0].ev[0].email, "lena.ortiz@example.com") == 0);
+    CHECK(d.room[0].ev[0].nguests == 9 && strstr(d.room[0].ev[0].guests, "Emilie Roy") != NULL);
+    CHECK(strcmp(d.room[0].ev[1].full, "Nora") == 0 && d.room[0].ev[1].nguests == 0);   /* an old relay's answer */
     CHECK(strcmp(d.room[2].ev[0].title, "Early call - Tokyo") == 0);
     CHECK(strcmp(d.room[3].ev[0].title, "1:1 Emilie / Omar") == 0);   /* accent folded, emoji gone */
     CHECK(strcmp(d.room[3].ev[1].title, "Busy") == 0);                 /* a private booking */
@@ -102,7 +105,24 @@ int main(void)
     roomsui_draw(&c, &d, &v);
     bmp("tomorrow");
 
-    v = (roomsui_view_t){ .offset = 0, .wday = 3, .now = 15 * 60 + 2, .note = "offline since 14:05" };
+    /* A tap on the 11:00 booking in the first column finds it; between bookings, nothing. */
+    int first, last, room = -1;
+    roomsui_hours(&d, &first, &last);
+    int gy = 52 + 40 + 6, gh = 480 - 6 - gy, span = (last - first) * 60;
+    int ymid = gy + (690 - first * 60) * gh / span;
+    const room_ev_t *hit = roomsui_hit(&d, 26 + 40, ymid, &room);
+    CHECK(hit == &d.room[0].ev[0] && room == 0);
+    CHECK(roomsui_hit(&d, 26 + 40, gy + (600 - first * 60) * gh / span, &room) == NULL);
+    CHECK(roomsui_hit(&d, 26 + 40, 20, &room) == NULL);                /* the header */
+    v = (roomsui_view_t){ .offset = 1, .wday = 4, .now = 19 * 60 + 24 };
+    roomsui_draw(&c, &d, &v);
+    roomsui_detail(&c, &d.room[0], &d.room[0].ev[0], &v);
+    bmp("detail");
+    roomsui_draw(&c, &d, &v);
+    roomsui_detail(&c, &d.room[3], &d.room[3].ev[1], &v);
+    bmp("detail-busy");
+
+    v = (roomsui_view_t){ .offset = 0, .wday = 3, .now = 15 * 60 + 2, .note = "offline 14:05" };
     roomsui_draw(&c, &d, &v);
     bmp("offline");
 

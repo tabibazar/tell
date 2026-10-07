@@ -10,7 +10,12 @@
  *   GET <url>?d=2026-10-07   (no d: today)
  *
  * {"d":"2026-10-07","tz":"America/Toronto","rooms":[
- *   {"n":"CEDAR (8)","ev":[[660,720,"Design review","Lena"], ...]}, ...]}
+ *   {"n":"CEDAR (8)","ev":[[660,720,"Design review","Lena","Lena Ortiz",
+ *     "lena.ortiz@example.com",["Omar Haddad","Ana Silva"],2], ...]}, ...]}
+ *
+ * An event: start, end, title, the organiser's first name, full name and
+ * address, the guests' names (people only, not rooms, organiser left out, at
+ * most 12) and how many guests there are in all.
  *
  * Times are minutes from local midnight, clipped to the day. All-day events
  * and bookings the room itself declined are left out.
@@ -34,8 +39,16 @@ function doGet(e) {
       var g = x.getGuestByEmail(id);
       return !(g && g.getGuestStatus() == CalendarApp.GuestStatus.NO);
     }).map(function (x) {
+      var who = (x.getCreators() || [])[0] || '';
+      var full = person(x, who);
+      var guests = x.getGuestList().filter(function (g) {
+        var e = g.getEmail();
+        return e != who && !/@resource\.calendar\.google\.com$/.test(e);
+      });
       return [mins(x.getStartTime(), day), mins(x.getEndTime(), day),
-              x.getTitle() || 'Busy', organiser(x)];
+              x.getTitle() || 'Busy', full.split(' ')[0], full, who,
+              guests.slice(0, 12).map(function (g) { return person(x, g.getEmail()); }),
+              guests.length];
     });
     return { n: cal.getName().replace(/^.*---/, ''), ev: ev };
   });
@@ -46,15 +59,16 @@ function mins(t, day) {
   return Math.max(0, Math.min(1440, Math.round((t.getTime() - day.getTime()) / 60000)));
 }
 
-/* The creator's name as the guest list knows it, else their address's first
-   part, capitalised: "enric.s@..." -> "Lena". */
-function organiser(x) {
-  var who = (x.getCreators() || [])[0] || '';
-  var g = who && x.getGuestByEmail(who);
+/* A guest's name as the event knows it, else made from their address:
+   "lena.ortiz@..." -> "Lena Ortiz". */
+function person(x, email) {
+  if (!email) return '';
+  var g = x.getGuestByEmail(email);
   var name = g && g.getName();
-  if (name && name.indexOf('@') < 0) return name.split(' ')[0];
-  var p = who.split('@')[0].split(/[._]/)[0];
-  return p ? p.charAt(0).toUpperCase() + p.slice(1) : '';
+  if (name && name.indexOf('@') < 0) return name;
+  return email.split('@')[0].split(/[._]/).filter(String).map(function (p) {
+    return p.charAt(0).toUpperCase() + p.slice(1);
+  }).join(' ');
 }
 
 function json(o) {

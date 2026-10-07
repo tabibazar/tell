@@ -5,7 +5,8 @@
  * The day comes from the relay (panel1/relay/rooms.gs) over WiFi: today every
  * five minutes, any other day when it is looked at. It opens on today -- or,
  * after 18:00 and at weekends, on the next working day -- and a swipe left or
- * right moves a day; a minute untouched brings it home again.
+ * right moves a day; a minute untouched brings it home again. A tap on a
+ * booking opens a card with all of it -- who booked it, who is invited.
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -38,6 +39,7 @@ static const char *TAG = "panel1";
 #define SWIPE_PX       60
 #define SPAN           14           /* days either way a swipe may go */
 #define CACHE_N        8
+#define DETAIL_FOR     20           /* s a booking's card stays up untouched */
 
 typedef struct {
     int y, m, d;          /* 0 = empty slot */
@@ -53,6 +55,13 @@ static volatile bool s_dirty = true;
 static volatile int64_t s_last_ok;    /* s, monotonic; last good fetch */
 static volatile time_t s_last_ok_wall;
 static volatile bool s_failing;
+
+/* The booking whose card is up, copied: the day under it may be refetched. */
+static bool s_det;
+static room_t *s_det_room;          /* PSRAM */
+static room_ev_t s_det_ev;
+static int64_t s_det_at;
+static bool s_buf_ok;               /* the last draw had a day to show */
 
 static int64_t now_s(void) { return esp_timer_get_time() / 1000000; }
 
@@ -174,6 +183,7 @@ static void draw(canvas_t *c, rooms_day_t *buf)
             *buf = s->day;
             day = buf;
         }
+        s_buf_ok = day != NULL;
         bool failing = s_failing;
         xSemaphoreGive(s_lock);
         if (!net_have_relay()) {
@@ -191,6 +201,7 @@ static void draw(canvas_t *c, rooms_day_t *buf)
     }
     v.note = note;
     roomsui_draw(c, day, &v);
+    if (s_det && v.now >= 0) roomsui_detail(c, s_det_room, &s_det_ev, &v);
     lcd_show();
 }
 
@@ -207,6 +218,7 @@ void app_main(void)
     s_lock = xSemaphoreCreateMutex();
     s_cache = heap_caps_calloc(CACHE_N, sizeof *s_cache, MALLOC_CAP_SPIRAM);
     rooms_day_t *buf = heap_caps_malloc(sizeof *buf, MALLOC_CAP_SPIRAM);
+    s_det_room = heap_caps_malloc(sizeof *s_det_room, MALLOC_CAP_SPIRAM);
     ESP_ERROR_CHECK(lcd_init());
     canvas_t *c = lcd_canvas();
     bool touch = touch_init() == ESP_OK;
@@ -235,21 +247,37 @@ void app_main(void)
             if (moved && abs(dx) >= SWIPE_PX && abs(dx) > abs(y - y0)) {
                 int off = s_offset + (dx < 0 ? 1 : -1);
                 if (off >= -SPAN && off <= SPAN) { s_offset = off; s_dirty = true; }
+                s_det = false;
+            } else if (!moved && s_det) {
+                /* Any tap closes a booking's card. */
+                s_det = false;
+                s_dirty = true;
             } else if (!moved) {
-                /* A tap goes home. */
-                int h = home_offset();
-                if (s_offset != h) { s_offset = h; s_dirty = true; }
+                /* A tap on a booking opens its card; anywhere else goes home. */
+                int room;
+                const room_ev_t *e = s_buf_ok ? roomsui_hit(buf, x0, y0, &room) : NULL;
+                if (e) {
+                    *s_det_room = buf->room[room];
+                    s_det_ev = *e;
+                    s_det = true;
+                    s_det_at = now_s();
+                    s_dirty = true;
+                } else {
+                    int h = home_offset();
+                    if (s_offset != h) { s_offset = h; s_dirty = true; }
+                }
             }
         }
 
         if (net_time_ok()) {
             int h = home_offset();
-            /* Home moves at EVENING and at midnight; follow it if we were there. */
             /* The clock just came: start on the home day. */
             if (last_home < 0 && s_offset != h) { s_offset = h; s_dirty = true; }
+            /* Home moves at EVENING and at midnight; follow it if we were there. */
             if (last_home >= 0 && h != last_home && s_offset == last_home) { s_offset = h; s_dirty = true; }
             last_home = h;
-            if (s_offset != h && now_s() - last_touch >= IDLE_HOME && !down) { s_offset = h; s_dirty = true; }
+            if (s_offset != h && now_s() - last_touch >= IDLE_HOME && !down) { s_offset = h; s_det = false; s_dirty = true; }
+            if (s_det && now_s() - s_det_at >= DETAIL_FOR && now_s() - last_touch >= DETAIL_FOR) { s_det = false; s_dirty = true; }
             time_t t = time(NULL);
             struct tm lt;
             localtime_r(&t, &lt);
