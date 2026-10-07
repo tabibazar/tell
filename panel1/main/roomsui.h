@@ -6,11 +6,11 @@
  *
  *   Today   Wed 7 Oct                      19:24
  *   [PINE-1 ][PINE-2 ][CEDAR  ][MAPLE  ][BIRCH  ]   free/busy now, till when
- *    9 |       |       |Design |       |       |
- *   10 |       |       |Lena   |       |       |     a column per room,
+ *    8 |       |       |Design |       |       |
+ *    9 |       |       |Lena   |       |       |     a column per room,
  *   -- now -------------------------------------    hours down the side
  *
- * The hours run 09:00-17:00, stretched to take in any booking outside them.
+ * The hours run 08:00-16:00, stretched to take in any booking outside them.
  * On today the passed bookings are dimmed, the one on now is lit, a red line
  * marks the minute, and each room's header is green when it is free and red
  * when it is in use, with the minute that changes. Pure: drawn on the host by

@@ -73,6 +73,8 @@ int main(void)
     int a, b;
     roomsui_hours(&d, &a, &b);
     CHECK(a == 7 && b == 19);                                          /* 7:30 and 18:30 stretch it */
+    roomsui_hours(NULL, &a, &b);
+    CHECK(a == 8 && b == 16);                                          /* the working day, 8 to 16 */
 
     /* What is not the relay's answer leaves the day as it was. */
     rooms_day_t keep = d;

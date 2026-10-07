@@ -138,7 +138,7 @@ static int wrap(const aafont_t *f, const char *s, int maxw, char lines[][LINE_LE
 
 void roomsui_hours(const rooms_day_t *day, int *first, int *last)
 {
-    int a = 9 * 60, b = 17 * 60;
+    int a = 8 * 60, b = 16 * 60;
     for (int r = 0; day && r < day->nrooms; r++) {
         for (int i = 0; i < day->room[r].n; i++) {
             if (day->room[r].ev[i].start < a) a = day->room[r].ev[i].start;

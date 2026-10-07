@@ -4,9 +4,10 @@
  *
  * The day comes from the relay (panel1/relay/rooms.gs) over WiFi: today every
  * five minutes, any other day when it is looked at. It opens on today -- or,
- * after 18:00 and at weekends, on the next working day -- and a swipe left or
- * right moves a day; a minute untouched brings it home again. A tap on a
- * booking opens a card with all of it -- who booked it, who is invited.
+ * after 17:00 and at weekends, on the next working day -- and a swipe left or
+ * right moves a working day, passing over Saturday and Sunday; a minute
+ * untouched brings it home again. A tap on a booking opens a card with all of
+ * it -- who booked it, who is invited.
  * Five minutes untouched, it dims to a clock that wanders the screen; a tap
  * wakes it on the home day.
  */
@@ -39,7 +40,7 @@ static const char *TAG = "panel1";
 #define REFRESH_OTHER  (15 * 60)
 #define RETRY          30           /* s after a failed fetch */
 #define IDLE_HOME      60           /* s untouched before going home */
-#define EVENING        18           /* from this hour the home day is the next */
+#define EVENING        17           /* from this hour the home day is the next */
 #define SWIPE_PX       60
 #define SPAN           14           /* days either way a swipe may go */
 #define CACHE_N        8
@@ -87,6 +88,12 @@ static struct tm day_at(int off)
     t = mktime(&lt);
     localtime_r(&t, &lt);
     return lt;
+}
+
+static bool weekend(int off)
+{
+    int wd = day_at(off).tm_wday;
+    return wd == 0 || wd == 6;
 }
 
 /* Today in working hours; after EVENING, or at a weekend, the next working day. */
@@ -286,7 +293,8 @@ void app_main(void)
             int dx = lx - x0;
             /* A finger dragged left pulls the next day in, as a page turns. */
             if (moved && abs(dx) >= SWIPE_PX && abs(dx) > abs(y - y0)) {
-                int off = s_offset + (dx < 0 ? 1 : -1);
+                int step = dx < 0 ? 1 : -1, off = s_offset + step;
+                while (weekend(off)) off += step;       /* Saturday and Sunday are skipped */
                 if (off >= -SPAN && off <= SPAN) { s_offset = off; s_dirty = true; }
                 s_det = false;
             } else if (!moved && s_det) {
