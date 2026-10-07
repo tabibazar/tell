@@ -159,13 +159,31 @@ static air_now_t air_now(void)
 }
 
 /* The AHT21 sits beside the ENS160's heater and the ESP32 and reads warm.
-   Against Reza's hygrometer on 2026-10-06 (23.2 C, 29 %; the module read
-   26.05 C, 27.7 %): the temperature 2.85 C high, and the humidity -- once
-   moved from the sensor's warmer air to the room's temperature at the same
-   vapour pressure (x es(raw)/es(room), 1.186 here) -- 3.8 % high. The same
-   correction speaker uses (!thcal). */
-#define AHT_T_OFF  (-2.85f)
-#define AHT_RH_OFF (-3.84f)
+   Fitted to Reza's hygrometer at four settled readings, 2026-10-06 evening
+   and 2026-10-07 morning (22.6-23.8 C, 27-34 %), from the side-by-side study
+   in ~/air-study: the temperature 4.55 C high, and the humidity -- once moved
+   from the sensor's warmer air to the room's temperature at the same vapour
+   pressure (x es(raw)/es(room)) -- 11.8 % high. Within 0.2 C and 1 % of all
+   four. The same correction speaker uses (!thcal). */
+#define AHT_T_OFF  (-4.55f)
+#define AHT_RH_OFF (-11.77f)
+
+/* The ENS160's VOC and eCO2, put on the average of this board's and
+   speaker's ENS160s side by side for 23 h (2026-10-06/07, 4047 matched
+   readings): a straight line each, as the two disagree by gain and offset
+   both -- this one reads high in stale air and low in clean. Disagreement
+   between the boards 25 % -> 14 % (VOC), 8 % -> 5 % (eCO2). speaker carries
+   the other half (main/speaker_app.c). */
+#define VOC_GAIN   0.743f
+#define VOC_OFF    41.1f
+#define ECO2_GAIN  0.767f
+#define ECO2_OFF   150.6f
+
+static int gas_line(int v, float gain, float off, int floor)
+{
+    int c = (int)lrintf(gain * v + off);
+    return c < floor ? floor : c;
+}
 
 static float sat_vp(float t) { return 6.112f * expf(17.62f * t / (243.12f + t)); }
 
@@ -272,6 +290,8 @@ static void sensor_task(void *arg)
         }
         int aqi, tvoc, eco2, val;
         if (ens_read(&aqi, &tvoc, &eco2, &val)) {
+            tvoc = gas_line(tvoc, VOC_GAIN, VOC_OFF, 0);
+            eco2 = gas_line(eco2, ECO2_GAIN, ECO2_OFF, 400);   /* the chip's own floor */
             portENTER_CRITICAL(&s_now_mux);
             s_now.aqi = aqi; s_now.tvoc = tvoc; s_now.eco2 = eco2; s_now.validity = val;
             portEXIT_CRITICAL(&s_now_mux);

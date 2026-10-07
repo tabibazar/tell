@@ -3160,6 +3160,14 @@ static void air_sample(int64_t now)
         ens160_compensate(comp.celsius, comp.humidity);
         have_gas = ens160_read(&eco2, &tvoc, &aqi, &validity);
         if (have_gas) {
+            /* Put on the average of this ENS160 and blinky1's, side by side
+               for 23 h (2026-10-06/07, 4047 matched readings): a straight
+               line, as the two differ in gain and offset both. Board to board
+               25 % -> 14 % (VOC), 8 % -> 5 % (eCO2); blinky1 has the other
+               half. eCO2 kept at the chip's 400 ppm floor. */
+            long v = lrintf(1.180f * tvoc - 21.9f), e = lrintf(1.150f * eco2 - 92.5f);
+            tvoc = (uint16_t)(v < 0 ? 0 : v > 65000 ? 65000 : v);
+            eco2 = (uint16_t)(e < 400 ? 400 : e > 65000 ? 65000 : e);
             r.tvoc = tvoc;
             r.eco2 = eco2;
             r.aqi = aqi;
