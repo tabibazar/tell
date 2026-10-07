@@ -43,7 +43,7 @@ static void on_wifi(void *arg, esp_event_base_t base, int32_t id, void *data)
 }
 
 /* Joins the strongest known network in sight, and again whenever it drops:
-   at home Tabriz, at the office the office's, with nothing to change. */
+   at home the home one, at the office the office's, with nothing to change. */
 static void join_task(void *arg)
 {
     static wifi_ap_record_t aps[24];

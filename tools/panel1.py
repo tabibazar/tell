@@ -4,7 +4,7 @@
     tools/panel1.py status
     tools/panel1.py wifi list
     tools/panel1.py wifi add "Office WiFi" 'the password'
-    tools/panel1.py wifi forget Tabriz
+    tools/panel1.py wifi forget "Old Network"
     tools/panel1.py relay https://script.google.com/macros/s/.../exec
 
 Needs only pyserial (python3 -m pip install --user pyserial), not ESP-IDF.
