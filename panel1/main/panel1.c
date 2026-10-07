@@ -24,6 +24,8 @@
 #include "freertos/task.h"
 #include "nvs_flash.h"
 
+#include "config.h"
+#include "console.h"
 #include "lcd.h"
 #include "net.h"
 #include "rooms.h"
@@ -155,6 +157,15 @@ static bool fetch_if_due(int off, int every, rooms_day_t *tmp)
     return true;
 }
 
+void panel1_refetch(void)
+{
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    memset(s_cache, 0, CACHE_N * sizeof *s_cache);
+    s_failing = false;
+    s_dirty = true;
+    xSemaphoreGive(s_lock);
+}
+
 static void fetch_task(void *arg)
 {
     rooms_day_t *tmp = heap_caps_malloc(sizeof *tmp, MALLOC_CAP_SPIRAM);
@@ -229,6 +240,7 @@ void app_main(void)
     }
     setenv("TZ", TZ_HOME, 1);
     tzset();
+    cfg_load();
 
     s_lock = xSemaphoreCreateMutex();
     s_cache = heap_caps_calloc(CACHE_N, sizeof *s_cache, MALLOC_CAP_SPIRAM);
@@ -241,6 +253,7 @@ void app_main(void)
     draw(c, buf);
 
     net_start();
+    console_start();
     xTaskCreatePinnedToCore(fetch_task, "fetch", 8192, NULL, 4, NULL, 0);
 
     bool down = false, moved = false, waking = false;
