@@ -73,8 +73,9 @@ static void tca_set(uint8_t bits, bool on)
 }
 
 #define TCA_IN   0x00
-/* PWR pulls EXIO4 low while it is held: the AXP2101's PWRON line, pulled up.
-   Checked on the board; flip this if the log's "PWR key" lines say otherwise. */
+/* EXIO4 follows the PWR key, but which level means "held" was not settled on
+   the board: one boot read it released at rest, another held. panel1.c acts
+   on its changes, not its level. */
 #define KEY_DOWN 0
 
 bool lcd_pwr_key(void)

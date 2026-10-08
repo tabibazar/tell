@@ -295,7 +295,7 @@ void app_main(void)
 
     gpio_config_t boot = { .pin_bit_mask = 1ULL << PIN_BOOT, .mode = GPIO_MODE_INPUT, .pull_up_en = GPIO_PULLUP_ENABLE };
     gpio_config(&boot);
-    bool keys_were = false, pwr_was = false, boot_was = false;
+    bool pwr_was = lcd_pwr_key(), boot_was = false;
 
     bool down = false, moved = false, waking = false;
     int x0 = 0, y0 = 0, lx = 0, ly = 0;
@@ -304,18 +304,22 @@ void app_main(void)
     for (;;) {
         vTaskDelay(pdMS_TO_TICKS(30));
 
-        /* The side keys: a press wakes it, or, awake, goes home. Taken on the
-           press, not the release. */
+        /* The side keys: a press wakes it, or, awake, goes home. BOOT counts on
+           its press. PWR counts on any change: on the board it read "held" at
+           rest after one boot and "released" after another, so its level is
+           not to be trusted, only its moving. Its release then just goes home
+           again, where it already is. */
         bool pwr = lcd_pwr_key(), bootk = gpio_get_level(PIN_BOOT) == 0;
-        if (pwr != pwr_was) { ESP_LOGI(TAG, "PWR key %s", pwr ? "down" : "up"); pwr_was = pwr; }
-        if (bootk != boot_was) { ESP_LOGI(TAG, "BOOT key %s", bootk ? "down" : "up"); boot_was = bootk; }
-        bool keys = pwr || bootk;
-        if (keys && !keys_were) {
+        bool pressed = (bootk && !boot_was) || pwr != pwr_was;
+        if (pwr != pwr_was) ESP_LOGI(TAG, "PWR key %s", pwr ? "down" : "up");
+        if (bootk != boot_was) ESP_LOGI(TAG, "BOOT key %s", bootk ? "down" : "up");
+        pwr_was = pwr;
+        boot_was = bootk;
+        if (pressed) {
             if (s_asleep) wake(c, buf);
             else go_home();
             last_touch = now_s();
         }
-        keys_were = keys;
 
         int x, y;
         if (touch && touch_read(&x, &y)) {
