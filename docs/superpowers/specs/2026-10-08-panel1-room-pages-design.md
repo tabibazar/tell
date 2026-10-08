@@ -1,4 +1,4 @@
-# panel1: a page per room
+# panel1: a page per room, and sleep
 
 2026-10-08.
 
@@ -13,6 +13,9 @@ own full-width page, where titles and who booked them can be read.
 
 Chosen from three browser mockups (layout "A"). The others were room pages
 only, and a "right now" list of rooms.
+
+**Sleep:** after 5 minutes untouched the screen goes dark. A side button, or a
+tap, wakes it. This replaces the dim wandering clock (the screen saver).
 
 ## Not in this
 
@@ -78,6 +81,34 @@ On the 480 x 480 screen, top to bottom:
   room's dot lit. It is drawn over the grid's last few pixels; at 16:00 that
   part of the grid is empty more often than not.
 
+## Sleep
+
+- **When:** after `SLEEP_AFTER` (5 min) untouched, the same moment the saver
+  used to start. Not tied to working hours.
+- **What:** the frame is cleared to black, then the backlight goes fully off
+  (`lcd_backlight(0)`), so nothing shows through a backlight that is not quite
+  off. Nothing is drawn while asleep. WiFi and fetching carry on as when
+  awake, so the bookings are current at the moment it wakes.
+- **Waking:** any of these, while asleep:
+  - BOOT, on GPIO0 (input, pulled up, low while pressed). It is not one of
+    the RGB pins.
+  - PWR, the AXP2101's power key, read on the TCA9554's EXIO4 (already an
+    input). Which level means "pressed" is checked on the board first: log
+    EXIO4 while it is pressed and released, before anything relies on it.
+  - A touch on the screen.
+
+  Waking goes home (the overview, the home day, no card open) and turns the
+  backlight to 100. The press or touch that wakes does nothing else: a touch
+  is ignored until the finger lifts, as the saver's wake did, and a button
+  press is taken on its press, not its release.
+- **The buttons while awake:** a press goes home, as a tap on an empty part
+  of the overview does. Both buttons are polled every 30 ms in the touch loop,
+  and a press counts on the change from released to pressed.
+- **PWR held for about 6 s** still switches the board off. The AXP2101 does
+  that by itself; it is left as it is, as a way to restart panel1.
+- **The saver goes:** `roomsui_saver`, `font_rooms_clock.h` and
+  `SAVER_LIGHT` are removed, and so are the saver pictures in the host test.
+
 ## Code
 
 - **`roomsui.h` / `roomsui.c`** (pure, drawn on the host):
@@ -99,10 +130,14 @@ On the 480 x 480 screen, top to bottom:
     whichever way moved more, and only a swipe of at least `SWIPE_PX` counts.
     Today `moved` is set only by x movement; y movement must set it too, so a
     vertical drag is not taken as a tap.
-  - Going home (idle, the saver waking, the home day moving) also sets
+  - Going home (idle, waking, a button, the home day moving) also sets
     `s_room = -1`.
+  - `s_saver` becomes `s_asleep`; the buttons are polled in the touch loop.
   - `draw()` calls `roomsui_room_draw` when `s_room >= 0`.
-  - The header comment describes the room pages.
+  - The header comment describes the room pages and sleep.
+- **`lcd.h` / `lcd.c`:** `bool lcd_pwr_key(void)`, true while PWR is pressed,
+  read from the TCA9554's input register on the bus it already owns. The
+  touch polling uses the same bus, from the same task, so no lock is needed.
 
 ## Testing
 
@@ -114,6 +149,9 @@ On the 480 x 480 screen, top to bottom:
   - `roomsui_room_hit`: a booking's middle hits it, and an empty hour misses.
   - The status wording: taken with a free stretch after, taken till the end
     of the day, free till the next booking, free all day, another day.
-- **On the board:** open each room from the overview, swipe up and down
+- **On the board, sleep:** leave it 5 minutes and see it go dark, then wake
+  it once with BOOT, once with PWR and once with a tap. Each wakes to the
+  overview on the home day, and the tap opens nothing.
+- **On the board, rooms:** open each room from the overview, swipe up and down
   through all six and round, swipe days on a room page, tap back, and leave
   it for a minute to see it go home.
