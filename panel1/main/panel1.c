@@ -6,11 +6,12 @@
  * five minutes, any other day when it is looked at. It opens on today -- or,
  * after 17:00 and at weekends, on the next working day -- and a swipe left or
  * right moves a working day, passing over Saturday and Sunday; a minute
- * untouched brings it home again. It shows a row per room, the day running
- * across; a tap on a row opens that room's own page, where a tap on a booking
- * opens a card with all of it -- who booked it, who is invited. Swipe up and
- * down there for the other rooms, and tap its top to come back. Five minutes untouched, the screen goes dark; BOOT, PWR or
- * a tap wakes it on the home day.
+ * untouched brings it home again. It shows a card per room, saying what the
+ * room is doing now; a tap on a card opens that room's own page, where a tap
+ * on a booking opens a card with all of it -- who booked it, who is invited.
+ * Swipe up and down there for the other rooms, and tap its top to come back.
+ * Five minutes untouched, the screen goes dark; BOOT, PWR or a tap wakes it
+ * on the home day.
  */
 #include <stdio.h>
 #include <stdlib.h>

@@ -23,7 +23,13 @@ with the day running across: the name green or red with "busy till" or "free
 till" under it, bookings as plain blocks, a red line for now. A tap anywhere in
 a row opens that room's page. The overview no longer opens booking cards; the
 room page does. The room page's header lost its seat count, which moved down
-beside the dots. What follows is otherwise as first designed.
+beside the dots.
+
+**And again:** the rows did not suit either. The overview is now six cards, two
+across: each room's whole name, "Free till 11:00" or "Busy till 10:45" on
+green or red, and what is on now or next with who booked it. Another day the
+cards are grey with how many bookings and the seats. A tap on a card opens the
+room's page. What follows is otherwise as first designed.
 
 ## Not in this
 

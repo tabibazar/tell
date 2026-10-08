@@ -165,15 +165,13 @@ int main(void)
     roomsui_room_draw(&c, &o, 2, &v);
     bmp("room-empty");
 
-    /* Taps: the overview's rows, and a room page's bookings and top. */
-    int nr = d.nrooms, pitch = (480 - 6 - 74) / nr;
-    if (pitch > 72) pitch = 72;
-    for (int i = 0; i < nr; i++) {
-        CHECK(roomsui_head_hit(&d, 60, 74 + i * pitch + pitch / 2) == i);    /* the name */
-        CHECK(roomsui_head_hit(&d, 300, 74 + i * pitch + pitch / 2) == i);   /* the lane */
-    }
+    /* Taps: the overview's cards, and a room page's bookings and top. */
+    int nr = d.nrooms, rows = (nr + 1) / 2, pitch = (480 - 6 - 56 + 8) / rows;
+    if (pitch > 150) pitch = 150;
+    for (int i = 0; i < nr; i++)
+        CHECK(roomsui_head_hit(&d, i % 2 ? 360 : 120, 56 + (i / 2) * pitch + pitch / 2) == i);
+    CHECK(roomsui_head_hit(&d, 360, 56 + 2 * pitch + pitch / 2) == -1);  /* no sixth room */
     CHECK(roomsui_head_hit(&d, 240, 20) == -1);                        /* the header */
-    CHECK(roomsui_head_hit(&d, 240, 470) == -1);                       /* below the last row */
     CHECK(roomsui_head_hit(NULL, 60, 100) == -1);
     CHECK(roomsui_room_head_hit(240, 20) && roomsui_room_head_hit(240, 80));
     CHECK(!roomsui_room_head_hit(240, 200));

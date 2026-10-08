@@ -297,28 +297,76 @@ int roomsui_room_status(const room_t *r, const roomsui_view_t *v, char *out, siz
     return ROOMSUI_FREE;
 }
 
-/* The overview's lanes: a row per room, the day running across. */
-#define LANE_X   128                /* names to the left of this */
-#define LANE_R   (W - 8)
-#define TICK_Y   HEAD_H             /* the hour figures above the lanes */
-#define LANES_Y  (TICK_Y + 22)
-#define LANES_B  (H - 6)
+/* The overview: a card per room, two across, saying what it is doing now. */
+#define CARDS_Y  (HEAD_H + 4)
+#define CARDS_B  (H - 6)
+#define CARD_GAP 8
 
-#define C_FREE_T RGB(0x5B, 0xD4, 0x9A) /* a name, free now */
-#define C_BUSY_T RGB(0xFF, 0x6B, 0x6B) /* a name, in use now */
+#define C_SOFT_FREE RGB(0xC8, 0xEB, 0xD8)   /* small text on a free card */
+#define C_SOFT_BUSY RGB(0xF5, 0xD2, 0xD2)   /* and on a busy one */
 
-static int x_of(int m, int first, int last)
+static void card_span(int n, int i, int *x, int *y, int *w, int *h)
 {
-    return LANE_X + (m - first * 60) * (LANE_R - LANE_X) / ((last - first) * 60);
+    int rows = (n + 1) / 2;
+    if (rows < 1) rows = 1;
+    int pitch = (CARDS_B - CARDS_Y + CARD_GAP) / rows;
+    if (pitch > 150) pitch = 150;
+    *w = (W - 2 * CARD_GAP - CARD_GAP) / 2;
+    *h = pitch - CARD_GAP;
+    *x = CARD_GAP + (i % 2) * (*w + CARD_GAP);
+    *y = CARDS_Y + (i / 2) * pitch;
 }
 
-/* A lane's top and height for room i of n. */
-static void lane_span(int n, int i, int *y, int *h)
+static void draw_card(canvas_t *c, const room_t *r, int x, int y, int w, int h, const roomsui_view_t *v)
 {
-    int pitch = (LANES_B - LANES_Y) / (n > 0 ? n : 1);
-    if (pitch > 72) pitch = 72;
-    *y = LANES_Y + i * pitch;
-    *h = pitch - 8;
+    bool today = v->offset == 0 && v->now >= 0;
+    int till = today ? taken_till(r, v->now) : -1;
+    const room_ev_t *on = till >= 0 ? rooms_at(r, v->now) : NULL;
+    const room_ev_t *nx = today && till < 0 ? rooms_next(r, v->now) : NULL;
+    uint16_t bg = !today ? C_HEAD : till >= 0 ? C_BUSY : C_FREE;
+    uint16_t soft = !today ? C_DIM : till >= 0 ? C_SOFT_BUSY : C_SOFT_FREE;
+    round_rect(c, x, y, w, h, 8, bg);
+
+    const aafont_t *big = &aafont_rooms_head, *sub = &aafont_inter_sub;
+    const aafont_t *tf = &aafont_rooms_title, *sf = &aafont_rooms_small;
+    const int in = x + 14, iw = w - 28;
+    char t[LINE_LEN];
+
+    /* The name, whole if it fits. */
+    int yy = y + 14;
+    ellipsize(big, r->name, iw, t, sizeof t);
+    aafont_draw(c, big, in, yy, t, C_TEXT, AAFONT_LEFT);
+    yy += big->cap + 14;
+
+    /* Free or busy, and till when; another day, how many bookings. */
+    char line[96];
+    if (today && till >= 0) snprintf(line, sizeof line, "Busy till %d:%02d", till / 60, till % 60);
+    else if (today && nx) snprintf(line, sizeof line, "Free till %d:%02d", nx->start / 60, nx->start % 60);
+    else if (today) snprintf(line, sizeof line, "Free all day");
+    else if (r->n) snprintf(line, sizeof line, "%d booking%s", r->n, r->n == 1 ? "" : "s");
+    else snprintf(line, sizeof line, "No bookings");
+    aafont_draw(c, sub, in, yy, line, today ? C_TEXT : C_DIM, AAFONT_LEFT);
+    yy += sub->cap + 14;
+
+    /* What is on now, or next; another day, the seats. */
+    const room_ev_t *e = on ? on : nx;
+    if (yy + tf->cap > y + h - 8) return;
+    if (e) {
+        char what[LINE_LEN + 8];
+        snprintf(what, sizeof what, "%s%s", on ? "" : "Next: ", e->title);
+        ellipsize(tf, what, iw, t, sizeof t);
+        aafont_draw(c, tf, in, yy, t, C_TEXT, AAFONT_LEFT);
+        yy += tf->cap + 9;
+        const char *who = e->full[0] ? e->full : e->who;
+        if (yy + sf->cap > y + h - 6) return;
+        if (on) snprintf(line, sizeof line, "%s", who);
+        else snprintf(line, sizeof line, "%d:%02d%s%s", e->start / 60, e->start % 60, who[0] ? "  -  " : "", who);
+        ellipsize(sf, line, iw, t, sizeof t);
+        aafont_draw(c, sf, in, yy, t, soft, AAFONT_LEFT);
+    } else if (r->cap) {
+        snprintf(line, sizeof line, "%d seat%s", r->cap, r->cap == 1 ? "" : "s");
+        aafont_draw(c, sf, in, yy, line, soft, AAFONT_LEFT);
+    }
 }
 
 void roomsui_draw(canvas_t *c, const rooms_day_t *day, const roomsui_view_t *v)
@@ -331,76 +379,10 @@ void roomsui_draw(canvas_t *c, const rooms_day_t *day, const roomsui_view_t *v)
         aafont_draw(c, &aafont_inter_sub, W / 2, H / 2 - 8, msg, C_DIM, AAFONT_CENTRE);
         return;
     }
-
-    int first, last;
-    roomsui_hours(day, &first, &last);
-    const aafont_t *nf = &aafont_rooms_name, *lf = &aafont_rooms_small;
-
-    /* The hours: a figure above, a faint rule down through the lanes. Every
-       other hour when the day is stretched long. */
-    int every = last - first > 10 ? 2 : 1;
-    int ly, lh;
-    lane_span(day->nrooms, day->nrooms - 1, &ly, &lh);
-    int bottom = ly + lh;
-    for (int hr = first; hr <= last; hr++) {
-        int x = x_of(hr * 60, first, last);
-        canvas_fill_rect(c, x, LANES_Y - 4, 1, bottom - LANES_Y + 4, C_RULE);
-        if ((hr - first) % every || hr == last) continue;
-        char t[8];
-        snprintf(t, sizeof t, "%d", hr);
-        aafont_draw(c, lf, x, TICK_Y + 2, t, C_DIM, AAFONT_CENTRE);
-    }
-
-    bool today = v->offset == 0 && v->now >= 0;
-    int total = 0;
     for (int r = 0; r < day->nrooms; r++) {
-        const room_t *rm = &day->room[r];
-        lane_span(day->nrooms, r, &ly, &lh);
-
-        /* The name, green or red today; under it till when, or the seats. */
-        int till = today ? taken_till(rm, v->now) : -1;
-        const room_ev_t *nx = today ? rooms_next(rm, v->now) : NULL;
-        uint16_t col = !today ? C_TEXT : till >= 0 ? C_BUSY_T : C_FREE_T;
-        char name[24], line[24];
-        ellipsize(nf, rm->name, LANE_X - 22, name, sizeof name);
-        if (today && till >= 0) snprintf(line, sizeof line, "busy till %d:%02d", till / 60, till % 60);
-        else if (today && nx) snprintf(line, sizeof line, "free till %d:%02d", nx->start / 60, nx->start % 60);
-        else if (today) snprintf(line, sizeof line, "free");
-        else if (rm->cap) snprintf(line, sizeof line, "%d seat%s", rm->cap, rm->cap == 1 ? "" : "s");
-        else line[0] = 0;
-        int gap = 6, th = nf->cap + (line[0] ? gap + lf->cap : 0);
-        int ty = ly + (lh - th) / 2;
-        aafont_draw(c, nf, 12, ty, name, col, AAFONT_LEFT);
-        if (line[0]) aafont_draw(c, lf, 12, ty + nf->cap + gap, line, today ? col : C_DIM, AAFONT_LEFT);
-
-        /* The lane, and its bookings as plain blocks. */
-        round_rect(c, LANE_X, ly, LANE_R - LANE_X, lh, 5, C_HALF);
-        for (int i = 0; i < rm->n; i++) {
-            const room_ev_t *e = &rm->ev[i];
-            int x0 = x_of(e->start, first, last) + 1, x1 = x_of(e->end, first, last) - 1;
-            if (x1 - x0 < 4) x1 = x0 + 4;
-            uint16_t fg, who;
-            draw_block(c, x0, ly + 5, x1 - x0, lh - 10, ev_state(e, v), &fg, &who);
-            total++;
-        }
-    }
-    for (int hr = first; hr <= last; hr++) {
-        int x = x_of(hr * 60, first, last);
-        canvas_fill_rect(c, x, LANES_Y - 4, 1, 4, C_RULE);
-    }
-
-    if (!total) {
-        const char *msg = v->wday == 0 || v->wday == 6 ? "No bookings - it's the weekend" : "No bookings";
-        int y = (LANES_Y + bottom) / 2 - aafont_inter_sub.cap / 2;
-        int tw = aafont_width(&aafont_inter_sub, msg), cx = (LANE_X + LANE_R) / 2;
-        canvas_fill_rect(c, cx - tw / 2 - 12, y - 10, tw + 24, aafont_inter_sub.cap + 20, C_BG);
-        aafont_draw(c, &aafont_inter_sub, cx, y, msg, C_DIM, AAFONT_CENTRE);
-    }
-
-    if (today && v->now >= first * 60 && v->now <= last * 60) {
-        int x = x_of(v->now, first, last);
-        canvas_fill_rect(c, x - 1, LANES_Y - 2, 2, bottom - LANES_Y + 2, C_NOW);
-        canvas_disc(c, x, LANES_Y - 4, 4, C_NOW);
+        int x, y, w, h;
+        card_span(day->nrooms, r, &x, &y, &w, &h);
+        draw_card(c, &day->room[r], x, y, w, h, v);
     }
 }
 
@@ -478,12 +460,11 @@ void roomsui_room_draw(canvas_t *c, const rooms_day_t *day, int room, const room
 
 int roomsui_head_hit(const rooms_day_t *day, int x, int y)
 {
-    (void)x;
-    if (!day || y < LANES_Y) return -1;
+    if (!day) return -1;
     for (int r = 0; r < day->nrooms; r++) {
-        int ly, lh;
-        lane_span(day->nrooms, r, &ly, &lh);
-        if (y >= ly - 4 && y < ly + lh + 4) return r;
+        int cx, cy, cw, ch;
+        card_span(day->nrooms, r, &cx, &cy, &cw, &ch);
+        if (x >= cx - CARD_GAP / 2 && x < cx + cw + CARD_GAP / 2 && y >= cy - CARD_GAP / 2 && y < cy + ch + CARD_GAP / 2) return r;
     }
     return -1;
 }

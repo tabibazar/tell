@@ -4,17 +4,20 @@
 /*
  * panel1's pages: a day of room bookings on the 480x480 panel.
  *
- * The overview, a row per room with the day running across:
+ * The overview, a card per room, two across:
  *
  *   Today   Thu 8 Oct                      10:20
- *               8    10    12    14    16
- *   Grande     [ ##   |  ###     |##     ]       a lane per room, the
- *   busy till 10:45  ...                         bookings as plain blocks
+ *   +--------------------+ +--------------------+
+ *   | Grande             | | Ristretto          |   green when free now,
+ *   | Free till 11:00    | | Busy till 10:45    |   red when in use
+ *   | Next: Design review| | Hiring sync        |
+ *   | 11:00 - Omar Haddad| | Nora Ali           |
+ *   +--------------------+ +--------------------+
  *
- * Each name is green when the room is free now and red when it is in use,
- * with till when under it; another day, the seats. A tap on a row opens that
- * room's own page: its bookings full width with their titles and who booked
- * them, and a status strip ("Taken till 10:45, then free till 14:00").
+ * Another day the cards are grey, with how many bookings and the seats. A tap
+ * on a card opens that room's own page: its bookings on a timeline, full
+ * width, with their titles and who booked them, and a status strip ("Taken
+ * till 10:45, then free till 14:00").
  *
  * The hours run 08:00-16:00, stretched to take in any booking outside them.
  * On today the passed bookings are dimmed, the one on now is lit and a red
@@ -50,7 +53,7 @@ int roomsui_room_status(const room_t *r, const roomsui_view_t *v, char *out, siz
    With no day, or no such room, it draws the overview instead. */
 void roomsui_room_draw(canvas_t *c, const rooms_day_t *day, int room, const roomsui_view_t *v);
 
-/* The room whose row on the overview is under (x, y), or -1. */
+/* The room whose card on the overview is under (x, y), or -1. */
 int roomsui_head_hit(const rooms_day_t *day, int x, int y);
 
 /* The booking under (x, y) on room `room`'s page, or NULL. */
