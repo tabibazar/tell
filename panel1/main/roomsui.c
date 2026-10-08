@@ -189,6 +189,93 @@ static void col_span(int nrooms, int i, int *x, int *w)
     *w = avail / nrooms;
 }
 
+/* Minute m's y on a grid of hours first..last drawn from top to bottom. */
+static int y_of(int m, int first, int last, int top, int bottom)
+{
+    return top + (m - first * 60) * (bottom - top) / ((last - first) * 60);
+}
+
+/* Hour rules and figures, half hours fainter. */
+static void draw_grid(canvas_t *c, int first, int last, int top, int bottom)
+{
+    const aafont_t *lf = &aafont_rooms_small;
+    for (int hr = first; hr <= last; hr++) {
+        int y = y_of(hr * 60, first, last, top, bottom);
+        canvas_fill_rect(c, GUTTER - 2, y, W - GUTTER - MARGIN + 2, 1, C_RULE);
+        if (hr < last) canvas_fill_rect(c, GUTTER, y_of(hr * 60 + 30, first, last, top, bottom), W - GUTTER - MARGIN, 1, C_HALF);
+        char t[12];
+        snprintf(t, sizeof t, "%d", hr);
+        int ty = y - lf->cap / 2;
+        if (ty < top) ty = top;
+        if (hr < last) aafont_draw(c, lf, GUTTER - 6, ty, t, C_DIM, AAFONT_RIGHT);
+    }
+}
+
+/* The red line at the minute, today only. */
+static void draw_now(canvas_t *c, const roomsui_view_t *v, int first, int last, int top, int bottom)
+{
+    if (v->offset != 0 || v->now < first * 60 || v->now > last * 60) return;
+    int y = y_of(v->now, first, last, top, bottom);
+    canvas_fill_rect(c, GUTTER - 4, y - 1, W - GUTTER - MARGIN + 4, 2, C_NOW);
+    canvas_disc(c, GUTTER - 4, y, 4, C_NOW);
+}
+
+/* "No bookings" in the middle of an empty grid. */
+static void draw_empty(canvas_t *c, const roomsui_view_t *v, int first, int last, int top, int bottom)
+{
+    const char *msg = v->wday == 0 || v->wday == 6 ? "No bookings - it's the weekend" : "No bookings";
+    int y = y_of(first * 60 + (last - first) * 30, first, last, top, bottom) - aafont_inter_sub.cap / 2;
+    int tw = aafont_width(&aafont_inter_sub, msg);
+    canvas_fill_rect(c, (W + GUTTER - tw) / 2 - 12, y - 10, tw + 24, aafont_inter_sub.cap + 20, C_BG);
+    aafont_draw(c, &aafont_inter_sub, (W + GUTTER) / 2, y, msg, C_DIM, AAFONT_CENTRE);
+}
+
+/* 0 to come, 1 on now, 2 over. */
+static int ev_state(const room_ev_t *e, const roomsui_view_t *v)
+{
+    bool today = v->offset == 0 && v->now >= 0;
+    if (!today) return v->offset < 0 ? 2 : 0;
+    return e->end <= v->now ? 2 : e->start <= v->now ? 1 : 0;
+}
+
+/* A booking's block and its bar; its text colours in *fg and *who. */
+static void draw_block(canvas_t *c, int x, int y, int w, int h, int state, uint16_t *fg, uint16_t *who)
+{
+    uint16_t bg = state == 1 ? C_ON : state == 2 ? C_PAST : C_EV;
+    uint16_t bar = state == 1 ? C_ON_BAR : state == 2 ? C_PAST_BAR : C_EV_BAR;
+    *fg = state == 2 ? C_DIM : C_TEXT;
+    *who = state == 2 ? C_FAINT : C_EV_WHO;
+    round_rect(c, x, y, w, h, 4, bg);
+    canvas_fill_rect(c, x, y + 1, 3, h - 2, bar);
+}
+
+/* The booking in r nearest y whose block, grown to 28 px for a finger, holds y. */
+static const room_ev_t *hit_in(const room_t *r, int y, int first, int last, int top, int bottom)
+{
+    const room_ev_t *best = NULL;
+    int bestd = 1 << 30;
+    for (int i = 0; i < r->n; i++) {
+        const room_ev_t *e = &r->ev[i];
+        int y0 = y_of(e->start, first, last, top, bottom), y1 = y_of(e->end, first, last, top, bottom);
+        int mid = (y0 + y1) / 2, half = (y1 - y0) / 2 < 14 ? 14 : (y1 - y0) / 2;
+        int d = abs(y - mid);
+        if (d <= half && d < bestd) { best = e; bestd = d; }
+    }
+    return best;
+}
+
+/* Till when r is taken from `now`, running on through back-to-back
+   bookings; -1 when it is free now. */
+static int taken_till(const room_t *r, int now)
+{
+    const room_ev_t *on = rooms_at(r, now);
+    if (!on) return -1;
+    int till = on->end;
+    for (int i = 0; i < r->n; i++)
+        if (r->ev[i].start <= till && r->ev[i].end > till) till = r->ev[i].end;
+    return till;
+}
+
 static void draw_room_head(canvas_t *c, const room_t *r, int x, int w, const roomsui_view_t *v)
 {
     bool today = v->offset == 0 && v->now >= 0;
@@ -208,9 +295,7 @@ static void draw_room_head(canvas_t *c, const room_t *r, int x, int w, const roo
         const room_ev_t *nx = rooms_next(r, v->now);
         if (on) {
             /* Back-to-back bookings run on: the room is taken till the last. */
-            int till = on->end;
-            for (int i = 0; i < r->n; i++)
-                if (r->ev[i].start <= till && r->ev[i].end > till) till = r->ev[i].end;
+            int till = taken_till(r, v->now);
             snprintf(line, sizeof line, "till %d:%02d", till / 60, till % 60);
         } else if (nx) {
             snprintf(line, sizeof line, "free till %d:%02d", nx->start / 60, nx->start % 60);
@@ -230,12 +315,8 @@ static void draw_room_head(canvas_t *c, const room_t *r, int x, int w, const roo
 static void draw_booking(canvas_t *c, const room_ev_t *e, int x, int y, int w, int h, int state)
 {
     /* state: 0 to come, 1 on now, 2 over */
-    uint16_t bg = state == 1 ? C_ON : state == 2 ? C_PAST : C_EV;
-    uint16_t bar = state == 1 ? C_ON_BAR : state == 2 ? C_PAST_BAR : C_EV_BAR;
-    uint16_t fg = state == 2 ? C_DIM : C_TEXT;
-    uint16_t who = state == 2 ? C_FAINT : C_EV_WHO;
-    round_rect(c, x, y, w, h, 4, bg);
-    canvas_fill_rect(c, x, y + 1, 3, h - 2, bar);
+    uint16_t fg, who;
+    draw_block(c, x, y, w, h, state, &fg, &who);
 
     const aafont_t *tf = &aafont_rooms_title, *lf = &aafont_rooms_small;
     const int pitch = 17, wpitch = 16;   /* title line to title line; title to organiser */
@@ -276,24 +357,7 @@ void roomsui_draw(canvas_t *c, const rooms_day_t *day, const roomsui_view_t *v)
 
     int first, last;
     roomsui_hours(day, &first, &last);
-    int span = (last - first) * 60;
-    int gh = GRID_B - GRID_Y;
-#define YOF(m) (GRID_Y + ((m) - first * 60) * gh / span)
-
-    /* Hour rules and figures, half hours fainter. */
-    const aafont_t *lf = &aafont_rooms_small;
-    for (int hr = first; hr <= last; hr++) {
-        int y = YOF(hr * 60);
-        canvas_fill_rect(c, GUTTER - 2, y, W - GUTTER - MARGIN + 2, 1, C_RULE);
-        if (hr < last) canvas_fill_rect(c, GUTTER, YOF(hr * 60 + 30), W - GUTTER - MARGIN, 1, C_HALF);
-        char t[12];
-        snprintf(t, sizeof t, "%d", hr);
-        int ty = y - lf->cap / 2;
-        if (ty < GRID_Y) ty = GRID_Y;
-        if (hr < last) aafont_draw(c, lf, GUTTER - 6, ty, t, C_DIM, AAFONT_RIGHT);
-    }
-
-    bool today = v->offset == 0 && v->now >= 0;
+    draw_grid(c, first, last, GRID_Y, GRID_B);
     int total = 0;
     for (int r = 0; r < day->nrooms; r++) {
         int x, w;
@@ -301,29 +365,14 @@ void roomsui_draw(canvas_t *c, const rooms_day_t *day, const roomsui_view_t *v)
         draw_room_head(c, &day->room[r], x, w, v);
         for (int i = 0; i < day->room[r].n; i++) {
             const room_ev_t *e = &day->room[r].ev[i];
-            int y0 = YOF(e->start) + 1, y1 = YOF(e->end) - 1;
+            int y0 = y_of(e->start, first, last, GRID_Y, GRID_B) + 1, y1 = y_of(e->end, first, last, GRID_Y, GRID_B) - 1;
             if (y1 - y0 < 8) y1 = y0 + 8;
-            int state = !today ? (v->offset < 0 ? 2 : 0)
-                      : e->end <= v->now ? 2 : e->start <= v->now ? 1 : 0;
-            draw_booking(c, e, x, y0, w, y1 - y0, state);
+            draw_booking(c, e, x, y0, w, y1 - y0, ev_state(e, v));
             total++;
         }
     }
-
-    if (!total) {
-        const char *msg = v->wday == 0 || v->wday == 6 ? "No bookings - it's the weekend" : "No bookings";
-        int y = YOF(first * 60 + span / 2) - aafont_inter_sub.cap / 2;
-        int tw = aafont_width(&aafont_inter_sub, msg);
-        canvas_fill_rect(c, (W + GUTTER - tw) / 2 - 12, y - 10, tw + 24, aafont_inter_sub.cap + 20, C_BG);
-        aafont_draw(c, &aafont_inter_sub, (W + GUTTER) / 2, y, msg, C_DIM, AAFONT_CENTRE);
-    }
-
-    if (today && v->now >= first * 60 && v->now <= last * 60) {
-        int y = YOF(v->now);
-        canvas_fill_rect(c, GUTTER - 4, y - 1, W - GUTTER - MARGIN + 4, 2, C_NOW);
-        canvas_disc(c, GUTTER - 4, y, 4, C_NOW);
-    }
-#undef YOF
+    if (!total) draw_empty(c, v, first, last, GRID_Y, GRID_B);
+    draw_now(c, v, first, last, GRID_Y, GRID_B);
 }
 
 const room_ev_t *roomsui_hit(const rooms_day_t *day, int x, int y, int *room)
@@ -331,22 +380,11 @@ const room_ev_t *roomsui_hit(const rooms_day_t *day, int x, int y, int *room)
     if (!day || y < GRID_Y) return NULL;
     int first, last;
     roomsui_hours(day, &first, &last);
-    int span = (last - first) * 60, gh = GRID_B - GRID_Y;
     for (int r = 0; r < day->nrooms; r++) {
         int cx, cw;
         col_span(day->nrooms, r, &cx, &cw);
         if (x < cx - COL_GAP / 2 || x >= cx + cw + COL_GAP / 2) continue;
-        /* The nearest booking whose block, grown to 28 px for a finger, holds y. */
-        const room_ev_t *best = NULL;
-        int bestd = 1 << 30;
-        for (int i = 0; i < day->room[r].n; i++) {
-            const room_ev_t *e = &day->room[r].ev[i];
-            int y0 = GRID_Y + (e->start - first * 60) * gh / span;
-            int y1 = GRID_Y + (e->end - first * 60) * gh / span;
-            int mid = (y0 + y1) / 2, half = (y1 - y0) / 2 < 14 ? 14 : (y1 - y0) / 2;
-            int d = abs(y - mid);
-            if (d <= half && d < bestd) { best = e; bestd = d; }
-        }
+        const room_ev_t *best = hit_in(&day->room[r], y, first, last, GRID_Y, GRID_B);
         if (best) *room = r;
         return best;
     }
