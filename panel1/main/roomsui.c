@@ -11,7 +11,6 @@ extern const aafont_t aafont_rooms_head;    /* Inter SemiBold 30: the day, the c
 extern const aafont_t aafont_rooms_name;    /* Inter Bold 16: a room's name */
 extern const aafont_t aafont_rooms_title;   /* Inter SemiBold 17: a booking's title */
 extern const aafont_t aafont_rooms_small;   /* Inter Medium 15: organisers, hours, states */
-extern const aafont_t aafont_rooms_clock;   /* Inter SemiBold 110, figures: the saver's clock */
 
 #define W 480
 #define H 480
@@ -598,21 +597,4 @@ void roomsui_detail(canvas_t *c, const room_t *r, const room_ev_t *e, const room
         yy += tf->cap + (ng - 1) * 22 + 22;
     }
     aafont_draw(c, sf, x + w / 2, y + h - 18 - sf->cap, "tap to close", C_FAINT, AAFONT_CENTRE);
-}
-
-void roomsui_saver(canvas_t *c, int now, int wday, int d, int m, int step)
-{
-    canvas_fill_rect(c, 0, 0, W, H, RGB(0, 0, 0));
-    const aafont_t *cf = &aafont_rooms_clock, *sub = &aafont_inter_sub;
-    char clk[12], date[32];
-    snprintf(clk, sizeof clk, "%d:%02d", now / 60 % 24, now % 60);
-    snprintf(date, sizeof date, "%s %d %s", WDAY[wday % 7], d, MON[(m + 11) % 12]);
-    int cw = aafont_advance(cf, "00:00"), dw = aafont_width(sub, date);
-    int bw = cw > dw ? cw : dw, bh = cf->cap + 24 + sub->cap;
-    /* Steps of a walk that covers the free area in a scattered order. */
-    int fx = W - 40 - bw, fy = H - 40 - bh;
-    int x = 20 + (fx > 0 ? (step * 83) % (fx + 1) : 0);
-    int y = 20 + (fy > 0 ? (step * 47) % (fy + 1) : 0);
-    aafont_draw(c, cf, x + bw / 2, y, clk, RGB(0xB0, 0xB6, 0xC0), AAFONT_CENTRE | AAFONT_ADVANCE);
-    aafont_draw(c, sub, x + bw / 2, y + cf->cap + 24, date, RGB(0x70, 0x76, 0x80), AAFONT_CENTRE);
 }

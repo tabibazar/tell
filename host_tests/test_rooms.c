@@ -191,10 +191,6 @@ int main(void)
     roomsui_draw(&c, NULL, &v);
     bmp("loading");
 
-    roomsui_saver(&c, 7 * 60 + 42, 3, 7, 10, 0);
-    bmp("saver-0");
-    roomsui_saver(&c, 23 * 60 + 5, 3, 7, 10, 29000123);
-    bmp("saver-1");
 
     printf(fails ? "%d FAILED\n" : "rooms: all passed\n", fails);
     return fails != 0;

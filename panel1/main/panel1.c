@@ -227,12 +227,6 @@ static void draw(canvas_t *c, rooms_day_t *buf)
         }
     }
     v.note = note;
-    if (s_saver && v.now >= 0) {
-        struct tm d = day_at(0);
-        roomsui_saver(c, v.now, d.tm_wday, d.tm_mday, d.tm_mon + 1, (int)(time(NULL) / 60));
-        lcd_show();
-        return;
-    }
     roomsui_draw(c, day, &v);
     if (s_det && v.now >= 0) roomsui_detail(c, s_det_room, &s_det_ev, &v);
     lcd_show();

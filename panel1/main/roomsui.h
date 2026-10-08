@@ -59,11 +59,6 @@ const room_ev_t *roomsui_room_hit(const rooms_day_t *day, int room, int x, int y
 /* Is (x, y) in a room page's header or status strip: the way back? */
 bool roomsui_room_head_hit(int x, int y);
 
-/* The screen saver: the time and date, large and grey on black, at one of
-   many places picked by `step` (the caller's minute count), so that nothing
-   stands still on the panel for long. */
-void roomsui_saver(canvas_t *c, int now, int wday, int d, int m, int step);
-
 /* The timeline's first and last hour for `day`, as roomsui_draw picks them. */
 void roomsui_hours(const rooms_day_t *day, int *first, int *last);
 
