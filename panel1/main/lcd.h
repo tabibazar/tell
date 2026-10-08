@@ -6,6 +6,8 @@
  * into a canvas in PSRAM; lcd_show() copies it to the panel's own frame in
  * one go, so a half-drawn page is never seen.
  */
+#include <stdbool.h>
+
 #include "canvas.h"
 #include "esp_err.h"
 
@@ -13,5 +15,6 @@ esp_err_t lcd_init(void);
 canvas_t *lcd_canvas(void);
 void lcd_show(void);
 void lcd_backlight(int percent);   /* 0..100 */
+bool lcd_pwr_key(void);            /* true while the side PWR key is held */
 
 #endif /* LCD_H */

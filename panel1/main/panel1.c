@@ -9,9 +9,8 @@
  * untouched brings it home again. A tap on a booking opens a card with all of
  * it -- who booked it, who is invited -- and a tap on a room's name opens that
  * room's own page: swipe up and down there for the other rooms, and tap its
- * top to come back.
- * Five minutes untouched, it dims to a clock that wanders the screen; a tap
- * wakes it on the home day.
+ * top to come back. Five minutes untouched, the screen goes dark; BOOT, PWR or
+ * a tap wakes it on the home day.
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -19,6 +18,7 @@
 #include <sys/time.h>
 #include <time.h>
 
+#include "driver/gpio.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_timer.h"
@@ -47,8 +47,8 @@ static const char *TAG = "panel1";
 #define SPAN           14           /* days either way a swipe may go */
 #define CACHE_N        8
 #define DETAIL_FOR     20           /* s a booking's card stays up untouched */
-#define SAVER_AFTER    (5 * 60)     /* s untouched before the screen saver */
-#define SAVER_LIGHT    15           /* % backlight while it is on */
+#define SLEEP_AFTER    (5 * 60)     /* s untouched before the screen goes dark */
+#define PIN_BOOT       0            /* the side BOOT key, low while held */
 #define NOTE_AFTER     (3 * 60)     /* s of failed fetches before the header says so */
 
 typedef struct {
@@ -67,7 +67,7 @@ static volatile int64_t s_last_ok;    /* s, monotonic; last good fetch */
 static volatile time_t s_last_ok_wall;
 static volatile bool s_failing;
 static volatile int64_t s_fail_since;  /* s, monotonic; when the failing began */
-static bool s_saver;
+static bool s_asleep;
 
 /* The booking whose card is up, copied: the day under it may be refetched. */
 static bool s_det;
@@ -245,6 +245,28 @@ static void draw(canvas_t *c, rooms_day_t *buf)
     lcd_show();
 }
 
+/* Dark: the frame black, then the backlight off, so nothing glows through. */
+static void sleep_now(canvas_t *c)
+{
+    s_asleep = true;
+    s_det = false;
+    canvas_fill_rect(c, 0, 0, c->w, c->h, 0);
+    lcd_show();
+    lcd_backlight(0);
+    ESP_LOGI(TAG, "asleep");
+}
+
+/* Back on the overview, home day, at full light. */
+static void wake(canvas_t *c, rooms_day_t *buf)
+{
+    s_asleep = false;
+    go_home();
+    draw(c, buf);
+    s_dirty = false;
+    lcd_backlight(100);
+    ESP_LOGI(TAG, "awake");
+}
+
 void app_main(void)
 {
     esp_err_t e = nvs_flash_init();
@@ -270,24 +292,38 @@ void app_main(void)
     console_start();
     xTaskCreatePinnedToCore(fetch_task, "fetch", 8192, NULL, 4, NULL, 0);
 
+    gpio_config_t boot = { .pin_bit_mask = 1ULL << PIN_BOOT, .mode = GPIO_MODE_INPUT, .pull_up_en = GPIO_PULLUP_ENABLE };
+    gpio_config(&boot);
+    bool keys_were = false, pwr_was = false, boot_was = false;
+
     bool down = false, moved = false, waking = false;
     int x0 = 0, y0 = 0, lx = 0, ly = 0;
     int64_t last_touch = now_s();
     int last_min = -1, last_home = -1;
     for (;;) {
         vTaskDelay(pdMS_TO_TICKS(30));
+
+        /* The side keys: a press wakes it, or, awake, goes home. Taken on the
+           press, not the release. */
+        bool pwr = lcd_pwr_key(), bootk = gpio_get_level(PIN_BOOT) == 0;
+        if (pwr != pwr_was) { ESP_LOGI(TAG, "PWR key %s", pwr ? "down" : "up"); pwr_was = pwr; }
+        if (bootk != boot_was) { ESP_LOGI(TAG, "BOOT key %s", bootk ? "down" : "up"); boot_was = bootk; }
+        bool keys = pwr || bootk;
+        if (keys && !keys_were) {
+            if (s_asleep) wake(c, buf);
+            else go_home();
+            last_touch = now_s();
+        }
+        keys_were = keys;
+
         int x, y;
         if (touch && touch_read(&x, &y)) {
             if (!down) {
                 down = true; moved = false; x0 = x; y0 = y;
-                if (s_saver) {
-                    /* This touch only wakes: home, bright, and nothing else. */
+                if (s_asleep) {
+                    /* This touch only wakes: nothing else till the finger lifts. */
                     waking = true;
-                    s_saver = false;
-                    s_det = false;
-                    if (net_time_ok()) s_offset = home_offset();
-                    draw(c, buf);
-                    lcd_backlight(100);
+                    wake(c, buf);
                 }
             }
             lx = x; ly = y;
@@ -357,12 +393,7 @@ void app_main(void)
             last_home = h;
             if ((s_offset != h || s_room >= 0) && now_s() - last_touch >= IDLE_HOME && !down) go_home();
             if (s_det && now_s() - s_det_at >= DETAIL_FOR && now_s() - last_touch >= DETAIL_FOR) { s_det = false; s_dirty = true; }
-            if (!s_saver && !down && touch && now_s() - last_touch >= SAVER_AFTER) {
-                s_saver = true;
-                s_det = false;
-                s_dirty = true;
-                lcd_backlight(SAVER_LIGHT);
-            }
+            if (!s_asleep && !down && now_s() - last_touch >= SLEEP_AFTER) sleep_now(c);
             time_t t = time(NULL);
             struct tm lt;
             localtime_r(&t, &lt);
@@ -371,7 +402,7 @@ void app_main(void)
             static int64_t last_draw;
             if (now_s() - last_draw >= 2) { last_draw = now_s(); s_dirty = true; }
         }
-        if (s_dirty && !down) {
+        if (s_dirty && !down && !s_asleep) {
             s_dirty = false;
             draw(c, buf);
         }
