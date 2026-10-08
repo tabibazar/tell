@@ -90,6 +90,27 @@ int main(void)
     CHECK(rooms_parse(odd, strlen(odd), &o));
     CHECK(o.room[0].n == 2 && o.room[0].ev[0].start == 0 && o.room[0].ev[1].end == 1440);
 
+    /* A room's status line: taken, free, another day. */
+    room_t sr = { .name = "TALL", .cap = 8, .n = 3 };
+    sr.ev[0] = (room_ev_t){ .start = 600, .end = 645 };     /* 10:00-10:45 */
+    sr.ev[1] = (room_ev_t){ .start = 645, .end = 660 };     /* back to back, to 11:00 */
+    sr.ev[2] = (room_ev_t){ .start = 840, .end = 900 };     /* 14:00-15:00 */
+    char st[64];
+    roomsui_view_t sv = { .offset = 0, .wday = 4, .now = 620 };
+    CHECK(roomsui_room_status(&sr, &sv, st, sizeof st) == ROOMSUI_TAKEN && strcmp(st, "Taken till 11:00, then free till 14:00") == 0);
+    sv.now = 850;
+    CHECK(roomsui_room_status(&sr, &sv, st, sizeof st) == ROOMSUI_TAKEN && strcmp(st, "Taken till 15:00") == 0);
+    sv.now = 540;
+    CHECK(roomsui_room_status(&sr, &sv, st, sizeof st) == ROOMSUI_FREE && strcmp(st, "Free till 10:00") == 0);
+    sv.now = 910;
+    CHECK(roomsui_room_status(&sr, &sv, st, sizeof st) == ROOMSUI_FREE && strcmp(st, "Free") == 0);
+    sv = (roomsui_view_t){ .offset = 1, .wday = 5, .now = 620 };
+    CHECK(roomsui_room_status(&sr, &sv, st, sizeof st) == ROOMSUI_OTHER && strcmp(st, "3 bookings") == 0);
+    sr.n = 1;
+    CHECK(roomsui_room_status(&sr, &sv, st, sizeof st) == ROOMSUI_OTHER && strcmp(st, "1 booking") == 0);
+    sr.n = 0;
+    CHECK(roomsui_room_status(&sr, &sv, st, sizeof st) == ROOMSUI_OTHER && strcmp(st, "No bookings") == 0);
+
     canvas_t c;
     canvas_init(&c, fb, 480, 480, 1);
     system("mkdir -p host_tests/renders/rooms");

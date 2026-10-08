@@ -38,6 +38,13 @@ const room_ev_t *roomsui_hit(const rooms_day_t *day, int x, int y, int *room);
    whole title, the time, who booked it and who is invited. */
 void roomsui_detail(canvas_t *c, const room_t *r, const room_ev_t *e, const roomsui_view_t *v);
 
+/* What a room's status line says, into out, and its colour: ROOMSUI_TAKEN
+   (red) or ROOMSUI_FREE (green) today, ROOMSUI_OTHER (grey) on another day.
+     "Taken till 11:00, then free till 14:00"   "Taken till 15:00"
+     "Free till 10:00"   "Free"   "3 bookings"   "No bookings"  */
+enum { ROOMSUI_OTHER, ROOMSUI_FREE, ROOMSUI_TAKEN };
+int roomsui_room_status(const room_t *r, const roomsui_view_t *v, char *out, size_t n);
+
 /* The screen saver: the time and date, large and grey on black, at one of
    many places picked by `step` (the caller's minute count), so that nothing
    stands still on the panel for long. */

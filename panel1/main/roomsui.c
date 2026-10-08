@@ -276,6 +276,26 @@ static int taken_till(const room_t *r, int now)
     return till;
 }
 
+int roomsui_room_status(const room_t *r, const roomsui_view_t *v, char *out, size_t n)
+{
+    if (v->offset != 0 || v->now < 0) {
+        if (r->n) snprintf(out, n, "%d booking%s", r->n, r->n == 1 ? "" : "s");
+        else snprintf(out, n, "No bookings");
+        return ROOMSUI_OTHER;
+    }
+    int till = taken_till(r, v->now);
+    if (till >= 0) {
+        const room_ev_t *nx = rooms_next(r, till);
+        if (nx) snprintf(out, n, "Taken till %d:%02d, then free till %d:%02d", till / 60, till % 60, nx->start / 60, nx->start % 60);
+        else snprintf(out, n, "Taken till %d:%02d", till / 60, till % 60);
+        return ROOMSUI_TAKEN;
+    }
+    const room_ev_t *nx = rooms_next(r, v->now);
+    if (nx) snprintf(out, n, "Free till %d:%02d", nx->start / 60, nx->start % 60);
+    else snprintf(out, n, "Free");
+    return ROOMSUI_FREE;
+}
+
 static void draw_room_head(canvas_t *c, const room_t *r, int x, int w, const roomsui_view_t *v)
 {
     bool today = v->offset == 0 && v->now >= 0;
