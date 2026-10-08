@@ -430,7 +430,7 @@ static void draw_room_booking(canvas_t *c, const room_ev_t *e, int x, int y, int
     if (h < tf->cap) return;             /* a sliver: the block says enough */
     bool two = h >= 34;
     int ty = two ? y + 6 : y + (h - tf->cap) / 2;
-    char t[16];
+    char t[32];
     snprintf(t, sizeof t, "%d:%02d-%d:%02d", e->start / 60, e->start % 60, e->end / 60, e->end % 60);
     int tx = x + 9;
     tx += aafont_draw(c, lf, tx, ty + tf->cap - lf->cap, t, who, AAFONT_LEFT) + 10;

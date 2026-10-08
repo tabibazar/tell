@@ -7,7 +7,9 @@
  * after 17:00 and at weekends, on the next working day -- and a swipe left or
  * right moves a working day, passing over Saturday and Sunday; a minute
  * untouched brings it home again. A tap on a booking opens a card with all of
- * it -- who booked it, who is invited.
+ * it -- who booked it, who is invited -- and a tap on a room's name opens that
+ * room's own page: swipe up and down there for the other rooms, and tap its
+ * top to come back.
  * Five minutes untouched, it dims to a clock that wanders the screen; a tap
  * wakes it on the home day.
  */
@@ -59,6 +61,7 @@ typedef struct {
 static slot_t *s_cache;               /* PSRAM, CACHE_N slots */
 static SemaphoreHandle_t s_lock;
 static volatile int s_offset;         /* the day shown, from today */
+static volatile int s_room = -1;      /* the open room's page; -1 the overview */
 static volatile bool s_dirty = true;
 static volatile int64_t s_last_ok;    /* s, monotonic; last good fetch */
 static volatile time_t s_last_ok_wall;
@@ -108,6 +111,15 @@ static int home_offset(void)
         if (wd != 0 && wd != 6) return off;
         off++;
     }
+}
+
+/* The overview on the home day, no card open. */
+static void go_home(void)
+{
+    if (net_time_ok()) s_offset = home_offset();
+    s_room = -1;
+    s_det = false;
+    s_dirty = true;
 }
 
 static slot_t *find(const struct tm *t)
@@ -227,7 +239,8 @@ static void draw(canvas_t *c, rooms_day_t *buf)
         }
     }
     v.note = note;
-    roomsui_draw(c, day, &v);
+    if (s_room >= 0 && day && s_room >= day->nrooms) s_room = -1;   /* that day has fewer rooms */
+    roomsui_room_draw(c, day, s_room, &v);
     if (s_det && v.now >= 0) roomsui_detail(c, s_det_room, &s_det_ev, &v);
     lcd_show();
 }
@@ -258,7 +271,7 @@ void app_main(void)
     xTaskCreatePinnedToCore(fetch_task, "fetch", 8192, NULL, 4, NULL, 0);
 
     bool down = false, moved = false, waking = false;
-    int x0 = 0, y0 = 0, lx = 0;
+    int x0 = 0, y0 = 0, lx = 0, ly = 0;
     int64_t last_touch = now_s();
     int last_min = -1, last_home = -1;
     for (;;) {
@@ -277,29 +290,52 @@ void app_main(void)
                     lcd_backlight(100);
                 }
             }
-            lx = x;
-            if (abs(x - x0) > SWIPE_PX / 2) moved = true;
+            lx = x; ly = y;
+            if (abs(x - x0) > SWIPE_PX / 2 || abs(y - y0) > SWIPE_PX / 2) moved = true;
             last_touch = now_s();
         } else if (down && waking) {
             down = waking = false;
         } else if (down) {
             down = false;
-            int dx = lx - x0;
-            /* A finger dragged left pulls the next day in, as a page turns. */
-            if (moved && abs(dx) >= SWIPE_PX && abs(dx) > abs(y - y0)) {
+            int dx = lx - x0, dy = ly - y0;
+            if (moved && abs(dx) >= SWIPE_PX && abs(dx) >= abs(dy)) {
+                /* A finger dragged left pulls the next day in, as a page turns. */
                 int step = dx < 0 ? 1 : -1, off = s_offset + step;
                 while (weekend(off)) off += step;       /* Saturday and Sunday are skipped */
                 if (off >= -SPAN && off <= SPAN) { s_offset = off; s_dirty = true; }
                 s_det = false;
+            } else if (moved && abs(dy) >= SWIPE_PX && s_room >= 0 && s_buf_ok && buf->nrooms > 0) {
+                /* Dragged up, the next room comes in; round from the last to the first. */
+                int n = buf->nrooms;
+                s_room = (s_room + (dy < 0 ? 1 : n - 1)) % n;
+                s_det = false;
+                s_dirty = true;
             } else if (!moved && s_det) {
                 /* Any tap closes a booking's card. */
                 s_det = false;
                 s_dirty = true;
+            } else if (!moved && s_room >= 0) {
+                /* A room page: its top goes back to the overview, a booking opens its card. */
+                const room_ev_t *e = s_buf_ok ? roomsui_room_hit(buf, s_room, x0, y0) : NULL;
+                if (roomsui_room_head_hit(x0, y0)) {
+                    s_room = -1;
+                    s_dirty = true;
+                } else if (e) {
+                    *s_det_room = buf->room[s_room];
+                    s_det_ev = *e;
+                    s_det = true;
+                    s_det_at = now_s();
+                    s_dirty = true;
+                }
             } else if (!moved) {
-                /* A tap on a booking opens its card; anywhere else goes home. */
-                int room;
+                /* The overview: a room's name opens its page, a booking its
+                   card; anywhere else goes home. */
+                int room, r = s_buf_ok ? roomsui_head_hit(buf, x0, y0) : -1;
                 const room_ev_t *e = s_buf_ok ? roomsui_hit(buf, x0, y0, &room) : NULL;
-                if (e) {
+                if (r >= 0) {
+                    s_room = r;
+                    s_dirty = true;
+                } else if (e) {
                     *s_det_room = buf->room[room];
                     s_det_ev = *e;
                     s_det = true;
@@ -317,9 +353,9 @@ void app_main(void)
             /* The clock just came: start on the home day. */
             if (last_home < 0 && s_offset != h) { s_offset = h; s_dirty = true; }
             /* Home moves at EVENING and at midnight; follow it if we were there. */
-            if (last_home >= 0 && h != last_home && s_offset == last_home) { s_offset = h; s_dirty = true; }
+            if (last_home >= 0 && h != last_home && s_offset == last_home) { s_offset = h; s_room = -1; s_dirty = true; }
             last_home = h;
-            if (s_offset != h && now_s() - last_touch >= IDLE_HOME && !down) { s_offset = h; s_det = false; s_dirty = true; }
+            if ((s_offset != h || s_room >= 0) && now_s() - last_touch >= IDLE_HOME && !down) go_home();
             if (s_det && now_s() - s_det_at >= DETAIL_FOR && now_s() - last_touch >= DETAIL_FOR) { s_det = false; s_dirty = true; }
             if (!s_saver && !down && touch && now_s() - last_touch >= SAVER_AFTER) {
                 s_saver = true;
