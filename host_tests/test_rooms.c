@@ -128,15 +128,9 @@ int main(void)
     roomsui_draw(&c, &d, &v);
     bmp("tomorrow");
 
-    /* A tap on the 11:00 booking in the first column finds it; between bookings, nothing. */
-    int first, last, room = -1;
+    int first, last;
     roomsui_hours(&d, &first, &last);
-    int gy = 52 + 40 + 6, gh = 480 - 6 - gy, span = (last - first) * 60;
-    int ymid = gy + (690 - first * 60) * gh / span;
-    const room_ev_t *hit = roomsui_hit(&d, 26 + 40, ymid, &room);
-    CHECK(hit == &d.room[0].ev[0] && room == 0);
-    CHECK(roomsui_hit(&d, 26 + 40, gy + (600 - first * 60) * gh / span, &room) == NULL);
-    CHECK(roomsui_hit(&d, 26 + 40, 20, &room) == NULL);                /* the header */
+    int gy = 52 + 40 + 6, span = (last - first) * 60;
     v = (roomsui_view_t){ .offset = 1, .wday = 4, .now = 19 * 60 + 24 };
     roomsui_draw(&c, &d, &v);
     roomsui_detail(&c, &d.room[0], &d.room[0].ev[0], &v);
@@ -171,13 +165,16 @@ int main(void)
     roomsui_room_draw(&c, &o, 2, &v);
     bmp("room-empty");
 
-    /* Taps: the overview's name strips, and a room page's bookings and top. */
-    int nr = d.nrooms, avail = 480 - 26 - 4 - 4 * (nr - 1);
-    for (int i = 0; i < nr; i++)
-        CHECK(roomsui_head_hit(&d, 26 + i * (avail / nr + 4) + avail / nr / 2, 52 + 20) == i);
-    CHECK(roomsui_head_hit(&d, 240, 200) == -1);                       /* the grid */
+    /* Taps: the overview's rows, and a room page's bookings and top. */
+    int nr = d.nrooms, pitch = (480 - 6 - 74) / nr;
+    if (pitch > 72) pitch = 72;
+    for (int i = 0; i < nr; i++) {
+        CHECK(roomsui_head_hit(&d, 60, 74 + i * pitch + pitch / 2) == i);    /* the name */
+        CHECK(roomsui_head_hit(&d, 300, 74 + i * pitch + pitch / 2) == i);   /* the lane */
+    }
     CHECK(roomsui_head_hit(&d, 240, 20) == -1);                        /* the header */
-    CHECK(roomsui_head_hit(NULL, 60, 72) == -1);
+    CHECK(roomsui_head_hit(&d, 240, 470) == -1);                       /* below the last row */
+    CHECK(roomsui_head_hit(NULL, 60, 100) == -1);
     CHECK(roomsui_room_head_hit(240, 20) && roomsui_room_head_hit(240, 80));
     CHECK(!roomsui_room_head_hit(240, 200));
     int rb = 480 - 24;                                                 /* the room page's grid bottom */

@@ -6,10 +6,10 @@
  * five minutes, any other day when it is looked at. It opens on today -- or,
  * after 17:00 and at weekends, on the next working day -- and a swipe left or
  * right moves a working day, passing over Saturday and Sunday; a minute
- * untouched brings it home again. A tap on a booking opens a card with all of
- * it -- who booked it, who is invited -- and a tap on a room's name opens that
- * room's own page: swipe up and down there for the other rooms, and tap its
- * top to come back. Five minutes untouched, the screen goes dark; BOOT, PWR or
+ * untouched brings it home again. It shows a row per room, the day running
+ * across; a tap on a row opens that room's own page, where a tap on a booking
+ * opens a card with all of it -- who booked it, who is invited. Swipe up and
+ * down there for the other rooms, and tap its top to come back. Five minutes untouched, the screen goes dark; BOOT, PWR or
  * a tap wakes it on the home day.
  */
 #include <stdio.h>
@@ -364,18 +364,10 @@ void app_main(void)
                     s_dirty = true;
                 }
             } else if (!moved) {
-                /* The overview: a room's name opens its page, a booking its
-                   card; anywhere else goes home. */
-                int room, r = s_buf_ok ? roomsui_head_hit(buf, x0, y0) : -1;
-                const room_ev_t *e = s_buf_ok ? roomsui_hit(buf, x0, y0, &room) : NULL;
+                /* The overview: a room's row opens its page; anywhere else goes home. */
+                int r = s_buf_ok ? roomsui_head_hit(buf, x0, y0) : -1;
                 if (r >= 0) {
                     s_room = r;
-                    s_dirty = true;
-                } else if (e) {
-                    *s_det_room = buf->room[room];
-                    s_det_ev = *e;
-                    s_det = true;
-                    s_det_at = now_s();
                     s_dirty = true;
                 } else {
                     int h = home_offset();

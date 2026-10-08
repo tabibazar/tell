@@ -17,6 +17,14 @@ only, and a "right now" list of rooms.
 **Sleep:** after 5 minutes untouched the screen goes dark. A side button, or a
 tap, wakes it. This replaces the dim wandering clock (the screen saver).
 
+**Revised the same day, on the board:** six columns were too crowded ("GRAN...",
+"SHOR..."). From a second round of mockups, the overview became a row per room
+with the day running across: the name green or red with "busy till" or "free
+till" under it, bookings as plain blocks, a red line for now. A tap anywhere in
+a row opens that room's page. The overview no longer opens booking cards; the
+room page does. The room page's header lost its seat count, which moved down
+beside the dots. What follows is otherwise as first designed.
+
 ## Not in this
 
 - **The missing Ristretto.** The relay reads `CalendarApp.getAllCalendars()`,
