@@ -45,6 +45,20 @@ void roomsui_detail(canvas_t *c, const room_t *r, const room_ev_t *e, const room
 enum { ROOMSUI_OTHER, ROOMSUI_FREE, ROOMSUI_TAKEN };
 int roomsui_room_status(const room_t *r, const roomsui_view_t *v, char *out, size_t n);
 
+/* One room's page: its name, seats and day, a status strip, and its bookings
+   full width on the same hours as the overview, a dot per room at the foot.
+   With no day, or no such room, it draws the overview instead. */
+void roomsui_room_draw(canvas_t *c, const rooms_day_t *day, int room, const roomsui_view_t *v);
+
+/* The room whose name strip on the overview is under (x, y), or -1. */
+int roomsui_head_hit(const rooms_day_t *day, int x, int y);
+
+/* The booking under (x, y) on room `room`'s page, or NULL. */
+const room_ev_t *roomsui_room_hit(const rooms_day_t *day, int room, int x, int y);
+
+/* Is (x, y) in a room page's header or status strip: the way back? */
+bool roomsui_room_head_hit(int x, int y);
+
 /* The screen saver: the time and date, large and grey on black, at one of
    many places picked by `step` (the caller's minute count), so that nothing
    stands still on the panel for long. */

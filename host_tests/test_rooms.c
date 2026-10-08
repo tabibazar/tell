@@ -156,6 +156,37 @@ int main(void)
     roomsui_draw(&c, &o, &v);
     bmp("weekend");
 
+    /* The room page: CEDAR today at 13:12 (Budget planning, running on into
+       Ops weekly), BIRCH tomorrow, a card over it, and an empty room. */
+    v = (roomsui_view_t){ .offset = 0, .wday = 3, .now = 13 * 60 + 12 };
+    roomsui_room_draw(&c, &d, 0, &v);
+    bmp("room-today");
+    v = (roomsui_view_t){ .offset = 1, .wday = 4, .now = 19 * 60 + 24 };
+    roomsui_room_draw(&c, &d, 4, &v);
+    bmp("room-tomorrow");
+    roomsui_room_draw(&c, &d, 0, &v);
+    roomsui_detail(&c, &d.room[0], &d.room[0].ev[0], &v);
+    bmp("room-detail");
+    v = (roomsui_view_t){ .offset = 3, .wday = 1, .now = 19 * 60 + 24 };
+    roomsui_room_draw(&c, &o, 2, &v);
+    bmp("room-empty");
+
+    /* Taps: the overview's name strips, and a room page's bookings and top. */
+    int nr = d.nrooms, avail = 480 - 26 - 4 - 4 * (nr - 1);
+    for (int i = 0; i < nr; i++)
+        CHECK(roomsui_head_hit(&d, 26 + i * (avail / nr + 4) + avail / nr / 2, 52 + 20) == i);
+    CHECK(roomsui_head_hit(&d, 240, 200) == -1);                       /* the grid */
+    CHECK(roomsui_head_hit(&d, 240, 20) == -1);                        /* the header */
+    CHECK(roomsui_head_hit(NULL, 60, 72) == -1);
+    CHECK(roomsui_room_head_hit(240, 20) && roomsui_room_head_hit(240, 80));
+    CHECK(!roomsui_room_head_hit(240, 200));
+    int rb = 480 - 24;                                                 /* the room page's grid bottom */
+    int ry = gy + (690 - first * 60) * (rb - gy) / span;               /* 11:30, Design review's middle */
+    CHECK(roomsui_room_hit(&d, 0, 240, ry) == &d.room[0].ev[0]);
+    CHECK(roomsui_room_hit(&d, 0, 240, gy + (600 - first * 60) * (rb - gy) / span) == NULL);
+    CHECK(roomsui_room_hit(&d, 0, 240, 30) == NULL);
+    CHECK(roomsui_room_hit(&d, 9, 240, ry) == NULL);
+
     v = (roomsui_view_t){ .offset = 0, .wday = 3, .now = -1 };
     roomsui_draw(&c, NULL, &v);
     bmp("loading");
