@@ -525,6 +525,7 @@ void app_main(void)
 
     net_start();
     console_start();
+    mcpd_on_request(activity);
     mcpd_start(&TOOLS);
     xTaskCreatePinnedToCore(convo_task, "convo", 16384, NULL, 5, NULL, 1);      /* TLS x3 */
 
@@ -632,6 +633,8 @@ void app_main(void)
         down = now_down;
         boot_was = boot_now;
 
+        static bool was_up;
+        if (net_up() != was_up) { was_up = net_up(); s_dirty = true; }   /* the network name at the top */
         static unsigned tick;
         if (s_view.mode == UI_LISTENING && (++tick & 1)) s_dirty = true;   /* the waveform and timer move, ~16 fps */
         if (s_view.mode == UI_VOICES) {
@@ -687,6 +690,7 @@ void app_main(void)
             xSemaphoreTake(s_ui_lock, portMAX_DELAY);
             s_dirty = false;
             s_view.mic_open = s_mic;
+            s_view.ssid = net_up() ? net_ssid() : NULL;
             s_view.levels = s_levels;
             s_view.nlevels = s_nlevels;
             s_view.listen_ms = (int)((now_us - s_listen_t0) / 1000);

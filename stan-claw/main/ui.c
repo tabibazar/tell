@@ -81,9 +81,33 @@ static int para(canvas_t *c, const aafont_t *f, const char *s, int x, int y, int
     return y;
 }
 
+/* A WiFi mark: three arcs over a dot, drawn as rings cut to their top
+   quarter, centred on (cx, base). */
+static void wifi_mark(canvas_t *c, int cx, int base, uint16_t col)
+{
+    canvas_disc(c, cx, base - 1, 2, col);
+    for (int r = 5; r <= 13; r += 4)
+        for (int dx = -r; dx <= r; dx++)
+            for (int dy = -r; dy <= 0; dy++) {
+                int d2 = dx * dx + dy * dy;
+                if (d2 <= r * r && d2 > (r - 2) * (r - 2) && -dy * 10 >= (dx < 0 ? -dx : dx) * 8)
+                    canvas_fill_rect(c, cx + dx, base - 1 + dy, 1, 1, col);
+            }
+}
+
 static void header(canvas_t *c, const ui_view_t *v)
 {
     aafont_draw(c, &aafont_rooms_small, 16, 18, "stan-claw", C_DIM, AAFONT_LEFT);
+    /* The network, top centre: the mark and the name as one, centred. */
+    const aafont_t *f = &aafont_rooms_small;
+    bool on = v->ssid && v->ssid[0];
+    char name[34];
+    snprintf(name, sizeof name, "%s", on ? v->ssid : "no WiFi");
+    while (name[0] && aafont_width(f, name) > 220) name[strlen(name) - 1] = 0;
+    int w = 16 + 8 + aafont_width(f, name), x = (W - w) / 2;
+    uint16_t col = on ? C_DIM : C_AMBER;
+    wifi_mark(c, x + 8, 18 + f->cap, col);
+    aafont_draw(c, f, x + 24, 18, name, col, AAFONT_LEFT);
     if (v->now >= 0) {
         char t[24];
         snprintf(t, sizeof t, "%d:%02d", v->now / 60 % 24, v->now % 60);

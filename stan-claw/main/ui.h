@@ -22,6 +22,7 @@ typedef struct {
     ui_mode_t mode;
     bool mic_open;
     int now;                 /* minute of the day for the clock; -1 none */
+    const char *ssid;        /* the WiFi joined, shown top centre; NULL or "" when none */
     const char *heard;       /* what the person said */
     const char *text;        /* the answer, an error's detail, an agent's text */
     const char *title;       /* an error's or an agent's title */

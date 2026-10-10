@@ -15,6 +15,9 @@ static const char *TAG = "mcpd";
 #define BODY_MAX (400 * 1024)     /* a 200 KB JPEG in base64, and room */
 
 static const mcp_tools_t *s_tools;
+static void (*s_on_request)(void);
+
+void mcpd_on_request(void (*cb)(void)) { s_on_request = cb; }
 static char s_session[33];
 
 static bool authorized(httpd_req_t *r)
@@ -22,7 +25,10 @@ static bool authorized(httpd_req_t *r)
     char h[CFG_VAL + 16] = "", tok[CFG_VAL];
     httpd_req_get_hdr_value_str(r, "Authorization", h, sizeof h);
     cfg_get(CFG_SERVE_TOKEN, tok, sizeof tok);
-    if (mcp_auth_ok(h, tok)) return true;
+    if (mcp_auth_ok(h, tok)) {
+        if (s_on_request) s_on_request();
+        return true;
+    }
     ESP_LOGW(TAG, "refused a request without the right token");
     httpd_resp_set_status(r, "401 Unauthorized");
     httpd_resp_set_hdr(r, "WWW-Authenticate", "Bearer");

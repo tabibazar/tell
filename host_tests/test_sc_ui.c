@@ -41,7 +41,7 @@ int main(void)
     canvas_t c;
     canvas_init(&c, fb, 480, 480, 1);
 
-    ui_view_t v = { .mode = UI_HOME, .now = 9 * 60 + 41 };
+    ui_view_t v = { .mode = UI_HOME, .now = 9 * 60 + 41, .ssid = "Office WiFi" };
     ui_draw(&c, &v); bmp("home");
     uint16_t banner_off = fb[10 * 480 + 240];
     v.note = "Deepgram key missing";
