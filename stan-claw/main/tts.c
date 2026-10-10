@@ -13,9 +13,13 @@
 /* Bytes arrive in any size; samples are two bytes: keep an odd one over. */
 typedef struct { uint8_t odd; bool have_odd; bool ok; fx_t fx; } play_ctx_t;
 
+static volatile bool s_stop;
+void tts_abort(void) { s_stop = true; }
+
 static bool play_sink(const uint8_t *d, int len, void *vctx)
 {
     play_ctx_t *p = vctx;
+    if (s_stop) return false;                           /* abandon the rest of the stream */
     static int16_t s[1100];
     while (len > 0) {
         int k = 0;
@@ -61,6 +65,7 @@ int tts_speak_as(const char *voice, fx_kind_t fxk, const char *text)
     memset(&p, 0, sizeof p);
     p.ok = true;
     fx_init(&p.fx, fxk);
+    s_stop = false;
     audio_play_begin();
     int code = https_post(url, h, 1, "application/json", body, strlen(body), 20000, NULL, 0, play_sink, &p);
     audio_play_end();

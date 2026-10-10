@@ -6,6 +6,9 @@
 #define TTS_NO_VOICE (-2)
 int tts_speak(const char *text);
 
+/* Stops speech in progress (a tap ending a conversation). */
+void tts_abort(void);
+
 #include "fx.h"
 
 /* The same in a given voice and effect -- for the settings page's samples. */

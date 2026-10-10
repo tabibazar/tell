@@ -41,6 +41,8 @@ static void (*s_mic_cb)(bool);
 void audio_on_mic(void (*cb)(bool open)) { s_mic_cb = cb; }
 
 static void (*s_level_cb)(int);
+static volatile bool s_abort;
+void audio_abort(void) { s_abort = true; }
 void audio_on_level(void (*cb)(int rms)) { s_level_cb = cb; }
 
 static int frame_rms(const int16_t *p, int n)
@@ -158,6 +160,7 @@ int audio_record(int16_t *buf, int max_samples, int max_ms, vad_result_t *why)
     vad_init(&v, AUDIO_FS, max_ms);
     int n = 0;
     vad_result_t r = VAD_WAITING;
+    s_abort = false;
     if (s_mic_cb) s_mic_cb(true);
     drain_rx(tdm, sizeof tdm);
     while (n + FRAME <= max_samples) {
@@ -167,6 +170,7 @@ int audio_record(int16_t *buf, int max_samples, int max_ms, vad_result_t *why)
             break;
         }
         for (int i = 0; i < FRAME; i++) buf[n + i] = tdm[i * SLOTS + SLOT_MIC];
+        if (s_abort) { r = VAD_SILENT; break; }
         if (s_level_cb) s_level_cb(frame_rms(buf + n, FRAME));
         r = vad_feed(&v, buf + n, FRAME);
         n += FRAME;

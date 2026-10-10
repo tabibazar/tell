@@ -283,37 +283,59 @@ static const char *service_error(const char *who, int code, char *buf, size_t n)
 }
 
 /* A tap or BOOT: listen, transcribe, ask, speak. Holds s_busy throughout. */
+/* A conversation: listen, transcribe, ask, speak -- and then listen again,
+   round after round, until a tap ends it (s_stop) or nobody speaks for 30 s.
+   Holds s_busy throughout. Claude keeps the last CLAUDE_TURNS exchanges. */
+static volatile bool s_stop, s_convo;
+#define CONVO_QUIET_S 30
+
 static void conversation(void)
 {
     char err[64];
     if (!net_up()) { set_view(UI_HOME, NULL, NULL, NULL, "no WiFi"); return; }
-    set_view(UI_LISTENING, NULL, NULL, NULL, NULL);
-    vad_result_t why;
-    int n = audio_record(s_pcm, AUDIO_FS * REC_MAX_S, REC_MAX_S * 1000, &why);
-    if (why == VAD_SILENT) { set_view(UI_HOME, NULL, NULL, NULL, "didn't catch that"); return; }
-
-    set_view(UI_THINKING, "...", NULL, NULL, NULL);
     static char heard[600];
-    int code = stt_transcribe(s_pcm, n, heard, sizeof heard);
-    if (code != 200) { set_view(UI_ERROR, NULL, "Check the key with: tools/stan-claw.py status", service_error("Deepgram", code, err, sizeof err), NULL); return; }
-    if (!heard[0]) { set_view(UI_HOME, NULL, NULL, NULL, "didn't catch that"); return; }
-
-    set_view(UI_THINKING, heard, NULL, NULL, NULL);
     static claude_reply_t reply;
-    code = agent_ask(heard, &reply);
-    if (code != 200) {
-        set_view(UI_ERROR, heard, reply.error[0] ? reply.error : "", service_error("Claude", code, err, sizeof err), NULL);
-        return;
-    }
-    char note[96] = "";
-    if (reply.mcp_error) snprintf(note, sizeof note, "MCP server unreachable");
-    else if (reply.tools[0]) snprintf(note, sizeof note, "asked remote: %.70s", reply.tools);
+    int quiet_s = 0;
+    for (int round = 0; !s_stop; round++) {
+        set_view(UI_LISTENING, NULL, NULL, round ? "Your turn" : NULL, NULL);
+        vad_result_t why;
+        int n = audio_record(s_pcm, AUDIO_FS * REC_MAX_S, REC_MAX_S * 1000, &why);
+        if (s_stop) break;
+        if (why == VAD_SILENT) {
+            quiet_s += REC_MAX_S;
+            if (round == 0) { set_view(UI_HOME, NULL, NULL, NULL, "didn't catch that"); return; }
+            if (quiet_s >= CONVO_QUIET_S) break;
+            continue;
+        }
+        quiet_s = 0;
 
-    set_view(UI_SPEAKING, heard, reply.text, NULL, note);
-    code = tts_speak(reply.text);
-    s_answer_at = esp_timer_get_time();         /* before UI_ANSWER, so the main loop can't time it out at once */
-    if (code != 200) set_view(UI_ANSWER, heard, reply.text, NULL, service_error("ElevenLabs", code, err, sizeof err));
-    else set_view(UI_ANSWER, heard, reply.text, NULL, note);
+        set_view(UI_THINKING, "...", NULL, NULL, NULL);
+        int code = stt_transcribe(s_pcm, n, heard, sizeof heard);
+        if (code != 200) { set_view(UI_ERROR, NULL, "Check the key with: tools/stan-claw.py status", service_error("Deepgram", code, err, sizeof err), NULL); return; }
+        if (!heard[0]) continue;
+        if (s_stop) break;
+
+        set_view(UI_THINKING, heard, NULL, NULL, NULL);
+        code = agent_ask(heard, &reply);
+        if (code != 200) {
+            set_view(UI_ERROR, heard, reply.error[0] ? reply.error : "", service_error("Claude", code, err, sizeof err), NULL);
+            return;
+        }
+        if (s_stop) break;
+        char note[96] = "";
+        if (reply.mcp_error) snprintf(note, sizeof note, "MCP server unreachable");
+        else if (reply.tools[0]) snprintf(note, sizeof note, "asked remote: %.70s", reply.tools);
+
+        set_view(UI_SPEAKING, heard, reply.text, NULL, note);
+        code = tts_speak(reply.text);
+        if (code != 200 && !s_stop) {
+            s_answer_at = esp_timer_get_time();
+            set_view(UI_ANSWER, heard, reply.text, NULL, service_error("ElevenLabs", code, err, sizeof err));
+            return;
+        }
+    }
+    s_answer_at = esp_timer_get_time();
+    set_view(UI_HOME, NULL, NULL, NULL, s_stop ? NULL : "conversation ended");
 }
 
 static void convo_task(void *arg)
@@ -323,7 +345,10 @@ static void convo_task(void *arg)
         if (xSemaphoreTake(s_busy, 0) != pdTRUE) continue;      /* an agent is using it: ignore the tap */
         s_in_use = true;
         activity();
+        s_stop = false;
+        s_convo = true;
         conversation();
+        s_convo = false;
         s_in_use = false;
         activity();
         ESP_LOGI(TAG, "convo stack: %u bytes never used", (unsigned)uxTaskGetStackHighWaterMark(NULL));
@@ -560,6 +585,10 @@ void app_main(void)
             } else if (m == UI_HOME) {
                 if (phit == UI_HIT_TALK) xSemaphoreGive(s_go);
                 else if (phit == UI_HIT_GEAR) set_view(UI_SETTINGS, NULL, NULL, NULL, NULL);
+            } else if (s_convo) {
+                s_stop = true;                                      /* a tap ends the conversation */
+                audio_abort();
+                tts_abort();
             } else if (m != UI_SETTINGS && m != UI_VOICES && m != UI_LISTENING && m != UI_THINKING && m != UI_SPEAKING) {
                 set_view(UI_HOME, NULL, NULL, NULL, NULL);          /* a tap clears answers and agent screens */
             }

@@ -28,6 +28,10 @@ void audio_on_mic(void (*cb)(bool open));
    listening page's waveform. From the recording task: keep it short. */
 void audio_on_level(void (*cb)(int rms));
 
+/* Ends a recording in progress at the next frame (a tap ending a conversation);
+   audio_record then reports VAD_SILENT. Cleared when the next recording starts. */
+void audio_abort(void);
+
 /* Developer tools for the console. audio_slot_levels records `ms` of the
    ES7210's raw TDM frames (all four slots), playing `tone` (looped, may be
    NULL) as it goes, and gives each slot's peak, RMS, and the RMS of its

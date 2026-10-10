@@ -403,7 +403,8 @@ static uint16_t mix(uint16_t a, uint16_t b, float t)
 #define BAR_GAP  3
 static void listening(canvas_t *c, const ui_view_t *v)
 {
-    aafont_draw(c, &aafont_rooms_head, W / 2, 96, "Go ahead, I'm listening", C_TEXT, AAFONT_CENTRE);
+    aafont_draw(c, &aafont_rooms_head, W / 2, 96, v->title && v->title[0] ? v->title : "Go ahead, I'm listening",
+                C_TEXT, AAFONT_CENTRE);
     int span = UI_WAVE_BARS * (BAR_W + BAR_GAP) - BAR_GAP;
     int x0 = (W - span) / 2;
     uint16_t hot = RGB(0xFF, 0x6B, 0x5E), cold = RGB(0x3A, 0x22, 0x24);
@@ -424,7 +425,7 @@ static void listening(canvas_t *c, const ui_view_t *v)
     int s10 = v->listen_ms / 100;
     snprintf(t, sizeof t, "%d.%d s", s10 / 10, s10 % 10);
     aafont_draw(c, &aafont_inter_sub, W / 2, WAVE_Y + WAVE_H + 34, t, C_DIM, AAFONT_CENTRE | AAFONT_ADVANCE);
-    aafont_draw(c, &aafont_rooms_small, W / 2, H - 52, "pause when you're done", C_DIM, AAFONT_CENTRE);
+    aafont_draw(c, &aafont_rooms_small, W / 2, H - 52, "pause when you're done  -  tap to end", C_DIM, AAFONT_CENTRE);
 }
 
 /* The resting orb: a core and a glow that fades into the black, drawn as
