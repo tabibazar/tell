@@ -4,7 +4,7 @@ CFLAGS = -std=c11 -Wall -Wextra -Werror -g -I../main
 VIEW_SRCS = $(wildcard ../main/view_*.c)
 UD_SRCS = ../main/usagedata.c $(wildcard ../main/ud_*.c)
 
-all: test_textwrap test_font test_font_clock test_timecalc test_canvas test_usagedata test_pages test_views test_drift test_envstore test_envpage test_ens160 test_settings test_ds3231 test_level test_levelbig test_particles test_pip test_maze test_bubblelevel test_vector test_moonphase test_pcf85063 test_face test_envstate test_envui test_aafont test_soundlevel test_ring test_noiseui test_daysui test_liveui test_airui test_rooms
+all: test_textwrap test_font test_font_clock test_timecalc test_canvas test_usagedata test_pages test_views test_drift test_envstore test_envpage test_ens160 test_settings test_ds3231 test_level test_levelbig test_particles test_pip test_maze test_bubblelevel test_vector test_moonphase test_pcf85063 test_face test_envstate test_envui test_aafont test_soundlevel test_ring test_noiseui test_daysui test_liveui test_airui test_rooms test_sc_cmdline test_sc_mcp
 
 test_textwrap: test_textwrap.c ../main/textwrap.c
 	cc $(CFLAGS) -o $@ $^
@@ -119,7 +119,7 @@ test_daysui: $(DAYSUI_SRCS) ../main/daysui.h ../main/noiseui.h ../main/ring.h ..
 	$(CC) $(CFLAGS) -o $@ $(DAYSUI_SRCS) -lm
 
 clean:
-	rm -f test_daysui test_noiseui test_aafont test_soundlevel test_ring test_vector test_moonphase test_pcf85063 test_face test_ens160 test_envpage test_envstate test_envui test_envstore test_drift test_textwrap test_font test_font_clock test_timecalc test_canvas test_usagedata test_pages test_views test_settings test_ds3231 test_level test_levelbig test_particles test_pip test_maze
+	rm -f test_daysui test_noiseui test_aafont test_soundlevel test_ring test_vector test_moonphase test_pcf85063 test_face test_ens160 test_envpage test_envstate test_envui test_envstore test_drift test_textwrap test_font test_font_clock test_timecalc test_canvas test_usagedata test_pages test_views test_settings test_ds3231 test_level test_levelbig test_particles test_pip test_maze test_sc_mcp
 
 .PHONY: all clean
 
@@ -148,3 +148,6 @@ test_rooms: $(ROOMS_SRCS) ../panel1/main/rooms.h ../panel1/main/roomsui.h $(wild
 SC = ../stan-claw/main
 test_sc_cmdline: test_sc_cmdline.c $(SC)/cmdline.c $(SC)/cmdline.h
 	$(CC) $(CFLAGS) -I$(SC) -o $@ test_sc_cmdline.c $(SC)/cmdline.c
+
+test_sc_mcp: test_sc_mcp.c $(SC)/mcp_rpc.c $(SC)/mcp_rpc.h $(CJSON)/cJSON.c
+	$(CC) $(CFLAGS) -I$(SC) -I$(CJSON) -o $@ test_sc_mcp.c $(SC)/mcp_rpc.c $(CJSON)/cJSON.c
