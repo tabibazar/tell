@@ -144,3 +144,7 @@ CJSON = $(HOME)/esp/esp-idf/components/json/cJSON
 ROOMS_SRCS = test_rooms.c ../panel1/main/rooms.c ../panel1/main/roomsui.c ../panel1/main/fonts.c ../main/aafont.c ../main/vector.c ../main/canvas.c ../main/textwrap.c $(CJSON)/cJSON.c
 test_rooms: $(ROOMS_SRCS) ../panel1/main/rooms.h ../panel1/main/roomsui.h $(wildcard ../panel1/main/font_*.h)
 	$(CC) $(CFLAGS) -I$(CJSON) -I../panel1/main -Wno-unused-result -o $@ $(ROOMS_SRCS) -lm
+
+SC = ../stan-claw/main
+test_sc_cmdline: test_sc_cmdline.c $(SC)/cmdline.c $(SC)/cmdline.h
+	$(CC) $(CFLAGS) -I$(SC) -o $@ test_sc_cmdline.c $(SC)/cmdline.c

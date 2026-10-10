@@ -102,3 +102,4 @@ panel1/sdkconfig.old
 stan-claw/sdkconfig
 stan-claw/sdkconfig.old
 .superpowers/
+host_tests/test_sc_cmdline
