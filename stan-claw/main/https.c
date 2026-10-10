@@ -16,12 +16,12 @@ int https_post(const char *url, const https_hdr_t *hdrs, int nhdrs, const char *
 {
     if (resp) *resp = NULL;
     esp_http_client_config_t cfg = {
-        .url = url, .method = HTTP_METHOD_POST, .crt_bundle_attach = esp_crt_bundle_attach,
+        .url = url, .method = body ? HTTP_METHOD_POST : HTTP_METHOD_GET, .crt_bundle_attach = esp_crt_bundle_attach,
         .timeout_ms = timeout_ms, .buffer_size = 4096, .buffer_size_tx = 2048,
     };
     esp_http_client_handle_t c = esp_http_client_init(&cfg);
     if (!c) return -1;
-    esp_http_client_set_header(c, "Content-Type", ctype);
+    if (ctype) esp_http_client_set_header(c, "Content-Type", ctype);
     for (int i = 0; i < nhdrs; i++) esp_http_client_set_header(c, hdrs[i].name, hdrs[i].value);
     int status = -1;
     if (esp_http_client_open(c, (int)len) == ESP_OK) {

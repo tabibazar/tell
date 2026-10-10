@@ -36,13 +36,22 @@ static bool play_sink(const uint8_t *d, int len, void *vctx)
 
 int tts_speak(const char *text)
 {
-    char key[CFG_VAL], voice[CFG_VAL], url[CFG_VAL + 100];
-    cfg_get(CFG_ELEVEN_KEY, key, sizeof key);
+    char voice[CFG_VAL];
     cfg_get(CFG_VOICE, voice, sizeof voice);
+    return tts_speak_in(voice, text);
+}
+
+int tts_speak_in(const char *voice, const char *text)
+{
+    char key[CFG_VAL], url[CFG_VAL + 100], sp[16];
+    cfg_get(CFG_ELEVEN_KEY, key, sizeof key);
+    cfg_get(CFG_SPEED, sp, sizeof sp);
+    float speed = sp[0] ? (float)atof(sp) : 1.0f;
+    if (speed < 0.7f || speed > 1.2f) speed = 1.0f;
     if (!key[0]) return 0;
     if (!voice[0]) return TTS_NO_VOICE;
     snprintf(url, sizeof url, "https://api.elevenlabs.io/v1/text-to-speech/%s/stream?output_format=pcm_16000", voice);
-    char *body = elevenlabs_body(text);
+    char *body = elevenlabs_body(text, speed);
     if (!body) return -1;
     https_hdr_t h[] = { { "xi-api-key", key } };
     play_ctx_t p = { .ok = true };

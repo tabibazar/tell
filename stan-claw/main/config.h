@@ -22,7 +22,9 @@ typedef struct {
 
 typedef enum {
     CFG_CLAUDE_KEY, CFG_DEEPGRAM_KEY, CFG_ELEVEN_KEY, CFG_VOICE, CFG_MODEL,
-    CFG_MCP_URL, CFG_MCP_TOKEN, CFG_SERVE_TOKEN, CFG_N
+    CFG_MCP_URL, CFG_MCP_TOKEN, CFG_SERVE_TOKEN,
+    CFG_VOICE_NAME, CFG_VOLUME, CFG_SPEED,      /* set on the settings page */
+    CFG_N
 } cfg_key_t;
 
 void cfg_load(void);

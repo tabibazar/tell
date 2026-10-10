@@ -50,7 +50,7 @@ int main(void)
     free(req);
 
     for (int i = 0; i < 9; i++) { char u[8]; snprintf(u, sizeof u, "q%d", i); claude_history_add(&h, u, "a"); }
-    CHECK(h.n == CLAUDE_TURNS && strcmp(h.pair[0].user, "q3") == 0);       /* the oldest dropped */
+    CHECK(h.n == CLAUDE_TURNS && strcmp(h.pair[0].user, "q2") == 0);       /* the oldest dropped */
 
     claude_reply_t r;
     CHECK(claude_parse("{\"type\":\"message\",\"content\":[{\"type\":\"text\",\"text\":\"It is noon.\"}],\"stop_reason\":\"end_turn\"}", &r));

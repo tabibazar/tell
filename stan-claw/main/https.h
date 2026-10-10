@@ -17,4 +17,10 @@ int https_post(const char *url, const https_hdr_t *hdrs, int nhdrs, const char *
                const void *body, size_t len, int timeout_ms, char **resp, size_t max,
                https_sink_t sink, void *ctx);
 
+/* A GET: https_post with no body (and no content type). */
+static inline int https_get(const char *url, const https_hdr_t *hdrs, int nhdrs, int timeout_ms, char **resp, size_t max)
+{
+    return https_post(url, hdrs, nhdrs, NULL, NULL, 0, timeout_ms, resp, max, NULL, NULL);
+}
+
 #endif /* HTTPS_H */

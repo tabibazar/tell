@@ -25,7 +25,7 @@ int main(void)
     CHECK(!deepgram_transcript("{\"err_code\":\"INVALID_AUTH\"}", t, sizeof t));
     CHECK(!deepgram_transcript("nope", t, sizeof t));
 
-    char *b = elevenlabs_body("Say \"hi\"\n");
+    char *b = elevenlabs_body("Say \"hi\"\n", 1.0f);
     CHECK(b && strstr(b, "\"text\":\"Say \\\"hi\\\"\\n\"") && strstr(b, "\"model_id\":\"eleven_flash_v2_5\""));
     free(b);
 

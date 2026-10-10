@@ -10,7 +10,7 @@
  */
 #include <stdbool.h>
 
-#define CLAUDE_TURNS 6
+#define CLAUDE_TURNS 7
 #define CLAUDE_SYSTEM "You are stan-claw, a voice assistant on a small screen. Answer in one to three short spoken sentences."
 
 typedef struct {

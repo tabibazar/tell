@@ -39,11 +39,15 @@ bool deepgram_transcript(const char *json, char *out, size_t n)
     return ok;
 }
 
-char *elevenlabs_body(const char *text)
+char *elevenlabs_body(const char *text, float speed)
 {
     cJSON *o = cJSON_CreateObject();
     cJSON_AddStringToObject(o, "text", text);
     cJSON_AddStringToObject(o, "model_id", "eleven_flash_v2_5");
+    if (speed < 0.99f || speed > 1.01f) {
+        cJSON *vs = cJSON_AddObjectToObject(o, "voice_settings");
+        cJSON_AddNumberToObject(vs, "speed", speed);
+    }
     char *s = cJSON_PrintUnformatted(o);
     cJSON_Delete(o);
     return s;

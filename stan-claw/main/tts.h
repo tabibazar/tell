@@ -5,4 +5,7 @@
    connection. */
 #define TTS_NO_VOICE (-2)
 int tts_speak(const char *text);
+
+/* The same in a given voice -- for the settings page's samples. */
+int tts_speak_in(const char *voice_id, const char *text);
 #endif /* TTS_H */

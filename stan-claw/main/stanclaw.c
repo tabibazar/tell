@@ -15,6 +15,7 @@
  */
 #include <math.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/time.h>
 #include <time.h>
@@ -33,6 +34,7 @@
 #include "nvs_flash.h"
 
 #include "agent.h"
+#include "https.h"
 #include "audio.h"
 #include "config.h"
 #include "console.h"
@@ -47,6 +49,7 @@
 #include "touch.h"
 #include "tts.h"
 #include "ui.h"
+#include "voices.h"
 
 static const char *TAG = "stanclaw";
 
@@ -62,6 +65,8 @@ static uint16_t *s_image;              /* PSRAM, 480x480 RGB565 */
 static volatile bool s_dirty = true, s_mic;
 static int64_t s_answer_at;
 static int16_t *s_pcm;                 /* PSRAM, REC_MAX_S (or 30 s for listen) of audio */
+
+static void set_view(ui_mode_t mode, const char *heard, const char *text, const char *title, const char *note);
 
 /* Rest (rest.h): untouched for 45 s the screen breathes, then sleeps. Anything
    holding s_busy counts as use; a touch, BOOT, a knock or an agent's call
@@ -114,6 +119,128 @@ static void deep_sleep_now(bool panel_up)
     esp_sleep_enable_timer_wakeup((uint64_t)secs * 1000000ULL);
     esp_sleep_enable_ext0_wakeup(GPIO_NUM_0, 0);
     esp_deep_sleep_start();
+}
+
+/* ---- settings ---- */
+
+static int s_volume = 70, s_speed = 1, s_model = 0;
+static char s_voice_name[32], s_cur_voice[40];
+static voice_t *s_voices;              /* PSRAM, VOICES_MAX */
+static volatile int s_nvoices = -1;    /* -1 loading, -2 could not */
+static int s_scroll, s_sel = -1;
+static volatile bool s_job;            /* a fetch, sample or tone is running */
+#define JOB_FETCH (-2)
+#define JOB_TONE  (-1)
+
+static const char *const SPEEDS[3] = { "0.85", "1.0", "1.15" };
+static const char *const MODELS[2] = { "claude-sonnet-5", "claude-haiku-4-5-20251001" };
+
+static void settings_load(void)
+{
+    char v[CFG_VAL];
+    cfg_get(CFG_VOLUME, v, sizeof v);
+    s_volume = v[0] ? atoi(v) : 70;
+    if (s_volume < 0 || s_volume > 100) s_volume = 70;
+    audio_set_volume(s_volume);
+    cfg_get(CFG_SPEED, v, sizeof v);
+    s_speed = strcmp(v, SPEEDS[0]) == 0 ? 0 : strcmp(v, SPEEDS[2]) == 0 ? 2 : 1;
+    cfg_get(CFG_MODEL, v, sizeof v);
+    s_model = strstr(v, "haiku") ? 1 : 0;
+    cfg_get(CFG_VOICE, s_cur_voice, sizeof s_cur_voice);
+    cfg_get(CFG_VOICE_NAME, s_voice_name, sizeof s_voice_name);
+    if (!s_voice_name[0] && s_cur_voice[0]) snprintf(s_voice_name, sizeof s_voice_name, "Current voice");
+}
+
+static void fetch_voices(void)
+{
+    char key[CFG_VAL];
+    cfg_get(CFG_ELEVEN_KEY, key, sizeof key);
+    if (!key[0] || !s_voices) { s_nvoices = -2; return; }
+    https_hdr_t h[] = { { "xi-api-key", key } };
+    char *resp = NULL;
+    int code = https_get("https://api.elevenlabs.io/v1/voices", h, 1, 15000, &resp, 256 * 1024);
+    int n = code == 200 && resp ? voices_parse(resp, s_voices, VOICES_MAX) : -1;
+    free(resp);
+    if (n < 0) { ESP_LOGW(TAG, "voices: HTTP %d", code); s_nvoices = -2; s_dirty = true; return; }
+    for (int i = 0; i < n; i++) {
+        if (strcmp(s_voices[i].id, s_cur_voice) == 0 && strcmp(s_voice_name, s_voices[i].name) != 0) {
+            snprintf(s_voice_name, sizeof s_voice_name, "%s", s_voices[i].name);
+            cfg_set(CFG_VOICE_NAME, s_voice_name);
+        }
+    }
+    s_nvoices = n;
+    s_dirty = true;
+}
+
+static void tone(void)
+{
+    static int16_t t[AUDIO_FS / 6];
+    for (int i = 0; i < AUDIO_FS / 6; i++) {
+        float env = i < 400 ? i / 400.0f : (AUDIO_FS / 6 - i) / (float)(AUDIO_FS / 6);
+        t[i] = (int16_t)(7000 * env * sinf(2 * 3.14159f * 660 * i / AUDIO_FS));
+    }
+    audio_play_begin();
+    audio_play_chunk(t, AUDIO_FS / 6);
+    audio_play_end();
+}
+
+static void job_task(void *arg)
+{
+    int what = (int)(intptr_t)arg;
+    if (xSemaphoreTake(s_busy, pdMS_TO_TICKS(what == JOB_FETCH ? 10000 : 0)) == pdTRUE) {
+        s_in_use = true;
+        activity();
+        if (what == JOB_FETCH) {
+            fetch_voices();
+        } else if (what == JOB_TONE) {
+            tone();
+        } else if (what >= 0 && what < s_nvoices) {
+            char id[40], text[64];
+            snprintf(id, sizeof id, "%s", s_voices[what].id);
+            snprintf(text, sizeof text, "Hi, I'm %s.", s_voices[what].name);
+            tts_speak_in(id, text);
+        }
+        s_in_use = false;
+        activity();
+        xSemaphoreGive(s_busy);
+    } else if (what == JOB_FETCH) {
+        s_nvoices = -2;
+        s_dirty = true;
+    }
+    s_job = false;
+    vTaskDelete(NULL);
+}
+
+static void job(int what)
+{
+    if (s_job) return;
+    s_job = true;
+    if (xTaskCreatePinnedToCore(job_task, "job", 16384, (void *)(intptr_t)what, 4, NULL, 1) != pdPASS) s_job = false;
+}
+
+static void open_voices(void)
+{
+    s_nvoices = -1;
+    s_scroll = 0;
+    s_sel = -1;
+    set_view(UI_VOICES, NULL, NULL, NULL, NULL);
+    job(JOB_FETCH);
+}
+
+/* The page fields of the view, from the settings state (main loop only). */
+static void sync_view(void)
+{
+    xSemaphoreTake(s_ui_lock, portMAX_DELAY);
+    s_view.voice_name = s_voice_name;
+    s_view.volume = s_volume;
+    s_view.speed = s_speed;
+    s_view.model = s_model;
+    s_view.voices = s_voices;
+    s_view.nvoices = s_nvoices;
+    s_view.scroll = s_scroll;
+    s_view.sel = s_sel;
+    s_view.cur_voice = s_cur_voice;
+    xSemaphoreGive(s_ui_lock);
 }
 
 static bool office_now(void)
@@ -351,6 +478,11 @@ static bool t_clear(char *out, size_t n)
 static bool t_volume(int level, char *out, size_t n)
 {
     audio_set_volume(level);
+    s_volume = audio_volume();
+    char v[8];
+    snprintf(v, sizeof v, "%d", s_volume);
+    cfg_set(CFG_VOLUME, v);
+    s_dirty = true;
     snprintf(out, n, "%d", audio_volume());
     return true;
 }
@@ -408,6 +540,8 @@ void app_main(void)
     if (audio_init() != ESP_OK) set_view(UI_ERROR, NULL, "The speaker or microphones did not start.", "Audio failed", NULL);
     audio_on_mic(on_mic);
     audio_on_level(on_level);
+    s_voices = heap_caps_calloc(VOICES_MAX, sizeof(voice_t), MALLOC_CAP_SPIRAM);
+    settings_load();
     gpio_config_t boot = { .pin_bit_mask = 1ULL << PIN_BOOT, .mode = GPIO_MODE_INPUT, .pull_up_en = GPIO_PULLUP_ENABLE };
     gpio_config(&boot);
 
@@ -424,14 +558,72 @@ void app_main(void)
         bool now_down = touch && touch_read(&x, &y);
         bool boot_now = gpio_get_level(PIN_BOOT) != 0;
         bool awake = s_light == 100;
-        if (now_down && !down && !awake) {
-            activity();                     /* a tap on a resting screen only wakes it */
-        } else if (now_down && !down) {
+        sync_view();
+        static bool ignore, moved;
+        static int py, lx, ly, scroll0, pval;
+        static ui_hit_t phit;
+        if (now_down) { lx = x; ly = y; }
+        if (now_down && !down) {                                    /* a press */
             activity();
+            ignore = !awake;                                        /* on a resting screen it only wakes */
+            moved = false;
+            py = y; scroll0 = s_scroll;
+            phit = ignore ? UI_HIT_NONE : ui_hit(&s_view, x, y, &pval);
             ui_mode_t m = s_view.mode;
-            if (m == UI_HOME ? ui_hit_talk(x, y) : (m != UI_LISTENING && m != UI_THINKING && m != UI_SPEAKING)) {
-                if (m == UI_HOME) xSemaphoreGive(s_go);
-                else set_view(UI_HOME, NULL, NULL, NULL, NULL);          /* a tap clears answers and agent screens */
+            if (ignore) {
+            } else if (m == UI_HOME) {
+                if (phit == UI_HIT_TALK) xSemaphoreGive(s_go);
+                else if (phit == UI_HIT_GEAR) set_view(UI_SETTINGS, NULL, NULL, NULL, NULL);
+            } else if (m != UI_SETTINGS && m != UI_VOICES && m != UI_LISTENING && m != UI_THINKING && m != UI_SPEAKING) {
+                set_view(UI_HOME, NULL, NULL, NULL, NULL);          /* a tap clears answers and agent screens */
+            }
+        } else if (now_down && down && !ignore) {                   /* a drag */
+            activity();
+            if (s_view.mode == UI_SETTINGS && phit == UI_HIT_VOLUME) {
+                int vol = ui_slider_value(x);
+                if (vol != s_volume) { s_volume = vol; audio_set_volume(vol); s_dirty = true; }
+            } else if (s_view.mode == UI_VOICES && (moved || abs(y - py) > 10)) {
+                moved = true;
+                int sc = scroll0 - (y - py), mx = ui_voices_max_scroll(&s_view);
+                sc = sc < 0 ? 0 : sc > mx ? mx : sc;
+                if (sc != s_scroll) { s_scroll = sc; s_dirty = true; }
+            }
+        } else if (!now_down && down && !ignore) {                  /* a release */
+            ui_mode_t m = s_view.mode;
+            if (m == UI_SETTINGS) {
+                if (phit == UI_HIT_VOLUME) {
+                    char v[8];
+                    snprintf(v, sizeof v, "%d", s_volume);
+                    cfg_set(CFG_VOLUME, v);
+                    job(JOB_TONE);
+                } else if (!moved && phit == UI_HIT_BACK) {
+                    set_view(UI_HOME, NULL, NULL, NULL, NULL);
+                } else if (!moved && phit == UI_HIT_VOICE) {
+                    open_voices();
+                } else if (!moved && phit == UI_HIT_SPEED) {
+                    s_speed = pval;
+                    cfg_set(CFG_SPEED, SPEEDS[pval]);
+                    s_dirty = true;
+                } else if (!moved && phit == UI_HIT_MODEL) {
+                    s_model = pval;
+                    cfg_set(CFG_MODEL, MODELS[pval]);
+                    s_dirty = true;
+                }
+            } else if (m == UI_VOICES && !moved) {
+                (void)lx; (void)ly;
+                if (phit == UI_HIT_BACK) {
+                    set_view(UI_SETTINGS, NULL, NULL, NULL, NULL);
+                } else if (phit == UI_HIT_ROW) {
+                    s_sel = pval;
+                    s_dirty = true;
+                    job(pval);                                      /* "Hi, I'm Bella." */
+                } else if (phit == UI_HIT_USE && s_sel >= 0 && s_sel < s_nvoices) {
+                    snprintf(s_cur_voice, sizeof s_cur_voice, "%s", s_voices[s_sel].id);
+                    snprintf(s_voice_name, sizeof s_voice_name, "%s", s_voices[s_sel].name);
+                    cfg_set(CFG_VOICE, s_cur_voice);
+                    cfg_set(CFG_VOICE_NAME, s_voice_name);
+                    set_view(UI_SETTINGS, NULL, NULL, NULL, NULL);
+                }
             }
         }
         if (!boot_now && boot_was) {
@@ -448,6 +640,9 @@ void app_main(void)
 
         static unsigned tick;
         if (s_view.mode == UI_LISTENING && (++tick & 1)) s_dirty = true;   /* the waveform and timer move, ~16 fps */
+        if ((s_view.mode == UI_SETTINGS || s_view.mode == UI_VOICES)
+            && esp_timer_get_time() - s_active_at > REST_BREATHE_S * 1000000LL)
+            set_view(UI_HOME, NULL, NULL, NULL, NULL);
         if (s_view.mode == UI_ANSWER && esp_timer_get_time() - s_answer_at > ANSWER_US)
             set_view(UI_HOME, NULL, NULL, NULL, NULL);
         if (s_view.mode == UI_HOME) {

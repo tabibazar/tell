@@ -90,6 +90,38 @@ int main(void)
     ui_draw(&c, &v);
     CHECK(fb[10 * 480 + 240] == banner_on);                  /* the banner, even resting */
 
+    /* Settings and the voice list. */
+    v = (ui_view_t){ .mode = UI_SETTINGS, .now = 10 * 60, .voice_name = "Roger", .volume = 70, .speed = 1, .model = 0 };
+    ui_draw(&c, &v); bmp("settings");
+    int val;
+    CHECK(ui_hit(&v, 30, 30, &val) == UI_HIT_BACK);
+    CHECK(ui_hit(&v, 240, 110, &val) == UI_HIT_VOICE);
+    CHECK(ui_hit(&v, 240, 218, &val) == UI_HIT_VOLUME && val == 50);
+    CHECK(ui_hit(&v, 450, 218, &val) == UI_HIT_VOLUME && val == 100);
+    CHECK(ui_hit(&v, 380, 310, &val) == UI_HIT_SPEED && val == 2);
+    CHECK(ui_hit(&v, 300, 400, &val) == UI_HIT_MODEL && val == 1);
+    static voice_t vs[25];
+    static const char *const names[] = { "Bella", "Roger", "Sarah", "Laura", "Charlie", "George", "Callum", "River",
+                                         "Harry", "Liam", "Alice", "Matilda" };
+    for (int i = 0; i < 12; i++) {
+        snprintf(vs[i].id, sizeof vs[i].id, "id%d", i);
+        snprintf(vs[i].name, sizeof vs[i].name, "%s", names[i]);
+        snprintf(vs[i].desc, sizeof vs[i].desc, "%s", i % 2 ? "Laid-Back, Casual, Resonant" : "Professional, Bright, Warm");
+        snprintf(vs[i].tags, sizeof vs[i].tags, "female, american, middle aged");
+    }
+    v = (ui_view_t){ .mode = UI_VOICES, .now = 10 * 60, .voices = vs, .nvoices = 12, .scroll = 0, .sel = -1, .cur_voice = "id1" };
+    ui_draw(&c, &v); bmp("voices");
+    CHECK(ui_hit(&v, 200, 64 + 68 + 20, &val) == UI_HIT_ROW && val == 1);
+    v.scroll = 100; v.sel = 3;
+    ui_draw(&c, &v); bmp("voices-scrolled");
+    CHECK(ui_hit(&v, 200, 64 + 20, &val) == UI_HIT_ROW && val == 1);            /* row 1, scrolled half off the top */
+    CHECK(ui_hit(&v, 240, 430, &val) == UI_HIT_USE);
+    CHECK(ui_voices_max_scroll(&v) == 12 * 68 - (404 - 64));
+    v.nvoices = -1;
+    ui_draw(&c, &v); bmp("voices-loading");
+    v = (ui_view_t){ .mode = UI_HOME, .now = 10 * 60 };
+    CHECK(ui_hit(&v, 438, 438, &val) == UI_HIT_GEAR && ui_hit(&v, 240, 250, &val) == UI_HIT_TALK);
+
     CHECK(ui_hit_talk(240, 250));
     CHECK(!ui_hit_talk(20, 460));
 

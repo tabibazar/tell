@@ -38,7 +38,7 @@ All on the board. One file per job:
 | `vad.c` | end of speech: energy above the room's noise floor, then 800 ms of quiet; 15 s cap | pure, host-tested |
 | `stt.c` | WAV to Deepgram, transcript back | `https.c` |
 | `tts.c` | text to ElevenLabs, PCM streamed back and played as it arrives | `https.c`, `audio.c` |
-| `agent.c` | one exchange with Claude: transcript in, answer text out, the MCP connector pointed at the internet server; the last 6 turns kept for follow-ups, forgotten after 2 min idle | `https.c`, `claude_msg.c` |
+| `agent.c` | one exchange with Claude: transcript in, answer text out, the MCP connector pointed at the internet server; the last 7 turns kept for follow-ups, forgotten after 5 min idle | `https.c`, `claude_msg.c` |
 | `claude_msg.c` | builds the Messages request and parses the reply (text, `mcp_tool_use`, `mcp_tool_result`) | pure, host-tested |
 | `mcpd.c` | its own MCP server: JSON-RPC over HTTP POST | `mcp_rpc.c`, `esp_http_server` |
 | `mcp_rpc.c` | MCP JSON-RPC: initialize, tools/list, tools/call dispatch, errors | pure, host-tested |

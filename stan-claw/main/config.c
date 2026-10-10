@@ -12,7 +12,8 @@
 static const char *TAG = "config";
 #define NS "stanclaw"
 
-static const char *const KEYS[CFG_N] = { "k_claude", "k_dg", "k_el", "voice", "model", "mcp_url", "mcp_tok", "srv_tok" };
+static const char *const KEYS[CFG_N] = { "k_claude", "k_dg", "k_el", "voice", "model", "mcp_url", "mcp_tok", "srv_tok",
+                                          "voice_nm", "volume", "speed" };
 static SemaphoreHandle_t s_lock;
 static cfg_net_t s_nets[CFG_NETS];
 static int s_n;
@@ -72,7 +73,7 @@ void cfg_load(void)
         for (size_t i = 0; i < sizeof seed / sizeof seed[0] && seed[i].ssid; i++) add_locked(seed[i].ssid, seed[i].pass);
         import_panel1();
         static const char *const vals[CFG_N] = SC_SEED_VALS;
-        for (int k = 0; k < CFG_N; k++) snprintf(s_val[k], CFG_VAL, "%s", vals[k]);
+        for (int k = 0; k < CFG_N; k++) snprintf(s_val[k], CFG_VAL, "%s", vals[k] ? vals[k] : "");   /* the later keys have no seed */
         save();
         ESP_LOGI(TAG, "seeded: %d network(s)", s_n);
     }

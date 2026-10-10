@@ -9,6 +9,7 @@
 
 void wav_header(uint8_t out[44], int sample_rate, int samples);
 bool deepgram_transcript(const char *json, char *out, size_t n);
-char *elevenlabs_body(const char *text);
+/* speed: ElevenLabs' 0.7-1.2; 1.0 sends no voice_settings, keeping the voice's own. */
+char *elevenlabs_body(const char *text, float speed);
 
 #endif /* SPEECHFMT_H */

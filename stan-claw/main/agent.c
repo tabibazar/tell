@@ -12,7 +12,7 @@
 #include "freertos/task.h"
 #include "https.h"
 
-#define FORGET_US (2LL * 60 * 1000000)
+#define FORGET_US (5LL * 60 * 1000000)
 
 static claude_history_t *s_hist;       /* PSRAM: 12.6 KB internal RAM would rather keep for TLS */
 static int64_t s_last;

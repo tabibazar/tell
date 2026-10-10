@@ -101,6 +101,188 @@ static void talk_button(canvas_t *c, uint16_t col, const char *label, const char
     if (hint) aafont_draw(c, &aafont_rooms_small, W / 2, TALK_Y + TALK_R + 24, hint, C_DIM, AAFONT_CENTRE);
 }
 
+/* ---- settings ---- */
+
+#define GEAR_X 438
+#define GEAR_Y 438
+#define C_LINE RGB(0x24, 0x28, 0x30)
+#define C_KNOB RGB(0xF2, 0xF4, 0xF7)
+#define C_BTN  RGB(0x22, 0x26, 0x2E)
+
+static void gear(canvas_t *c, int cx, int cy)
+{
+    for (int i = 0; i < 8; i++) {
+        static const int dx[8] = { 0, 11, 15, 11, 0, -11, -15, -11 }, dy[8] = { -15, -11, 0, 11, 15, 11, 0, -11 };
+        canvas_disc(c, cx + dx[i], cy + dy[i], 4, C_DIM);
+    }
+    canvas_disc(c, cx, cy, 12, C_DIM);
+    canvas_disc(c, cx, cy, 5, C_BG);
+}
+
+/* A rounded button with centred text; `on` lights it. */
+static void button(canvas_t *c, int x, int y, int w, int h, const char *t, bool on)
+{
+    uint16_t bg = on ? C_BLUE : C_BTN;
+    canvas_fill_rect(c, x + 3, y, w - 6, h, bg);
+    canvas_fill_rect(c, x, y + 3, w, h - 6, bg);
+    canvas_disc(c, x + 3, y + 3, 3, bg);
+    canvas_disc(c, x + w - 4, y + 3, 3, bg);
+    canvas_disc(c, x + 3, y + h - 4, 3, bg);
+    canvas_disc(c, x + w - 4, y + h - 4, 3, bg);
+    aafont_draw(c, &aafont_rooms_title, x + w / 2, y + (h - aafont_rooms_title.cap) / 2, t, on ? C_TEXT : C_DIM, AAFONT_CENTRE);
+}
+
+/* A back chevron and the page's title, on a plain bar. */
+#define TOP_H 64
+static void topbar(canvas_t *c, const char *title)
+{
+    canvas_fill_rect(c, 0, 0, W, TOP_H, C_BG);
+    for (int i = 0; i < 10; i++) {                       /* the chevron: two strokes */
+        canvas_fill_rect(c, 21 + i, 32 - i - 1, 3, 2, C_TEXT);
+        canvas_fill_rect(c, 21 + i, 32 + i - 1, 3, 2, C_TEXT);
+    }
+    aafont_draw(c, &aafont_rooms_head, 52, 32 - aafont_rooms_head.cap / 2, title, C_TEXT, AAFONT_LEFT);
+    canvas_fill_rect(c, 0, TOP_H - 1, W, 1, C_LINE);
+}
+
+/* Layout of the settings page, shared by drawing and hits. */
+#define ROW_VOICE_Y   (TOP_H)
+#define ROW_VOICE_H   86
+#define SLIDER_X0     40
+#define SLIDER_X1     440
+#define SLIDER_Y      218
+#define SPEED_Y       292
+#define MODEL_Y       382
+#define SEG_H         44
+
+static void label(canvas_t *c, int y, const char *t)
+{
+    aafont_draw(c, &aafont_rooms_small, 40, y, t, C_DIM, AAFONT_LEFT);
+}
+
+static void settings(canvas_t *c, const ui_view_t *v)
+{
+    topbar(c, "Settings");
+    /* Voice: name, a hint, a chevron to the list. */
+    label(c, ROW_VOICE_Y + 16, "VOICE");
+    aafont_draw(c, &aafont_inter_sub, 40, ROW_VOICE_Y + 40, v->voice_name && v->voice_name[0] ? v->voice_name : "not chosen",
+                C_TEXT, AAFONT_LEFT);
+    for (int i = 0; i < 8; i++) {
+        canvas_fill_rect(c, 432 + i, ROW_VOICE_Y + 44 - 8 + i, 2, 2, C_DIM);
+        canvas_fill_rect(c, 432 + i, ROW_VOICE_Y + 44 + 8 - i, 2, 2, C_DIM);
+    }
+    canvas_fill_rect(c, 0, ROW_VOICE_Y + ROW_VOICE_H, W, 1, C_LINE);
+
+    /* Volume: a track, the filled part, a knob. */
+    char t[16];
+    label(c, SLIDER_Y - 40, "VOLUME");
+    snprintf(t, sizeof t, "%d", v->volume);
+    aafont_draw(c, &aafont_rooms_small, SLIDER_X1, SLIDER_Y - 40, t, C_DIM, AAFONT_RIGHT);
+    int kx = SLIDER_X0 + v->volume * (SLIDER_X1 - SLIDER_X0) / 100;
+    canvas_fill_rect(c, SLIDER_X0, SLIDER_Y - 2, SLIDER_X1 - SLIDER_X0, 4, C_BTN);
+    canvas_fill_rect(c, SLIDER_X0, SLIDER_Y - 2, kx - SLIDER_X0, 4, C_BLUE);
+    canvas_disc(c, kx, SLIDER_Y, 12, C_KNOB);
+
+    label(c, SPEED_Y - 26, "SPEAKING SPEED");
+    static const char *const sp[3] = { "Slower", "Normal", "Faster" };
+    for (int i = 0; i < 3; i++) button(c, 40 + i * 136, SPEED_Y, 128, SEG_H, sp[i], v->speed == i);
+
+    label(c, MODEL_Y - 26, "CLAUDE");
+    button(c, 40, MODEL_Y, 196, SEG_H, "Sonnet 5 - smarter", v->model == 0);
+    button(c, 244, MODEL_Y, 196, SEG_H, "Haiku 4.5 - faster", v->model == 1);
+}
+
+/* ---- the voice list ---- */
+
+#define LIST_Y0  TOP_H
+#define LIST_Y1  404
+#define ROW_H    68
+
+int ui_voices_max_scroll(const ui_view_t *v)
+{
+    int content = (v->nvoices > 0 ? v->nvoices : 0) * ROW_H, room = LIST_Y1 - LIST_Y0;
+    return content > room ? content - room : 0;
+}
+
+static void check(canvas_t *c, int x, int y, uint16_t col)
+{
+    for (int i = 0; i < 6; i++) canvas_fill_rect(c, x + i, y + i, 3, 3, col);          /* the short stroke */
+    for (int i = 0; i < 12; i++) canvas_fill_rect(c, x + 5 + i, y + 5 - i, 3, 3, col); /* the long one */
+}
+
+static void voices_page(canvas_t *c, const ui_view_t *v)
+{
+    if (v->nvoices < 0) {
+        topbar(c, "Voice");
+        aafont_draw(c, &aafont_inter_sub, W / 2, H / 2 - 10, v->nvoices == -1 ? "Loading voices..." : "Could not load the voices",
+                    C_DIM, AAFONT_CENTRE);
+        return;
+    }
+    for (int i = 0; i < v->nvoices; i++) {
+        int y = LIST_Y0 + i * ROW_H - v->scroll;
+        if (y + ROW_H <= LIST_Y0 || y >= LIST_Y1) continue;
+        const voice_t *vo = &v->voices[i];
+        bool cur = v->cur_voice && strcmp(vo->id, v->cur_voice) == 0;
+        if (i == v->sel) canvas_fill_rect(c, 0, y, W, ROW_H - 1, RGB(0x1A, 0x2A, 0x48));
+        aafont_draw(c, &aafont_rooms_title, 40, y + 14, vo->name, C_TEXT, AAFONT_LEFT);
+        char d[64];
+        snprintf(d, sizeof d, "%s", vo->desc[0] ? vo->desc : vo->tags);
+        while (d[0] && aafont_width(&aafont_rooms_small, d) > 360) d[strlen(d) - 1] = 0;
+        aafont_draw(c, &aafont_rooms_small, 40, y + 40, d, C_DIM, AAFONT_LEFT);
+        if (cur) check(c, 428, y + 26, C_BLUE);
+        canvas_fill_rect(c, 40, y + ROW_H - 1, W - 80, 1, C_LINE);
+    }
+    /* The bars over the list's ends, so a half-scrolled row is cut clean. */
+    topbar(c, "Voice");
+    canvas_fill_rect(c, 0, LIST_Y1, W, H - LIST_Y1, C_BG);
+    canvas_fill_rect(c, 0, LIST_Y1, W, 1, C_LINE);
+    bool chosen = v->sel >= 0 && v->sel < v->nvoices && !(v->cur_voice && strcmp(v->voices[v->sel].id, v->cur_voice) == 0);
+    if (chosen) button(c, 40, LIST_Y1 + 18, W - 80, 50, "Use this voice", true);
+    else aafont_draw(c, &aafont_rooms_small, W / 2, LIST_Y1 + 36, "tap a voice to hear it", C_DIM, AAFONT_CENTRE);
+}
+
+int ui_slider_value(int x)
+{
+    int vol = (x - SLIDER_X0) * 100 / (SLIDER_X1 - SLIDER_X0);
+    return vol < 0 ? 0 : vol > 100 ? 100 : vol;
+}
+
+ui_hit_t ui_hit(const ui_view_t *v, int x, int y, int *value)
+{
+    *value = 0;
+    if (v->mode == UI_HOME) {
+        int dx = x - GEAR_X, dy = y - GEAR_Y;
+        if (dx * dx + dy * dy <= 36 * 36) return UI_HIT_GEAR;
+        return ui_hit_talk(x, y) ? UI_HIT_TALK : UI_HIT_NONE;
+    }
+    if (v->mode != UI_SETTINGS && v->mode != UI_VOICES) return UI_HIT_NONE;
+    if (y < TOP_H && x < 160) return UI_HIT_BACK;
+    if (v->mode == UI_SETTINGS) {
+        if (y >= ROW_VOICE_Y && y < ROW_VOICE_Y + ROW_VOICE_H) return UI_HIT_VOICE;
+        if (y >= SLIDER_Y - 30 && y <= SLIDER_Y + 30) {
+            int vol = (x - SLIDER_X0) * 100 / (SLIDER_X1 - SLIDER_X0);
+            *value = vol < 0 ? 0 : vol > 100 ? 100 : vol;
+            return UI_HIT_VOLUME;
+        }
+        if (y >= SPEED_Y - 6 && y < SPEED_Y + SEG_H + 6 && x >= 40 && x < 440) {
+            *value = (x - 40) / 136;
+            if (*value > 2) *value = 2;
+            return UI_HIT_SPEED;
+        }
+        if (y >= MODEL_Y - 6 && y < MODEL_Y + SEG_H + 6 && x >= 40 && x < 440) {
+            *value = x < 240 ? 0 : 1;
+            return UI_HIT_MODEL;
+        }
+        return UI_HIT_NONE;
+    }
+    if (y >= LIST_Y1) return y < LIST_Y1 + 80 ? UI_HIT_USE : UI_HIT_NONE;
+    if (v->nvoices <= 0) return UI_HIT_NONE;
+    int row = (y - LIST_Y0 + v->scroll) / ROW_H;
+    if (row < 0 || row >= v->nvoices) return UI_HIT_NONE;
+    *value = row;
+    return UI_HIT_ROW;
+}
+
 /* The microphones are open: a red bar across the top, the dot and the word
    centred together as one. */
 static void banner(canvas_t *c)
@@ -196,6 +378,13 @@ void ui_draw(canvas_t *c, const ui_view_t *v)
     case UI_HOME:
         talk_button(c, C_BLUE, "Talk", "tap, or press BOOT");
         note(c, v->note);
+        gear(c, GEAR_X, GEAR_Y);
+        break;
+    case UI_SETTINGS:
+        settings(c, v);
+        break;
+    case UI_VOICES:
+        voices_page(c, v);
         break;
     case UI_LISTENING:
         listening(c, v);

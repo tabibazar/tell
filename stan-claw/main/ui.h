@@ -13,9 +13,10 @@
 #include <stdint.h>
 
 #include "canvas.h"
+#include "voices.h"
 
 typedef enum { UI_HOME, UI_LISTENING, UI_THINKING, UI_SPEAKING, UI_ANSWER, UI_ERROR, UI_AGENT_TEXT, UI_AGENT_IMAGE,
-               UI_RESTING } ui_mode_t;
+               UI_RESTING, UI_SETTINGS, UI_VOICES } ui_mode_t;
 
 typedef struct {
     ui_mode_t mode;
@@ -31,7 +32,30 @@ typedef struct {
     const uint8_t *levels;   /* UI_LISTENING: the voice's loudness, 0-255, oldest first */
     int nlevels;             /* how many of UI_WAVE_BARS are filled */
     int listen_ms;           /* UI_LISTENING: how long the mics have been open */
+    /* UI_SETTINGS */
+    const char *voice_name;  /* the voice in use, "Roger" */
+    int volume;              /* 0-100 */
+    int speed;               /* 0 slower, 1 normal, 2 faster */
+    int model;               /* 0 Sonnet 5, 1 Haiku 4.5 */
+    /* UI_VOICES */
+    const voice_t *voices;
+    int nvoices;             /* -1 still loading, -2 could not load */
+    int scroll;              /* px the list is scrolled down */
+    int sel;                 /* the row last tapped, -1 none */
+    const char *cur_voice;   /* id of the voice in use */
 } ui_view_t;
+
+/* What a touch at (x, y) lands on, on the page v shows; *value carries the
+   volume (0-100), the speed or model button, or the voice row index. */
+typedef enum { UI_HIT_NONE, UI_HIT_TALK, UI_HIT_GEAR, UI_HIT_BACK, UI_HIT_VOICE, UI_HIT_VOLUME,
+               UI_HIT_SPEED, UI_HIT_MODEL, UI_HIT_ROW, UI_HIT_USE } ui_hit_t;
+ui_hit_t ui_hit(const ui_view_t *v, int x, int y, int *value);
+
+/* How far the voice list can scroll, px. */
+int ui_voices_max_scroll(const ui_view_t *v);
+
+/* The volume a finger at x on the slider means, 0-100, wherever it has wandered vertically. */
+int ui_slider_value(int x);
 
 #define UI_WAVE_BARS 48
 
