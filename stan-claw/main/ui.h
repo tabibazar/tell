@@ -7,16 +7,22 @@
  * answer, large), errors, and whatever an agent shows through MCP. Whenever
  * mic_open is set a red LISTENING banner is drawn across the top, last, over
  * everything. UI_RESTING is the screen while it rests: black, a soft orb in
- * the middle (the backlight makes it breathe) and the time under it. Pure: host_tests/test_sc_ui.c renders every screen.
+ * the middle (the backlight makes it breathe), the time under it and the
+ * day in words. In a conversation the listening and speaking pages carry big
+ * buttons (Again, Slower, Done; Stop), and a question needing a yes gets a
+ * Yes/No card. UI_EASY is the See and hear settings page; UI_MESSAGE and
+ * UI_REMINDER are cards for a family message and a spoken reminder.
+ * Pure: host_tests/test_sc_ui.c renders every screen.
  */
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 #include "canvas.h"
 #include "voices.h"
 
 typedef enum { UI_HOME, UI_LISTENING, UI_THINKING, UI_SPEAKING, UI_ANSWER, UI_ERROR, UI_AGENT_TEXT, UI_AGENT_IMAGE,
-               UI_RESTING, UI_SETTINGS, UI_VOICES } ui_mode_t;
+               UI_RESTING, UI_SETTINGS, UI_VOICES, UI_EASY, UI_MESSAGE, UI_REMINDER } ui_mode_t;
 
 typedef struct {
     ui_mode_t mode;
@@ -41,18 +47,34 @@ typedef struct {
     /* UI_VOICES: the wheel of VOICES (voices.h) */
     float spin;              /* which card is in the middle, fractional while it turns */
     int cur;                 /* the voice in use, -1 none */
+    /* care features */
+    int wday, month, mday;   /* for the friendly clock: 0=Sunday..6, 1..12, 1..31; month 0 = unknown */
+    int textsize;            /* 0 large (rooms_head 30 px answers), 1 extra large (sc_answer_xl 40 px) */
+    bool contrast;           /* high contrast: pure black, yellow text, white for secondary */
+    bool clarity;            /* UI_EASY: the clarity-for-hearing switch's state */
+    bool convo;              /* UI_LISTENING / UI_SPEAKING inside a conversation: show the conversation buttons */
+    const char *confirm;     /* UI_LISTENING: non-empty = the Yes/No confirm card with this summary */
+    int spoken;              /* UI_SPEAKING: captions -- chars of `text` already spoken; <0 = all bright */
 } ui_view_t;
 
 /* What a touch at (x, y) lands on, on the page v shows; *value carries the
    volume (0-100), the speed or model button, or the voice card's index
-   (the middle one, or a neighbour tapped at the side). */
+   (the middle one, or a neighbour tapped at the side), or a See and hear
+   switch's choice (0 or 1). */
 typedef enum { UI_HIT_NONE, UI_HIT_TALK, UI_HIT_GEAR, UI_HIT_BACK, UI_HIT_VOICE, UI_HIT_VOLUME,
-               UI_HIT_SPEED, UI_HIT_MODEL, UI_HIT_CARD, UI_HIT_USE } ui_hit_t;
+               UI_HIT_SPEED, UI_HIT_MODEL, UI_HIT_CARD, UI_HIT_USE,
+               UI_HIT_AGAIN, UI_HIT_SLOWER, UI_HIT_DONE, UI_HIT_YES, UI_HIT_NO, UI_HIT_EASY, UI_HIT_TEXTSIZE,
+               UI_HIT_CONTRAST, UI_HIT_CLARITY, UI_HIT_CLOSE } ui_hit_t;
 ui_hit_t ui_hit(const ui_view_t *v, int x, int y, int *value);
 
 
 /* The volume a finger at x on the slider means, 0-100, wherever it has wandered vertically. */
 int ui_slider_value(int x);
+
+/* The friendly day for the resting screen: "Saturday afternoon" and "October 10".
+   Part of day by minute: morning 05:00-11:59, afternoon 12:00-16:59, evening 17:00-20:59, night otherwise.
+   month 0 (unknown) -> both empty. */
+void ui_day_words(int wday, int month, int mday, int minute, char *part, size_t np, char *date, size_t nd);
 
 #define UI_WAVE_BARS 48
 
