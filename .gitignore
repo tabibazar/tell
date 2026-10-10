@@ -99,3 +99,4 @@ tiny2/sdkconfig
 host_tests/test_rooms
 panel1/sdkconfig
 panel1/sdkconfig.old
+.superpowers/

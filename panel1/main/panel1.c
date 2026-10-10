@@ -4,11 +4,14 @@
  *
  * The day comes from the relay (panel1/relay/rooms.gs) over WiFi: today every
  * five minutes, any other day when it is looked at. It opens on today -- or,
- * after 18:00 and at weekends, on the next working day -- and a swipe left or
- * right moves a day; a minute untouched brings it home again. A tap on a
- * booking opens a card with all of it -- who booked it, who is invited.
- * Five minutes untouched, it dims to a clock that wanders the screen; a tap
- * wakes it on the home day.
+ * after 17:00 and at weekends, on the next working day -- and a swipe left or
+ * right moves a working day, passing over Saturday and Sunday; a minute
+ * untouched brings it home again. It shows a card per room, saying what the
+ * room is doing now; a tap on a card opens that room's own page, where a tap
+ * on a booking opens a card with all of it -- who booked it, who is invited.
+ * Swipe up and down there for the other rooms, and tap its top to come back.
+ * Five minutes untouched, the screen goes dark; BOOT, PWR or a tap wakes it
+ * on the home day.
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -16,6 +19,7 @@
 #include <sys/time.h>
 #include <time.h>
 
+#include "driver/gpio.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_timer.h"
@@ -39,13 +43,13 @@ static const char *TAG = "panel1";
 #define REFRESH_OTHER  (15 * 60)
 #define RETRY          30           /* s after a failed fetch */
 #define IDLE_HOME      60           /* s untouched before going home */
-#define EVENING        18           /* from this hour the home day is the next */
+#define EVENING        17           /* from this hour the home day is the next */
 #define SWIPE_PX       60
 #define SPAN           14           /* days either way a swipe may go */
 #define CACHE_N        8
 #define DETAIL_FOR     20           /* s a booking's card stays up untouched */
-#define SAVER_AFTER    (5 * 60)     /* s untouched before the screen saver */
-#define SAVER_LIGHT    15           /* % backlight while it is on */
+#define SLEEP_AFTER    (5 * 60)     /* s untouched before the screen goes dark */
+#define PIN_BOOT       0            /* the side BOOT key, low while held */
 #define NOTE_AFTER     (3 * 60)     /* s of failed fetches before the header says so */
 
 typedef struct {
@@ -58,12 +62,13 @@ typedef struct {
 static slot_t *s_cache;               /* PSRAM, CACHE_N slots */
 static SemaphoreHandle_t s_lock;
 static volatile int s_offset;         /* the day shown, from today */
+static volatile int s_room = -1;      /* the open room's page; -1 the overview */
 static volatile bool s_dirty = true;
 static volatile int64_t s_last_ok;    /* s, monotonic; last good fetch */
 static volatile time_t s_last_ok_wall;
 static volatile bool s_failing;
 static volatile int64_t s_fail_since;  /* s, monotonic; when the failing began */
-static bool s_saver;
+static bool s_asleep;
 
 /* The booking whose card is up, copied: the day under it may be refetched. */
 static bool s_det;
@@ -89,6 +94,12 @@ static struct tm day_at(int off)
     return lt;
 }
 
+static bool weekend(int off)
+{
+    int wd = day_at(off).tm_wday;
+    return wd == 0 || wd == 6;
+}
+
 /* Today in working hours; after EVENING, or at a weekend, the next working day. */
 static int home_offset(void)
 {
@@ -101,6 +112,15 @@ static int home_offset(void)
         if (wd != 0 && wd != 6) return off;
         off++;
     }
+}
+
+/* The overview on the home day, no card open. */
+static void go_home(void)
+{
+    if (net_time_ok()) s_offset = home_offset();
+    s_room = -1;
+    s_det = false;
+    s_dirty = true;
 }
 
 static slot_t *find(const struct tm *t)
@@ -220,15 +240,32 @@ static void draw(canvas_t *c, rooms_day_t *buf)
         }
     }
     v.note = note;
-    if (s_saver && v.now >= 0) {
-        struct tm d = day_at(0);
-        roomsui_saver(c, v.now, d.tm_wday, d.tm_mday, d.tm_mon + 1, (int)(time(NULL) / 60));
-        lcd_show();
-        return;
-    }
-    roomsui_draw(c, day, &v);
+    if (s_room >= 0 && day && s_room >= day->nrooms) s_room = -1;   /* that day has fewer rooms */
+    roomsui_room_draw(c, day, s_room, &v);
     if (s_det && v.now >= 0) roomsui_detail(c, s_det_room, &s_det_ev, &v);
     lcd_show();
+}
+
+/* Dark: the frame black, then the backlight off, so nothing glows through. */
+static void sleep_now(canvas_t *c)
+{
+    s_asleep = true;
+    s_det = false;
+    canvas_fill_rect(c, 0, 0, c->w, c->h, 0);
+    lcd_show();
+    lcd_backlight(0);
+    ESP_LOGI(TAG, "asleep");
+}
+
+/* Back on the overview, home day, at full light. */
+static void wake(canvas_t *c, rooms_day_t *buf)
+{
+    s_asleep = false;
+    go_home();
+    draw(c, buf);
+    s_dirty = false;
+    lcd_backlight(100);
+    ESP_LOGI(TAG, "awake");
 }
 
 void app_main(void)
@@ -256,52 +293,86 @@ void app_main(void)
     console_start();
     xTaskCreatePinnedToCore(fetch_task, "fetch", 8192, NULL, 4, NULL, 0);
 
+    gpio_config_t boot = { .pin_bit_mask = 1ULL << PIN_BOOT, .mode = GPIO_MODE_INPUT, .pull_up_en = GPIO_PULLUP_ENABLE };
+    gpio_config(&boot);
+    bool pwr_was = lcd_pwr_key(), boot_was = false;
+
     bool down = false, moved = false, waking = false;
-    int x0 = 0, y0 = 0, lx = 0;
+    int x0 = 0, y0 = 0, lx = 0, ly = 0;
     int64_t last_touch = now_s();
     int last_min = -1, last_home = -1;
     for (;;) {
         vTaskDelay(pdMS_TO_TICKS(30));
+
+        /* The side keys: a press wakes it, or, awake, goes home. BOOT counts on
+           its press. PWR counts on any change: on the board it read "held" at
+           rest after one boot and "released" after another, so its level is
+           not to be trusted, only its moving. Its release then just goes home
+           again, where it already is. */
+        bool pwr = lcd_pwr_key(), bootk = gpio_get_level(PIN_BOOT) == 0;
+        bool pressed = (bootk && !boot_was) || pwr != pwr_was;
+        if (pwr != pwr_was) ESP_LOGI(TAG, "PWR key %s", pwr ? "down" : "up");
+        if (bootk != boot_was) ESP_LOGI(TAG, "BOOT key %s", bootk ? "down" : "up");
+        pwr_was = pwr;
+        boot_was = bootk;
+        if (pressed) {
+            if (s_asleep) wake(c, buf);
+            else go_home();
+            last_touch = now_s();
+        }
+
         int x, y;
         if (touch && touch_read(&x, &y)) {
             if (!down) {
                 down = true; moved = false; x0 = x; y0 = y;
-                if (s_saver) {
-                    /* This touch only wakes: home, bright, and nothing else. */
+                if (s_asleep) {
+                    /* This touch only wakes: nothing else till the finger lifts. */
                     waking = true;
-                    s_saver = false;
-                    s_det = false;
-                    if (net_time_ok()) s_offset = home_offset();
-                    draw(c, buf);
-                    lcd_backlight(100);
+                    wake(c, buf);
                 }
             }
-            lx = x;
-            if (abs(x - x0) > SWIPE_PX / 2) moved = true;
+            lx = x; ly = y;
+            if (abs(x - x0) > SWIPE_PX / 2 || abs(y - y0) > SWIPE_PX / 2) moved = true;
             last_touch = now_s();
         } else if (down && waking) {
             down = waking = false;
         } else if (down) {
             down = false;
-            int dx = lx - x0;
-            /* A finger dragged left pulls the next day in, as a page turns. */
-            if (moved && abs(dx) >= SWIPE_PX && abs(dx) > abs(y - y0)) {
-                int off = s_offset + (dx < 0 ? 1 : -1);
+            int dx = lx - x0, dy = ly - y0;
+            if (moved && abs(dx) >= SWIPE_PX && abs(dx) >= abs(dy)) {
+                /* A finger dragged left pulls the next day in, as a page turns. */
+                int step = dx < 0 ? 1 : -1, off = s_offset + step;
+                while (weekend(off)) off += step;       /* Saturday and Sunday are skipped */
                 if (off >= -SPAN && off <= SPAN) { s_offset = off; s_dirty = true; }
                 s_det = false;
+            } else if (moved && abs(dy) >= SWIPE_PX && s_room >= 0 && s_buf_ok && buf->nrooms > 0) {
+                /* Dragged up, the next room comes in; round from the last to the first. */
+                int n = buf->nrooms;
+                s_room = (s_room + (dy < 0 ? 1 : n - 1)) % n;
+                s_det = false;
+                s_dirty = true;
             } else if (!moved && s_det) {
                 /* Any tap closes a booking's card. */
                 s_det = false;
                 s_dirty = true;
-            } else if (!moved) {
-                /* A tap on a booking opens its card; anywhere else goes home. */
-                int room;
-                const room_ev_t *e = s_buf_ok ? roomsui_hit(buf, x0, y0, &room) : NULL;
-                if (e) {
-                    *s_det_room = buf->room[room];
+            } else if (!moved && s_room >= 0) {
+                /* A room page: its top goes back to the overview, a booking opens its card. */
+                const room_ev_t *e = s_buf_ok ? roomsui_room_hit(buf, s_room, x0, y0) : NULL;
+                if (roomsui_room_head_hit(x0, y0)) {
+                    s_room = -1;
+                    s_dirty = true;
+                } else if (e) {
+                    *s_det_room = buf->room[s_room];
                     s_det_ev = *e;
                     s_det = true;
                     s_det_at = now_s();
+                    s_dirty = true;
+                }
+            } else if (!moved) {
+                /* The overview: a room's row opens its page; anywhere else goes home. */
+                int r = s_buf_ok ? roomsui_head_hit(buf, x0, y0) : -1;
+                if (r >= 0) {
+                    s_room = r;
                     s_dirty = true;
                 } else {
                     int h = home_offset();
@@ -315,16 +386,11 @@ void app_main(void)
             /* The clock just came: start on the home day. */
             if (last_home < 0 && s_offset != h) { s_offset = h; s_dirty = true; }
             /* Home moves at EVENING and at midnight; follow it if we were there. */
-            if (last_home >= 0 && h != last_home && s_offset == last_home) { s_offset = h; s_dirty = true; }
+            if (last_home >= 0 && h != last_home && s_offset == last_home) { s_offset = h; s_room = -1; s_dirty = true; }
             last_home = h;
-            if (s_offset != h && now_s() - last_touch >= IDLE_HOME && !down) { s_offset = h; s_det = false; s_dirty = true; }
+            if ((s_offset != h || s_room >= 0) && now_s() - last_touch >= IDLE_HOME && !down) go_home();
             if (s_det && now_s() - s_det_at >= DETAIL_FOR && now_s() - last_touch >= DETAIL_FOR) { s_det = false; s_dirty = true; }
-            if (!s_saver && !down && touch && now_s() - last_touch >= SAVER_AFTER) {
-                s_saver = true;
-                s_det = false;
-                s_dirty = true;
-                lcd_backlight(SAVER_LIGHT);
-            }
+            if (!s_asleep && !down && now_s() - last_touch >= SLEEP_AFTER) sleep_now(c);
             time_t t = time(NULL);
             struct tm lt;
             localtime_r(&t, &lt);
@@ -333,7 +399,7 @@ void app_main(void)
             static int64_t last_draw;
             if (now_s() - last_draw >= 2) { last_draw = now_s(); s_dirty = true; }
         }
-        if (s_dirty && !down) {
+        if (s_dirty && !down && !s_asleep) {
             s_dirty = false;
             draw(c, buf);
         }

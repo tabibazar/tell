@@ -72,6 +72,19 @@ static void tca_set(uint8_t bits, bool on)
     tca_write(TCA_OUT, s_out);
 }
 
+#define TCA_IN   0x00
+/* EXIO4 follows the PWR key, but which level means "held" was not settled on
+   the board: one boot read it released at rest, another held. panel1.c acts
+   on its changes, not its level. */
+#define KEY_DOWN 0
+
+bool lcd_pwr_key(void)
+{
+    uint8_t reg = TCA_IN, v = 0;
+    if (i2c_master_transmit_receive(s_tca, &reg, 1, &v, 1, 50) != ESP_OK) return false;
+    return ((v & X_KEY) ? 1 : 0) == KEY_DOWN;
+}
+
 /* One 9-bit frame: D/C, then the byte, MSB first, latched on SCK rising. */
 static void spi9(bool data, uint8_t v)
 {

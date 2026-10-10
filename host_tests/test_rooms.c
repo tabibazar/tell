@@ -73,6 +73,8 @@ int main(void)
     int a, b;
     roomsui_hours(&d, &a, &b);
     CHECK(a == 7 && b == 19);                                          /* 7:30 and 18:30 stretch it */
+    roomsui_hours(NULL, &a, &b);
+    CHECK(a == 8 && b == 16);                                          /* the working day, 8 to 16 */
 
     /* What is not the relay's answer leaves the day as it was. */
     rooms_day_t keep = d;
@@ -87,6 +89,27 @@ int main(void)
     rooms_day_t o;
     CHECK(rooms_parse(odd, strlen(odd), &o));
     CHECK(o.room[0].n == 2 && o.room[0].ev[0].start == 0 && o.room[0].ev[1].end == 1440);
+
+    /* A room's status line: taken, free, another day. */
+    room_t sr = { .name = "TALL", .cap = 8, .n = 3 };
+    sr.ev[0] = (room_ev_t){ .start = 600, .end = 645 };     /* 10:00-10:45 */
+    sr.ev[1] = (room_ev_t){ .start = 645, .end = 660 };     /* back to back, to 11:00 */
+    sr.ev[2] = (room_ev_t){ .start = 840, .end = 900 };     /* 14:00-15:00 */
+    char st[64];
+    roomsui_view_t sv = { .offset = 0, .wday = 4, .now = 620 };
+    CHECK(roomsui_room_status(&sr, &sv, st, sizeof st) == ROOMSUI_TAKEN && strcmp(st, "Taken till 11:00, then free till 14:00") == 0);
+    sv.now = 850;
+    CHECK(roomsui_room_status(&sr, &sv, st, sizeof st) == ROOMSUI_TAKEN && strcmp(st, "Taken till 15:00") == 0);
+    sv.now = 540;
+    CHECK(roomsui_room_status(&sr, &sv, st, sizeof st) == ROOMSUI_FREE && strcmp(st, "Free till 10:00") == 0);
+    sv.now = 910;
+    CHECK(roomsui_room_status(&sr, &sv, st, sizeof st) == ROOMSUI_FREE && strcmp(st, "Free") == 0);
+    sv = (roomsui_view_t){ .offset = 1, .wday = 5, .now = 620 };
+    CHECK(roomsui_room_status(&sr, &sv, st, sizeof st) == ROOMSUI_OTHER && strcmp(st, "3 bookings") == 0);
+    sr.n = 1;
+    CHECK(roomsui_room_status(&sr, &sv, st, sizeof st) == ROOMSUI_OTHER && strcmp(st, "1 booking") == 0);
+    sr.n = 0;
+    CHECK(roomsui_room_status(&sr, &sv, st, sizeof st) == ROOMSUI_OTHER && strcmp(st, "No bookings") == 0);
 
     canvas_t c;
     canvas_init(&c, fb, 480, 480, 1);
@@ -105,15 +128,9 @@ int main(void)
     roomsui_draw(&c, &d, &v);
     bmp("tomorrow");
 
-    /* A tap on the 11:00 booking in the first column finds it; between bookings, nothing. */
-    int first, last, room = -1;
+    int first, last;
     roomsui_hours(&d, &first, &last);
-    int gy = 52 + 40 + 6, gh = 480 - 6 - gy, span = (last - first) * 60;
-    int ymid = gy + (690 - first * 60) * gh / span;
-    const room_ev_t *hit = roomsui_hit(&d, 26 + 40, ymid, &room);
-    CHECK(hit == &d.room[0].ev[0] && room == 0);
-    CHECK(roomsui_hit(&d, 26 + 40, gy + (600 - first * 60) * gh / span, &room) == NULL);
-    CHECK(roomsui_hit(&d, 26 + 40, 20, &room) == NULL);                /* the header */
+    int gy = 52 + 40 + 6, span = (last - first) * 60;
     v = (roomsui_view_t){ .offset = 1, .wday = 4, .now = 19 * 60 + 24 };
     roomsui_draw(&c, &d, &v);
     roomsui_detail(&c, &d.room[0], &d.room[0].ev[0], &v);
@@ -133,14 +150,42 @@ int main(void)
     roomsui_draw(&c, &o, &v);
     bmp("weekend");
 
+    /* The room page: CEDAR today at 13:12 (Budget planning, running on into
+       Ops weekly), BIRCH tomorrow, a card over it, and an empty room. */
+    v = (roomsui_view_t){ .offset = 0, .wday = 3, .now = 13 * 60 + 12 };
+    roomsui_room_draw(&c, &d, 0, &v);
+    bmp("room-today");
+    v = (roomsui_view_t){ .offset = 1, .wday = 4, .now = 19 * 60 + 24 };
+    roomsui_room_draw(&c, &d, 4, &v);
+    bmp("room-tomorrow");
+    roomsui_room_draw(&c, &d, 0, &v);
+    roomsui_detail(&c, &d.room[0], &d.room[0].ev[0], &v);
+    bmp("room-detail");
+    v = (roomsui_view_t){ .offset = 3, .wday = 1, .now = 19 * 60 + 24 };
+    roomsui_room_draw(&c, &o, 2, &v);
+    bmp("room-empty");
+
+    /* Taps: the overview's cards, and a room page's bookings and top. */
+    int nr = d.nrooms, rows = (nr + 1) / 2, pitch = (480 - 6 - 56 + 8) / rows;
+    if (pitch > 150) pitch = 150;
+    for (int i = 0; i < nr; i++)
+        CHECK(roomsui_head_hit(&d, i % 2 ? 360 : 120, 56 + (i / 2) * pitch + pitch / 2) == i);
+    CHECK(roomsui_head_hit(&d, 360, 56 + 2 * pitch + pitch / 2) == -1);  /* no sixth room */
+    CHECK(roomsui_head_hit(&d, 240, 20) == -1);                        /* the header */
+    CHECK(roomsui_head_hit(NULL, 60, 100) == -1);
+    CHECK(roomsui_room_head_hit(240, 20) && roomsui_room_head_hit(240, 80));
+    CHECK(!roomsui_room_head_hit(240, 200));
+    int rb = 480 - 24;                                                 /* the room page's grid bottom */
+    int ry = gy + (690 - first * 60) * (rb - gy) / span;               /* 11:30, Design review's middle */
+    CHECK(roomsui_room_hit(&d, 0, 240, ry) == &d.room[0].ev[0]);
+    CHECK(roomsui_room_hit(&d, 0, 240, gy + (600 - first * 60) * (rb - gy) / span) == NULL);
+    CHECK(roomsui_room_hit(&d, 0, 240, 30) == NULL);
+    CHECK(roomsui_room_hit(&d, 9, 240, ry) == NULL);
+
     v = (roomsui_view_t){ .offset = 0, .wday = 3, .now = -1 };
     roomsui_draw(&c, NULL, &v);
     bmp("loading");
 
-    roomsui_saver(&c, 7 * 60 + 42, 3, 7, 10, 0);
-    bmp("saver-0");
-    roomsui_saver(&c, 23 * 60 + 5, 3, 7, 10, 29000123);
-    bmp("saver-1");
 
     printf(fails ? "%d FAILED\n" : "rooms: all passed\n", fails);
     return fails != 0;
