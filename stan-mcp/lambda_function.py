@@ -23,6 +23,8 @@ import json
 import os
 import re
 
+import family
+from family import ticket
 from hoa_data import ALIASES, COMMUNITIES
 
 PROTOCOL = "2025-06-18"
@@ -76,10 +78,6 @@ def who(token):
             if token and hmac.compare_digest(token, token_for(c, e)):
                 return c, e
     return None
-
-
-def ticket(prefix, *parts):
-    return f"{prefix}-2026-{int(hashlib.sha256('|'.join(parts).encode()).hexdigest()[:6], 16) % 9000 + 1000}"
 
 
 def j(o):
@@ -199,13 +197,26 @@ def t_sign_in(a):
 
 
 def private(fn):
+    """A signed-in tool; each call goes in the homeowner's activity (family.log) for the weekly summary.
+    run.tool, its name, is set when the tool list is built."""
     def run(a):
         w = who(a.get("homeowner_token", ""))
         if not w:
             return NEEDS_SIGN_IN
         c, e = w
-        return fn(COMMUNITIES[c], COMMUNITIES[c]["homeowners"][e], e, a)
+        out = fn(COMMUNITIES[c], COMMUNITIES[c]["homeowners"][e], e, a)
+        try:
+            family.log(c, e, run.tool, a, out)
+        except Exception as x:                  # noqa: BLE001 -- the summary's log never costs the answer
+            print("activity log failed:", x)
+        return out
+    run.tool = ""
     return run
+
+
+def fam(fn):
+    """A family tool: family.t_* take the community key and the email."""
+    return lambda d, p, e, a: fn(next(k for k, v in COMMUNITIES.items() if v is d), e, a)
 
 
 def t_my_account(d, p, e, a):
@@ -218,6 +229,8 @@ def t_make_payment(d, p, e, a):
     bal = p["account"]["balance_due"]
     if amt <= 0:
         return f"How much would they like to pay? The balance is ${bal:,.2f}."
+    if amt > family.PAY_OK_LIMIT:
+        return family.ask_approval(next(k for k, v in COMMUNITIES.items() if v is d), e, amt)
     return (f"Payment of ${amt:,.2f} accepted (simulated), confirmation {ticket('PAY', e, str(amt))}. "
             f"The balance would be ${max(bal - amt, 0):,.2f}. It posts in 1-2 business days.")
 
@@ -338,7 +351,8 @@ TOOLS = [
      schema({**COM, "email": {"type": "string"}}, ["community", "email"]), t_sign_in),
     ("my_account", "The signed-in homeowner's account: balance, dues, late fees, payment history, plan, assessments.",
      schema(TOK, ["homeowner_token"]), private(t_my_account)),
-    ("make_payment", "Pay toward the signed-in homeowner's balance (simulated; nothing is charged).",
+    ("make_payment", "Pay toward the signed-in homeowner's balance (simulated; nothing is charged). Payments over $100 "
+     "wait for a family member's OK by email; the tool says so.",
      schema({**TOK, "amount": {"type": "number"}}, ["homeowner_token", "amount"]), private(t_make_payment)),
     ("payment_plan", "Ask for a payment plan on an overdue balance (simulated request to management).",
      schema({**TOK, "months": {"type": "integer"}}, ["homeowner_token"]), private(t_payment_plan)),
@@ -366,9 +380,33 @@ TOOLS = [
              "details": {"type": "string"}}, ["homeowner_token", "kind", "details"]), private(t_update_household)),
     ("resale_certificate", "Order the resale (estoppel) certificate needed to sell the home (simulated).",
      schema(TOK, ["homeowner_token"]), private(t_resale_certificate)),
+    ("notify_family", "Email the homeowner's family contacts a message from them (\"tell my daughter I'm fine\"). "
+     "`to` picks one by name or relation; empty sends to all.",
+     schema({**TOK, "message": {"type": "string"}, "to": {"type": "string"}}, ["homeowner_token", "message"]),
+     private(fam(family.t_notify_family))),
+    ("family_contacts", "The homeowner's family contacts: who gets their messages, approves payments over $100 and "
+     "can send messages to their screen.", schema(TOK, ["homeowner_token"]), private(fam(family.t_family_contacts))),
+    ("add_family_contact", "Add a trusted family member or friend as a contact (name, relation, email).",
+     schema({**TOK, "name": {"type": "string"}, "relation": {"type": "string"}, "email": {"type": "string"}},
+            ["homeowner_token", "name", "email"]), private(fam(family.t_add_family_contact))),
+    ("send_family_summary", "Email the family contacts this week's summary now: what the homeowner asked about and "
+     "did, and what needs attention.", schema(TOK, ["homeowner_token"]), private(fam(family.t_send_family_summary))),
+    ("family_summary_consent", "Turn the Sunday weekly summary to family on or off, as the homeowner wishes.",
+     schema({**TOK, "on": {"type": "boolean"}}, ["homeowner_token", "on"]), private(fam(family.t_family_summary_consent))),
+    ("pending_approvals", "Payments waiting for a family member's OK, and whether they were approved.",
+     schema(TOK, ["homeowner_token"]), private(fam(family.t_pending_approvals))),
 ]
+# Called by the stan-claw board itself, not offered to Claude.
+HIDDEN = [
+    ("reminders", private(fam(family.t_reminders))),
+    ("family_inbox", private(fam(family.t_family_inbox))),
+]
+for _n, _f in [(n, f) for n, _, _, f in TOOLS] + HIDDEN:
+    if hasattr(_f, "tool"):
+        _f.tool = _n
 TOOL_LIST = [{"name": n, "description": d, "inputSchema": s} for n, d, s, _ in TOOLS]
 TOOL_FN = {n: f for n, _, _, f in TOOLS}
+TOOL_FN.update(dict(HIDDEN))
 
 
 def call_tool(name, args):
@@ -389,14 +427,17 @@ def rpc(msg):
     if method == "initialize":
         return ok({"protocolVersion": params.get("protocolVersion") or PROTOCOL,
                    "capabilities": {"tools": {"listChanged": False}},
-                   "serverInfo": {"name": "stan-mcp", "version": "0.2.0"},
+                   "serverInfo": {"name": "stan-mcp", "version": "0.3.0"},
                    "instructions": "A fictional homeowners' association service for four communities: " + names() +
                                    ". Public tools answer about a community; before anything about a homeowner's own "
                                    "account, violations, requests, bookings or household, ask which community they "
                                    "live in and their email, and call sign_in. Many homeowners here are older: be "
                                    "patient, explain HOA terms in plain words, go one step at a time, say amounts and "
                                    "dates clearly, and describe and confirm any payment, booking, appeal or request "
-                                   "before making it."})
+                                   "before making it. Homeowners can have family contacts: notify_family emails them "
+                                   "a message, payments over $100 wait for a family member's OK (say so kindly; it "
+                                   "protects against scams), and family can send messages to the homeowner's screen. "
+                                   "Never pay anyone the service does not list."})
     if method == "ping":
         return ok({})
     if method == "tools/list":
@@ -409,9 +450,27 @@ def rpc(msg):
     return 200, {"jsonrpc": "2.0", "id": mid, "error": {"code": -32601, "message": "method not found"}}
 
 
+def form(event):
+    """The query string, and for a POST the urlencoded form too, as one dict."""
+    from urllib.parse import parse_qsl
+    q = dict(parse_qsl(event.get("rawQueryString") or ""))
+    if event.get("requestContext", {}).get("http", {}).get("method") == "POST":
+        body = event.get("body") or ""
+        if event.get("isBase64Encoded"):
+            import base64
+            body = base64.b64decode(body).decode()
+        q.update(parse_qsl(body))
+    return q
+
+
 def handler(event, context):
+    if event.get("weekly_summary"):                       # the Sunday EventBridge rule
+        return {"sent": family.weekly_all()}
     headers = {k.lower(): v for k, v in (event.get("headers") or {}).items()}
     method = event.get("requestContext", {}).get("http", {}).get("method", "POST")
+    path = event.get("rawPath") or "/"
+    if path in ("/family", "/approve") and method in ("GET", "POST"):   # family's pages: the link is signed
+        return family.handle_page(path, method, form(event))
     token = os.environ.get("MCP_TOKEN", "")
     if not token or not hmac.compare_digest(headers.get("authorization", ""), "Bearer " + token):
         return {"statusCode": 401, "headers": {"WWW-Authenticate": "Bearer"}, "body": ""}
