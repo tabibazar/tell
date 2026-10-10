@@ -43,7 +43,9 @@ void cfg_load(void)
     }
     if (!seeded) {
         /* First boot: what was built in. */
-        if (P1_WIFI_SSID[0]) cfg_net_add(P1_WIFI_SSID, P1_WIFI_PASS);
+        static const struct { const char *ssid, *pass; } seed[] = P1_SEED_NETS;
+        for (size_t i = 0; i < sizeof seed / sizeof seed[0] && seed[i].ssid; i++)
+            cfg_net_add(seed[i].ssid, seed[i].pass);
         snprintf(s_relay, sizeof s_relay, "%s", P1_RELAY_URL);
         save();
         ESP_LOGI(TAG, "seeded from the build: %d network(s), relay %s", s_n, s_relay[0] ? "set" : "none");
