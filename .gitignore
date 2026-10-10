@@ -106,3 +106,4 @@ host_tests/test_sc_cmdline
 host_tests/test_sc_mcp
 host_tests/test_sc_claude
 host_tests/test_sc_speech
+host_tests/test_sc_vad
