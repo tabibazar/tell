@@ -153,6 +153,8 @@ static void settings_load(void)
     snprintf(s_voice_name, sizeof s_voice_name, "%s", s_cur >= 0 ? VOICES[s_cur].name : v[0] ? "Another voice" : "");
 }
 
+void settings_reload(void) { settings_load(); s_dirty = true; }
+
 static void tone(void)
 {
     static int16_t t[AUDIO_FS / 6];

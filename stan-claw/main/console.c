@@ -13,6 +13,8 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "net.h"
+#include "voices.h"
+#include <strings.h>
 
 #define TONE_N (AUDIO_FS / 2)      /* half a second of 440 Hz: 220 whole cycles, so it loops cleanly */
 
@@ -61,7 +63,26 @@ static void run(const char *line)
         printf("ok: %s key set\n", w[1]);
         return;
     }
-    if (strcmp(w[0], "voice") == 0 && n >= 2) { cfg_set(CFG_VOICE, w[1]); printf("ok: voice set\n"); return; }
+    if (strcmp(w[0], "voice") == 0 && n >= 2) {
+        /* A name from the wheel (voice jarvis) sets the voice and its effect;
+           anything else is taken as an ElevenLabs voice id. */
+        for (int i = 0; i < VOICES_N; i++) {
+            if (strcasecmp(w[1], VOICES[i].name) == 0) {
+                cfg_set(CFG_VOICE, VOICES[i].id);
+                cfg_set(CFG_VOICE_FX, fx_name(VOICES[i].fx));
+                cfg_set(CFG_VOICE_NAME, VOICES[i].name);
+                settings_reload();
+                printf("ok: voice %s\n", VOICES[i].name);
+                return;
+            }
+        }
+        cfg_set(CFG_VOICE, w[1]);
+        cfg_set(CFG_VOICE_FX, "");
+        cfg_set(CFG_VOICE_NAME, "");
+        settings_reload();
+        printf("ok: voice id set\n");
+        return;
+    }
     if (strcmp(w[0], "model") == 0 && n >= 2) { cfg_set(CFG_MODEL, w[1]); printf("ok: model %s\n", w[1]); return; }
     if (strcmp(w[0], "mcp") == 0 && n >= 3 && strcmp(w[1], "url") == 0) {
         if (strncmp(w[2], "https://", 8) != 0 && w[2][0]) { printf("no: an https:// URL (or \"\" for none)\n"); return; }
@@ -133,7 +154,7 @@ static void run(const char *line)
                why == VAD_DONE ? "speech then quiet" : why == VAD_CAPPED ? "capped" : "silent");
         return;
     }
-    printf("commands: wifi add|forget|list, key claude|deepgram|elevenlabs K, voice ID, model ID,\n"
+    printf("commands: wifi add|forget|list, key claude|deepgram|elevenlabs K, voice NAME|ID, model ID,\n"
            "          mcp url URL, mcp token T, serve token T, beep, rec, status,\n"
            "          slots [beep], regs (developer tools)\n");
 }
