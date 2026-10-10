@@ -36,6 +36,7 @@ bool ui_hit_talk(int x, int y)
 static int para(canvas_t *c, const aafont_t *f, const char *s, int x, int y, int maxw, int pitch, int max, uint16_t col)
 {
     char line[160];
+    char trunc[164];
     int lines = 0;
     while (s && *s && lines < max) {
         while (*s == ' ') s++;
@@ -62,16 +63,16 @@ static int para(canvas_t *c, const aafont_t *f, const char *s, int x, int y, int
         memcpy(line, s, best);
         line[best] = 0;
         s += best;
+        const char *out = line;
         if (lines == max - 1 && *s) {          /* the last allowed line, with more to come */
             size_t l = strlen(line);
             while (l > 0) {
-                char t[164];
-                snprintf(t, sizeof t, "%.*s...", (int)l, line);
-                if (aafont_width(f, t) <= maxw) { snprintf(line, sizeof line, "%s", t); break; }
+                snprintf(trunc, sizeof trunc, "%.*s...", (int)l, line);
+                if (aafont_width(f, trunc) <= maxw) { out = trunc; break; }
                 l--;
             }
         }
-        aafont_draw(c, f, x, y, line, col, AAFONT_LEFT);
+        aafont_draw(c, f, x, y, out, col, AAFONT_LEFT);
         y += pitch;
         lines++;
     }
