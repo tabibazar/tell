@@ -124,6 +124,7 @@ static void convo_task(void *arg)
         xSemaphoreTake(s_go, portMAX_DELAY);
         if (xSemaphoreTake(s_busy, 0) != pdTRUE) continue;      /* an agent is using it: ignore the tap */
         conversation();
+        xSemaphoreTake(s_go, 0);        /* drop a BOOT press that queued during the conversation */
         xSemaphoreGive(s_busy);
     }
 }
@@ -193,6 +194,11 @@ static bool t_show_text(const char *title, const char *text, char *out, size_t n
 static bool t_show_image(const uint8_t *jpeg, size_t len, char *out, size_t n)
 {
     if (!take(out, n)) return false;
+    /* s_busy is held (mics closed, on_mic can't contend), so it's safe to
+       also hold s_ui_lock across the decode: the main loop's redraw can't
+       run against a half-decoded s_image, and a bad JPEG that partly
+       overwrites s_image before failing can't be shown either. */
+    xSemaphoreTake(s_ui_lock, portMAX_DELAY);
     esp_jpeg_image_cfg_t jc = {
         .indata = (uint8_t *)jpeg, .indata_size = len,
         .outbuf = (uint8_t *)s_image, .outbuf_size = 480 * 480 * 2,
@@ -201,17 +207,18 @@ static bool t_show_image(const uint8_t *jpeg, size_t len, char *out, size_t n)
     esp_jpeg_image_output_t jo;
     bool ok = esp_jpeg_decode(&jc, &jo) == ESP_OK && jo.width <= 480 && jo.height <= 480;
     if (ok) {
-        xSemaphoreTake(s_ui_lock, portMAX_DELAY);
         s_view.mode = UI_AGENT_IMAGE;
         s_view.image = s_image;
         s_view.img_w = jo.width;
         s_view.img_h = jo.height;
         s_dirty = true;
-        xSemaphoreGive(s_ui_lock);
-        snprintf(out, n, "shown");
-    } else {
-        snprintf(out, n, "could not decode that JPEG (baseline, at most 480x480)");
+    } else if (s_view.mode == UI_AGENT_IMAGE) {
+        s_view.mode = UI_HOME;
+        s_dirty = true;
     }
+    xSemaphoreGive(s_ui_lock);
+    if (ok) snprintf(out, n, "shown");
+    else snprintf(out, n, "could not decode that JPEG (baseline, at most 480x480)");
     xSemaphoreGive(s_busy);
     return ok;
 }
