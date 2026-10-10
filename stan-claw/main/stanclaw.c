@@ -185,11 +185,12 @@ static void settings_load(void)
 
 void settings_reload(void) { settings_load(); s_dirty = true; }
 
-/* A soft two-note chime before it speaks up on its own. */
+/* A soft two-note chime before it speaks up on its own (made once, in PSRAM). */
 static void chime(void)
 {
-    static int16_t t[AUDIO_FS * 3 / 5];
+    static int16_t *t;
     const int n = AUDIO_FS * 3 / 5, half = n / 2;
+    if (!t && !(t = heap_caps_malloc(n * sizeof *t, MALLOC_CAP_SPIRAM))) return;
     for (int i = 0; i < n; i++) {
         int k = i < half ? i : i - half;
         float env = (k < 300 ? k / 300.0f : 1.0f) * expf(-3.5f * k / half);
@@ -373,11 +374,14 @@ static void conversation(void)
         if (s_stop) break;
         int act = s_action;
         s_action = ACT_NONE;
-        if ((act == ACT_AGAIN || act == ACT_SLOWER) && last[0]) {
-            /* "Say it again" / "slower please": the last answer, once more. */
-            set_view(UI_SPEAKING, last_heard, last, NULL, last_note);
-            say(last, act == ACT_SLOWER ? 0.75f : 0);
-            round--;
+        if (act == ACT_AGAIN || act == ACT_SLOWER) {
+            /* "Say it again" / "slower please": the last answer, once more
+               (before any answer, just listen again). */
+            if (last[0]) {
+                set_view(UI_SPEAKING, last_heard, last, NULL, last_note);
+                say(last, act == ACT_SLOWER ? 0.75f : 0);
+            }
+            round = round > 0 ? round - 1 : -1;
             continue;
         }
         if (act == ACT_YES || act == ACT_NO) {
@@ -496,7 +500,7 @@ static void care_task(void *arg)
     for (;;) {
         vTaskDelay(pdMS_TO_TICKS(3000));
         int64_t now_us = esp_timer_get_time();
-        if (net_up() && care_net_ready()) {
+        if (net_up() && care_net_ready() && !s_in_use && !s_convo) {     /* never a TLS session beside a conversation's */
             if (s_care_kick || now_us - remind_at >= REMIND_US) {
                 /* A failure tries again in 10 minutes. */
                 remind_at = care_net_refresh_reminders() ? now_us : now_us - REMIND_US + 600LL * 1000000;
@@ -535,6 +539,11 @@ static void care_task(void *arg)
         if (ri >= 0) {
             care_item_t *r = &care_reminders()->item[ri];
             if (present(UI_REMINDER, "Reminder", r->text, r->text)) { r->done = true; care_net_save(); }
+        }
+        static int64_t hw_at;
+        if (now_us - hw_at > 600LL * 1000000) {
+            hw_at = now_us;
+            ESP_LOGI(TAG, "care stack: %u bytes never used", (unsigned)uxTaskGetStackHighWaterMark(NULL));
         }
     }
 }

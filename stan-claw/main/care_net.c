@@ -14,12 +14,15 @@
 static const char *TAG = "care";
 
 static care_list_t *s_rem, *s_msg;     /* PSRAM: 3 KB each */
+static char *s_text;                   /* PSRAM: a tool's reply text */
+#define TEXT_MAX 8192
 
 void care_net_load(void)
 {
     if (!s_rem) {
         s_rem = heap_caps_calloc(1, sizeof *s_rem, MALLOC_CAP_SPIRAM);
         s_msg = heap_caps_calloc(1, sizeof *s_msg, MALLOC_CAP_SPIRAM);
+        s_text = heap_caps_malloc(TEXT_MAX, MALLOC_CAP_SPIRAM);
     }
     char *t = memory_read("remind.jsn", 16384);
     if (!t || !care_list_load(t, s_rem)) s_rem->n = 0;
@@ -69,9 +72,8 @@ static bool call(const char *tool, const char *extra, char *out, size_t n)
 
 bool care_net_refresh_reminders(void)
 {
-    static char text[8192];
-    if (!call("reminders", NULL, text, sizeof text)) return false;
-    int n = care_parse_reminders(text, s_rem);
+    if (!s_text || !call("reminders", NULL, s_text, TEXT_MAX)) return false;
+    int n = care_parse_reminders(s_text, s_rem);
     if (n < 0) return false;
     care_net_save();
     ESP_LOGI(TAG, "%d reminders", n);
@@ -80,9 +82,8 @@ bool care_net_refresh_reminders(void)
 
 int care_net_check_inbox(void)
 {
-    static char text[8192];
-    if (!call("family_inbox", NULL, text, sizeof text)) return -1;
-    int fresh = care_parse_messages(text, s_msg);
+    if (!s_text || !call("family_inbox", NULL, s_text, TEXT_MAX)) return -1;
+    int fresh = care_parse_messages(s_text, s_msg);
     if (fresh > 0) {
         care_net_save();
         ESP_LOGI(TAG, "%d new messages from family", fresh);
