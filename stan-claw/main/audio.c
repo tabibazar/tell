@@ -1,5 +1,7 @@
 #include "audio.h"
 
+#include <math.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "driver/i2s_std.h"
@@ -17,8 +19,18 @@ static const char *TAG = "audio";
 #define PIN_WS   7
 #define PIN_DOUT 6
 #define PIN_DIN  15
-#define SLOTS    4          /* the ES7210 sends four TDM slots; mics on slots 0 and 1 */
-#define FRAME    320        /* 20 ms at 16 kHz */
+/*
+ * The ES7210's four TDM slots, measured on this board with the console's
+ * `slots` (quiet / beep, RMS): 0 = MIC1 (24 / 105), 1 = the speaker's drive
+ * looped back, the reference (1 / 1020, a clean sine), 2 = MIC2 (24 / 90),
+ * 3 = nothing (1 / 1). The same order as the AUDIO-Board's (speaker_app.c).
+ * Recording takes MIC1 alone: averaging in MIC2 could comb-filter speech
+ * between two mics centimetres apart, and MIC1 reads the louder of the two.
+ */
+#define SLOTS    4
+#define SLOT_MIC 0
+#define FRAME    320        /* 20 ms at 16 kHz; one read is one DMA buffer */
+#define DMA_BUFS 6
 #define MIC_GAIN_DB 30.0f
 
 static i2s_chan_handle_t s_tx, s_rx;
@@ -31,7 +43,7 @@ void audio_on_mic(void (*cb)(bool open)) { s_mic_cb = cb; }
 static bool i2s_start(void)
 {
     i2s_chan_config_t chan = I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_0, I2S_ROLE_MASTER);
-    chan.dma_desc_num = 6;
+    chan.dma_desc_num = DMA_BUFS;
     chan.dma_frame_num = FRAME;
     chan.auto_clear_after_cb = true;
     if (i2s_new_channel(&chan, &s_tx, &s_rx) != ESP_OK) return false;
@@ -56,6 +68,38 @@ static bool i2s_start(void)
     rx.slot_cfg.left_align = true;
     return i2s_channel_init_std_mode(s_tx, &tx) == ESP_OK && i2s_channel_init_tdm_mode(s_rx, &rx) == ESP_OK
         && i2s_channel_enable(s_tx) == ESP_OK && i2s_channel_enable(s_rx) == ESP_OK;
+}
+
+/* The ES7210's registers after open: 00h is 41h once its reset is released,
+   02h is C1h, the 256 x fs clocking. A cold-boot failure on this codec pair
+   (main/speaker_app.c) left both at their power-on values. */
+static bool es7210_landed(void)
+{
+    int r00 = audio_mic_reg(0x00), r02 = audio_mic_reg(0x02);
+    ESP_LOGI(TAG, "ES7210: reg00 %02X reg02 %02X (want 41 C1)", (unsigned)(r00 & 0xFF), (unsigned)(r02 & 0xFF));
+    return r00 == 0x41 && r02 == 0xC1;
+}
+
+static bool es7210_open(void)
+{
+    esp_codec_dev_sample_info_t fs = { .bits_per_sample = 16, .channel = SLOTS, .channel_mask = 0, .sample_rate = AUDIO_FS, .mclk_multiple = 256 };
+    if (esp_codec_dev_open(s_in, &fs) != ESP_CODEC_DEV_OK) return false;
+    esp_codec_dev_set_in_gain(s_in, MIC_GAIN_DB);     /* after open: the open resets the PGAs */
+    return true;
+}
+
+int audio_mic_reg(int reg)
+{
+    int v = -1;
+    if (!s_in || esp_codec_dev_read_reg(s_in, reg, &v) != ESP_CODEC_DEV_OK) return -1;
+    return v & 0xFF;
+}
+
+/* RX runs from init and is never stopped, so its DMA queue holds the last
+   DMA_BUFS reads of whatever was going on before: drop them. */
+static void drain_rx(int16_t *tdm, size_t bytes)
+{
+    for (int i = 0; i < DMA_BUFS; i++) esp_codec_dev_read(s_in, tdm, bytes);
 }
 
 esp_err_t audio_init(void)
@@ -87,9 +131,12 @@ esp_err_t audio_init(void)
 
     esp_codec_dev_cfg_t ic = { .dev_type = ESP_CODEC_DEV_TYPE_IN, .codec_if = if7210, .data_if = data_if };
     s_in = esp_codec_dev_new(&ic);
-    esp_codec_dev_sample_info_t ifs = { .bits_per_sample = 16, .channel = SLOTS, .channel_mask = 0, .sample_rate = AUDIO_FS, .mclk_multiple = 256 };
-    if (!s_in || esp_codec_dev_open(s_in, &ifs) != ESP_CODEC_DEV_OK) { ESP_LOGE(TAG, "ES7210 open failed"); return ESP_FAIL; }
-    esp_codec_dev_set_in_gain(s_in, MIC_GAIN_DB);     /* after open: the open resets the PGAs */
+    if (!s_in || !es7210_open()) { ESP_LOGE(TAG, "ES7210 open failed"); return ESP_FAIL; }
+    if (!es7210_landed()) {         /* one retry, as on speaker_app.c: close and open again */
+        ESP_LOGW(TAG, "ES7210: registers did not land; opening it again");
+        esp_codec_dev_close(s_in);
+        if (!es7210_open() || !es7210_landed()) ESP_LOGE(TAG, "ES7210: still not right; the mics may be deaf");
+    }
     ESP_LOGI(TAG, "speaker and mics up at %d Hz", AUDIO_FS);
     return ESP_OK;
 }
@@ -102,9 +149,14 @@ int audio_record(int16_t *buf, int max_samples, int max_ms, vad_result_t *why)
     int n = 0;
     vad_result_t r = VAD_WAITING;
     if (s_mic_cb) s_mic_cb(true);
+    drain_rx(tdm, sizeof tdm);
     while (n + FRAME <= max_samples) {
-        if (esp_codec_dev_read(s_in, tdm, sizeof tdm) != ESP_CODEC_DEV_OK) { r = VAD_SILENT; break; }
-        for (int i = 0; i < FRAME; i++) buf[n + i] = (int16_t)(((int)tdm[i * SLOTS] + tdm[i * SLOTS + 1]) / 2);
+        if (esp_codec_dev_read(s_in, tdm, sizeof tdm) != ESP_CODEC_DEV_OK) {
+            ESP_LOGE(TAG, "ES7210 read failed: no audio");
+            r = VAD_SILENT;
+            break;
+        }
+        for (int i = 0; i < FRAME; i++) buf[n + i] = tdm[i * SLOTS + SLOT_MIC];
         r = vad_feed(&v, buf + n, FRAME);
         n += FRAME;
         if (r == VAD_DONE || r == VAD_SILENT || r == VAD_CAPPED) break;
@@ -148,3 +200,40 @@ void audio_set_volume(int level)
 }
 
 int audio_volume(void) { return s_volume; }
+
+int audio_slot_levels(int ms, const int16_t *tone, int tone_len, int peak[SLOTS], int rms[SLOTS], int loud[SLOTS])
+{
+    static int16_t tdm[FRAME * SLOTS];
+    double sq[SLOTS] = { 0 };
+    for (int c = 0; c < SLOTS; c++) peak[c] = rms[c] = loud[c] = 0;
+    if (!s_in) return -1;
+    if (s_mic_cb) s_mic_cb(true);
+    if (tone) audio_play_begin();
+    drain_rx(tdm, sizeof tdm);
+    int frames = 0, t = 0;
+    for (int k = 0; k < ms / 20; k++) {
+        if (tone) {     /* one frame out, one frame in: both queues run on the same clock */
+            static int16_t chunk[FRAME];
+            for (int i = 0; i < FRAME; i++, t = (t + 1) % tone_len) chunk[i] = tone[t];
+            audio_play_chunk(chunk, FRAME);
+        }
+        if (esp_codec_dev_read(s_in, tdm, sizeof tdm) != ESP_CODEC_DEV_OK) { ESP_LOGE(TAG, "ES7210 read failed"); break; }
+        double fsq[SLOTS] = { 0 };
+        for (int i = 0; i < FRAME; i++)
+            for (int c = 0; c < SLOTS; c++) {
+                int v = tdm[i * SLOTS + c];
+                if (abs(v) > peak[c]) peak[c] = abs(v);
+                fsq[c] += (double)v * v;
+            }
+        for (int c = 0; c < SLOTS; c++) {
+            sq[c] += fsq[c];
+            int f = (int)sqrt(fsq[c] / FRAME);      /* this 20 ms, as the end-of-speech detector sees it */
+            if (f > loud[c]) loud[c] = f;
+        }
+        frames += FRAME;
+    }
+    if (tone) audio_play_end();
+    if (s_mic_cb) s_mic_cb(false);
+    for (int c = 0; c < SLOTS && frames; c++) rms[c] = (int)sqrt(sq[c] / frames);
+    return frames;
+}

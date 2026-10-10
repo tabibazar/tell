@@ -14,6 +14,18 @@
 #include "freertos/task.h"
 #include "net.h"
 
+#define TONE_N (AUDIO_FS / 2)      /* half a second of 440 Hz: 220 whole cycles, so it loops cleanly */
+
+/* The beep, made once in PSRAM (internal RAM is for WiFi and TLS). */
+static const int16_t *tone(void)
+{
+    static int16_t *t;
+    if (t) return t;
+    t = heap_caps_malloc(TONE_N * sizeof(int16_t), MALLOC_CAP_SPIRAM);
+    if (t) for (int i = 0; i < TONE_N; i++) t[i] = (int16_t)(8000 * sinf(2 * 3.14159f * 440 * i / AUDIO_FS));
+    return t;
+}
+
 static void yes_no(const char *what, cfg_key_t k) { printf("%s: %s\n", what, cfg_has(k) ? "set" : "not set"); }
 
 static void run(const char *line)
@@ -80,12 +92,33 @@ static void run(const char *line)
         return;
     }
     if (strcmp(w[0], "beep") == 0) {
-        static int16_t tone[AUDIO_FS / 2];
-        for (int i = 0; i < AUDIO_FS / 2; i++) tone[i] = (int16_t)(8000 * sinf(2 * 3.14159f * 440 * i / AUDIO_FS));
+        const int16_t *t = tone();
+        if (!t) { printf("no: out of memory\n"); return; }
         audio_play_begin();
-        audio_play_chunk(tone, AUDIO_FS / 2);
+        audio_play_chunk(t, TONE_N);
         audio_play_end();
         printf("ok: beeped\n");
+        return;
+    }
+    if (strcmp(w[0], "slots") == 0) {        /* each TDM slot's level over 2 s; "slots beep" plays the tone meanwhile */
+        bool beep = n >= 2 && strcmp(w[1], "beep") == 0;
+        const int16_t *t = beep ? tone() : NULL;
+        if (beep && !t) { printf("no: out of memory\n"); return; }
+        int peak[4], rms[4], loud[4];
+        int k = audio_slot_levels(2000, t, TONE_N, peak, rms, loud);
+        if (k <= 0) { printf("no: the mics are not up\n"); return; }
+        for (int c = 0; c < 4; c++) printf("  slot %d: peak %5d  rms %5d  loudest 20 ms %5d\n", c, peak[c], rms[c], loud[c]);
+        printf("ok: %d ms of slots%s\n", k * 1000 / AUDIO_FS, beep ? " with the beep" : "");
+        return;
+    }
+    if (strcmp(w[0], "regs") == 0) {         /* the ES7210's setup, as it stands */
+        static const int regs[] = { 0x00, 0x02, 0x12, 0x43, 0x44, 0x45, 0x46, 0x4B, 0x4C };
+        for (size_t i = 0; i < sizeof regs / sizeof regs[0]; i++) {
+            int v = audio_mic_reg(regs[i]);
+            if (v < 0) printf("  %02X: read failed\n", regs[i]);
+            else printf("  %02X: %02X\n", regs[i], v);
+        }
+        printf("ok: ES7210 registers\n");
         return;
     }
     if (strcmp(w[0], "rec") == 0) {
@@ -101,7 +134,8 @@ static void run(const char *line)
         return;
     }
     printf("commands: wifi add|forget|list, key claude|deepgram|elevenlabs K, voice ID, model ID,\n"
-           "          mcp url URL, mcp token T, serve token T, beep, rec, status\n");
+           "          mcp url URL, mcp token T, serve token T, beep, rec, status,\n"
+           "          slots [beep], regs (developer tools)\n");
 }
 
 static void console_task(void *arg)

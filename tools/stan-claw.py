@@ -24,9 +24,19 @@ s.rts = s.dtr = False
 time.sleep(0.2)
 s.reset_input_buffer()
 s.write((line + "\n").encode())
-end, out = time.time() + 2.5, b""
-while time.time() < end:
-    out += s.read(4096)
+# Replies end with an "ok:"/"no:" line; status and the help have none, so
+# those end after half a second of quiet. `rec` and `slots` take up to 5 s.
+LOG = ("I (", "W (", "E (")
+start, out, last, said = time.time(), b"", time.time(), False
+while time.time() < start + 7:
+    got = s.read(4096)
+    if got:
+        out, last = out + got, time.time()
+    lines = [l for l in out.decode("utf-8", "replace").splitlines() if l.strip() and not l.startswith(LOG)]
+    said = said or bool(lines)
+    if any(l.startswith(("ok:", "no:")) for l in lines) or (said and time.time() - last > 0.5):
+        break
+out += s.read(4096)           # the rest of the last line
 for l in out.decode("utf-8", "replace").splitlines():
-    if not l.startswith(("I (", "W (", "E (")):
+    if not l.startswith(LOG):
         print(l)

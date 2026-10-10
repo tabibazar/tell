@@ -24,4 +24,13 @@ void audio_set_volume(int level);
 int audio_volume(void);
 void audio_on_mic(void (*cb)(bool open));
 
+/* Developer tools for the console. audio_slot_levels records `ms` of the
+   ES7210's raw TDM frames (all four slots), playing `tone` (looped, may be
+   NULL) as it goes, and gives each slot's peak, RMS, and the RMS of its
+   loudest 20 ms (what the end-of-speech detector compares); it returns the
+   frames read, -1 with no mics. audio_mic_reg reads an ES7210 register,
+   -1 if the read fails. */
+int audio_slot_levels(int ms, const int16_t *tone, int tone_len, int peak[4], int rms[4], int loud[4]);
+int audio_mic_reg(int reg);
+
 #endif /* AUDIO_H */
