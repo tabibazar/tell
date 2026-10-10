@@ -39,7 +39,8 @@ int tts_speak(const char *text)
     char key[CFG_VAL], voice[CFG_VAL], url[CFG_VAL + 100];
     cfg_get(CFG_ELEVEN_KEY, key, sizeof key);
     cfg_get(CFG_VOICE, voice, sizeof voice);
-    if (!key[0] || !voice[0]) return 0;
+    if (!key[0]) return 0;
+    if (!voice[0]) return TTS_NO_VOICE;
     snprintf(url, sizeof url, "https://api.elevenlabs.io/v1/text-to-speech/%s/stream?output_format=pcm_16000", voice);
     char *body = elevenlabs_body(text);
     if (!body) return -1;

@@ -119,7 +119,7 @@ test_daysui: $(DAYSUI_SRCS) ../main/daysui.h ../main/noiseui.h ../main/ring.h ..
 	$(CC) $(CFLAGS) -o $@ $(DAYSUI_SRCS) -lm
 
 clean:
-	rm -f test_daysui test_noiseui test_aafont test_soundlevel test_ring test_vector test_moonphase test_pcf85063 test_face test_ens160 test_envpage test_envstate test_envui test_envstore test_drift test_textwrap test_font test_font_clock test_timecalc test_canvas test_usagedata test_pages test_views test_settings test_ds3231 test_level test_levelbig test_particles test_pip test_maze test_sc_mcp test_sc_claude test_sc_speech test_sc_vad test_sc_ui
+	rm -f test_daysui test_noiseui test_aafont test_soundlevel test_ring test_vector test_moonphase test_pcf85063 test_face test_ens160 test_envpage test_envstate test_envui test_envstore test_drift test_textwrap test_font test_font_clock test_timecalc test_canvas test_usagedata test_pages test_views test_settings test_ds3231 test_level test_levelbig test_particles test_pip test_maze test_sc_cmdline test_sc_mcp test_sc_claude test_sc_speech test_sc_vad test_sc_ui
 
 .PHONY: all clean
 

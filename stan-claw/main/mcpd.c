@@ -84,7 +84,7 @@ void mcpd_start(const mcp_tools_t *tools)
     for (int i = 0; i < 16; i++) snprintf(s_session + 2 * i, 3, "%02x", (unsigned)(esp_random() & 0xFF));
 
     httpd_config_t cfg = HTTPD_DEFAULT_CONFIG();
-    cfg.stack_size = 8192;
+    cfg.stack_size = 16384;      /* TLS (ElevenLabs, Deepgram) runs on this task in speak/listen/ask */
     cfg.recv_wait_timeout = 10;
     cfg.send_wait_timeout = 10;
     /* esp_http_server runs every URI handler on its single server task.

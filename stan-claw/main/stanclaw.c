@@ -35,6 +35,8 @@
 #include "tts.h"
 #include "ui.h"
 
+static const char *TAG = "stanclaw";
+
 #define PIN_BOOT     0
 #define REC_MAX_S    15
 #define ANSWER_US    (30LL * 1000000)
@@ -76,6 +78,7 @@ static void on_mic(bool open)
 static const char *service_error(const char *who, int code, char *buf, size_t n)
 {
     if (code == 0) snprintf(buf, n, "%s key missing", who);
+    else if (code == TTS_NO_VOICE) snprintf(buf, n, "%s voice missing", who);
     else if (code == 401 || code == 403) snprintf(buf, n, "%s key rejected", who);
     else if (code == 402) snprintf(buf, n, "%s: out of credit", who);
     else if (code == 429) snprintf(buf, n, "%s: too many requests", who);
@@ -113,9 +116,9 @@ static void conversation(void)
 
     set_view(UI_SPEAKING, heard, reply.text, NULL, note);
     code = tts_speak(reply.text);
+    s_answer_at = esp_timer_get_time();         /* before UI_ANSWER, so the main loop can't time it out at once */
     if (code != 200) set_view(UI_ANSWER, heard, reply.text, NULL, service_error("ElevenLabs", code, err, sizeof err));
     else set_view(UI_ANSWER, heard, reply.text, NULL, note);
-    s_answer_at = esp_timer_get_time();
 }
 
 static void convo_task(void *arg)
@@ -124,6 +127,7 @@ static void convo_task(void *arg)
         xSemaphoreTake(s_go, portMAX_DELAY);
         if (xSemaphoreTake(s_busy, 0) != pdTRUE) continue;      /* an agent is using it: ignore the tap */
         conversation();
+        ESP_LOGI(TAG, "convo stack: %u bytes never used", (unsigned)uxTaskGetStackHighWaterMark(NULL));
         xSemaphoreTake(s_go, 0);        /* drop a BOOT press that queued during the conversation */
         xSemaphoreGive(s_busy);
     }
@@ -146,6 +150,7 @@ static bool t_speak(const char *text, char *out, size_t n)
     int code = tts_speak(text);
     if (was == UI_HOME) set_view(UI_HOME, NULL, NULL, NULL, NULL);
     xSemaphoreGive(s_busy);
+    ESP_LOGI(TAG, "MCP server stack after speak: %u bytes never used", (unsigned)uxTaskGetStackHighWaterMark(NULL));
     if (code == 200) { snprintf(out, n, "spoken"); return true; }
     service_error("ElevenLabs", code, out, n);
     return false;
@@ -279,7 +284,7 @@ void app_main(void)
     net_start();
     console_start();
     mcpd_start(&TOOLS);
-    xTaskCreatePinnedToCore(convo_task, "convo", 8192, NULL, 5, NULL, 1);
+    xTaskCreatePinnedToCore(convo_task, "convo", 16384, NULL, 5, NULL, 1);      /* TLS x3 */
 
     bool down = false, boot_was = true;
     int last_min = -1;
