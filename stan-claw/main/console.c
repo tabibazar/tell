@@ -168,6 +168,23 @@ static void run(const char *line)
         if (code == 200 && r.tools[0]) printf("   (asked remote: %s)\n", r.tools);
         return;
     }
+    if (strcmp(w[0], "speed") == 0 && n >= 2) {
+        const char *v = strcmp(w[1], "slower") == 0 ? "0.85" : strcmp(w[1], "faster") == 0 ? "1.15" : "1.0";
+        cfg_set(CFG_SPEED, v);
+        settings_reload();
+        printf("ok: speed %s\n", w[1]);
+        return;
+    }
+    if (strcmp(w[0], "volume") == 0 && n >= 2) {
+        int lv = atoi(w[1]);
+        lv = lv < 0 ? 0 : lv > 100 ? 100 : lv;
+        char v[8];
+        snprintf(v, sizeof v, "%d", lv);
+        cfg_set(CFG_VOLUME, v);
+        settings_reload();                      /* applies it to the speaker */
+        printf("ok: volume %d\n", lv);
+        return;
+    }
     if (strcmp(w[0], "memory") == 0) {
         static claude_facts_t f;
         memory_load_facts(&f);
@@ -177,7 +194,7 @@ static void run(const char *line)
     }
     if (strcmp(w[0], "log") == 0) { memory_print_log(n >= 2 ? atoi(w[1]) : 10); return; }
     if (strcmp(w[0], "forget") == 0) { memory_forget(); printf("ok: conversation and facts forgotten (restart to clear the one in RAM)\n"); return; }
-    printf("commands: wifi add|forget|list, key claude|deepgram|elevenlabs K, voice NAME|ID, model ID, memory, log [N], forget, ask TEXT,\n"
+    printf("commands: wifi add|forget|list, key claude|deepgram|elevenlabs K, voice NAME|ID, model ID, speed slower|normal|faster, volume N, memory, log [N], forget, ask TEXT,\n"
            "          mcp url URL, mcp token T, serve token T, beep, rec, status,\n"
            "          slots [beep], regs (developer tools)\n");
 }
