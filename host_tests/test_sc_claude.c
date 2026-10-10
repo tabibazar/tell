@@ -75,6 +75,14 @@ int main(void)
     CHECK(!claude_parse("<html>", &r) && r.error[0]);
     CHECK(!claude_parse("{\"type\":\"message\",\"content\":[]}", &r));       /* nothing to say */
 
+    /* The Messages API's answer (seen live) when the MCP server can't be reached. */
+    CHECK(!claude_parse("{\"type\":\"error\",\"error\":{\"type\":\"invalid_request_error\","
+                        "\"message\":\"mcp_servers[0] 'remote': Error while communicating with MCP server.\"}}", &r));
+    CHECK(claude_mcp_failed(400, &r));
+    CHECK(!claude_mcp_failed(200, &r) && !claude_mcp_failed(529, &r) && !claude_mcp_failed(-1, &r));
+    CHECK(!claude_parse("{\"type\":\"error\",\"error\":{\"type\":\"authentication_error\",\"message\":\"invalid x-api-key\"}}", &r));
+    CHECK(!claude_mcp_failed(401, &r));                                      /* a bad key is not the server */
+
     printf(fails ? "%d FAILED\n" : "sc_claude: all passed\n", fails);
     return fails != 0;
 }

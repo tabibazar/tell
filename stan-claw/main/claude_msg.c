@@ -1,5 +1,6 @@
 #include "claude_msg.h"
 
+#include <ctype.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -100,4 +101,13 @@ bool claude_parse(const char *json, claude_reply_t *out)
     cJSON_Delete(j);
     if (!out->text[0]) { snprintf(out->error, sizeof out->error, "Claude said nothing"); return false; }
     return true;
+}
+
+bool claude_mcp_failed(int code, const claude_reply_t *r)
+{
+    if (code < 400 || code > 499) return false;
+    for (const char *p = r->error; p[0] && p[1] && p[2]; p++)
+        if (tolower((unsigned char)p[0]) == 'm' && tolower((unsigned char)p[1]) == 'c' && tolower((unsigned char)p[2]) == 'p')
+            return true;
+    return false;
 }

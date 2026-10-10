@@ -35,5 +35,9 @@ void claude_history_clear(claude_history_t *h);
 char *claude_request(const char *model, const char *mcp_url, const char *mcp_token,
                      const claude_history_t *h, const char *question);
 bool claude_parse(const char *json, claude_reply_t *out);
+/* A refusal because of the remote MCP server: a 4xx whose error names it
+   (an unreachable server is a 400, "mcp_servers[0] 'remote': Error while
+   communicating with MCP server."). The caller asks again without it. */
+bool claude_mcp_failed(int code, const claude_reply_t *r);
 
 #endif /* CLAUDE_MSG_H */

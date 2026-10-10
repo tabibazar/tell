@@ -5,6 +5,10 @@ speech -> Deepgram -> Claude (+ the remote MCP server) -> ElevenLabs -> speaker.
     tools/stan-claw-live.py "What can you do?"
 
 Keys from secrets/stan-claw.env (gitignored). Standard library only.
+MCP_URL and MCP_TOKEN in the environment override the file's, to try a
+server (or a dead one) without editing it:
+
+    MCP_URL=https://mcp.invalid.example/mcp tools/stan-claw-live.py
 """
 import json, os, subprocess, sys, tempfile, urllib.request
 
@@ -14,6 +18,9 @@ for line in open(os.path.join(ROOT, "secrets", "stan-claw.env")):
     if "=" in line and not line.startswith("#"):
         k, v = line.rstrip("\n").split("=", 1)
         env[k] = v
+for k in ("MCP_URL", "MCP_TOKEN"):
+    if k in os.environ:
+        env[k] = os.environ[k]
 
 def post(url, headers, body, timeout):
     req = urllib.request.Request(url, data=body, headers=headers, method="POST")
