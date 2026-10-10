@@ -72,6 +72,17 @@ int main(void)
     ui_draw(&c, &v); bmp("agent-image-listening");
     CHECK(fb[10 * 480 + 240] == banner_on);                  /* even over an agent's picture */
 
+    v = (ui_view_t){ .mode = UI_RESTING, .now = 14 * 60 + 5 };
+    ui_draw(&c, &v); bmp("resting");
+    CHECK(fb[210 * 480 + 240] != 0 && fb[20 * 480 + 20] == 0);      /* an orb on black */
+    uint16_t blue = fb[210 * 480 + 240];
+    v.amber = true;
+    ui_draw(&c, &v); bmp("resting-amber");
+    CHECK(fb[210 * 480 + 240] != blue);
+    v = (ui_view_t){ .mode = UI_RESTING, .now = 14 * 60 + 5, .mic_open = true };
+    ui_draw(&c, &v);
+    CHECK(fb[10 * 480 + 240] == banner_on);                  /* the banner, even resting */
+
     CHECK(ui_hit_talk(240, 250));
     CHECK(!ui_hit_talk(20, 460));
 

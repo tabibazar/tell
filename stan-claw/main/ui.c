@@ -101,8 +101,43 @@ static void talk_button(canvas_t *c, uint16_t col, const char *label, const char
     if (hint) aafont_draw(c, &aafont_rooms_small, W / 2, TALK_Y + TALK_R + 24, hint, C_DIM, AAFONT_CENTRE);
 }
 
+/* The resting orb: a core and a glow that fades into the black, drawn as
+   rings from the outside in, each a little brighter. */
+static void orb(canvas_t *c, int cx, int cy, bool amber)
+{
+    const int glow = 96, core = 30;
+    int R = amber ? 0xF5 : 0x4F, G = amber ? 0xA8 : 0x8C, B = amber ? 0x2E : 0xFF;
+    for (int r = glow; r > core; r -= 2) {
+        float f = (float)(glow - r) / (glow - core);    /* 0 at the edge, 1 at the core */
+        f = f * f * 0.55f;
+        canvas_disc(c, cx, cy, r, RGB((int)(R * f), (int)(G * f), (int)(B * f)));
+    }
+    canvas_disc(c, cx, cy, core, RGB(R, G, B));
+    canvas_disc(c, cx - 9, cy - 9, 9, RGB((R + 255) / 2, (G + 255) / 2, (B + 255) / 2));   /* a highlight */
+}
+
+static void resting(canvas_t *c, const ui_view_t *v)
+{
+    canvas_fill_rect(c, 0, 0, W, H, RGB(0, 0, 0));
+    orb(c, W / 2, 210, v->amber);
+    if (v->now >= 0) {
+        char t[24];
+        snprintf(t, sizeof t, "%d:%02d", v->now / 60 % 24, v->now % 60);
+        aafont_draw(c, &aafont_rooms_head, W / 2, 340, t, RGB(0x5A, 0x60, 0x6A), AAFONT_CENTRE | AAFONT_ADVANCE);
+    }
+}
+
 void ui_draw(canvas_t *c, const ui_view_t *v)
 {
+    if (v->mode == UI_RESTING) {
+        resting(c, v);
+        if (v->mic_open) {
+            canvas_fill_rect(c, 0, 0, W, 44, C_BANNER);
+            canvas_disc(c, W / 2 - 78, 22, 7, C_TEXT);
+            aafont_draw(c, &aafont_rooms_title, W / 2 + 10, 22 - aafont_rooms_title.cap / 2, "LISTENING", C_TEXT, AAFONT_CENTRE);
+        }
+        return;
+    }
     canvas_fill_rect(c, 0, 0, W, H, C_BG);
     header(c, v);
     const aafont_t *sub = &aafont_inter_sub;
@@ -136,6 +171,8 @@ void ui_draw(canvas_t *c, const ui_view_t *v)
         para(c, sub, v->text, 24, y, W - 48, 32, 11, C_TEXT);
         break;
     }
+    case UI_RESTING:                       /* drawn above */
+        break;
     case UI_AGENT_IMAGE:
         if (v->image && v->img_w > 0 && v->img_h > 0 && v->img_w <= W && v->img_h <= H)
             canvas_blit(c, v->image, v->img_w, v->img_h, (W - v->img_w) / 2, (H - v->img_h) / 2);

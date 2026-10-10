@@ -7,6 +7,10 @@
  * One lock (s_busy) owns the speaker, the mics and the screen: a tap's
  * conversation holds it from the tap to the end of the answer, and each MCP
  * tool call holds it for its own length, waiting up to 30 s for it.
+ *
+ * Untouched, the screen rests (rest.h): a breathing orb at 45 s, dark 5 min
+ * later, and dark at 45 s from 19:00 to 08:00. A tap, BOOT, a knock on the
+ * desk or an agent's call wakes it; the first tap only wakes.
  */
 #include <stdio.h>
 #include <string.h>
@@ -28,8 +32,11 @@
 #include "config.h"
 #include "console.h"
 #include "lcd.h"
+#include "knock.h"
 #include "mcpd.h"
+#include "motion.h"
 #include "net.h"
+#include "rest.h"
 #include "stt.h"
 #include "touch.h"
 #include "tts.h"
@@ -50,6 +57,23 @@ static volatile bool s_dirty = true, s_mic;
 static int64_t s_answer_at;
 static int16_t *s_pcm;                 /* PSRAM, REC_MAX_S (or 30 s for listen) of audio */
 
+/* Rest (rest.h): untouched for 45 s the screen breathes, then sleeps. Anything
+   holding s_busy counts as use; a touch, BOOT, a knock or an agent's call
+   wakes it. The main loop alone sets the backlight and the rest level, but
+   on_mic forces the light up at once so the LISTENING banner is always seen. */
+#define AMBER_MS 450
+static volatile int64_t s_active_at;   /* us: the last touch, press, knock or use */
+static volatile bool s_in_use;         /* a conversation or a tool holds s_busy */
+static volatile int64_t s_amber_until; /* us: an agent woke it: show the orb amber till then */
+static volatile int s_light = -1;      /* the backlight as last set, percent */
+
+static void activity(void) { s_active_at = esp_timer_get_time(); }
+
+static void light(int pct)
+{
+    if (pct != s_light) { lcd_backlight(pct); s_light = pct; }
+}
+
 static void set_view(ui_mode_t mode, const char *heard, const char *text, const char *title, const char *note)
 {
     xSemaphoreTake(s_ui_lock, portMAX_DELAY);
@@ -67,6 +91,8 @@ static void on_mic(bool open)
 {
     s_mic = open;
     s_dirty = true;
+    activity();
+    if (open) light(100);
     /* Draw now, so the banner is up before the first sample is taken. */
     xSemaphoreTake(s_ui_lock, portMAX_DELAY);
     s_view.mic_open = open;
@@ -126,7 +152,11 @@ static void convo_task(void *arg)
     for (;;) {
         xSemaphoreTake(s_go, portMAX_DELAY);
         if (xSemaphoreTake(s_busy, 0) != pdTRUE) continue;      /* an agent is using it: ignore the tap */
+        s_in_use = true;
+        activity();
         conversation();
+        s_in_use = false;
+        activity();
         ESP_LOGI(TAG, "convo stack: %u bytes never used", (unsigned)uxTaskGetStackHighWaterMark(NULL));
         xSemaphoreTake(s_go, 0);        /* drop a BOOT press that queued during the conversation */
         xSemaphoreGive(s_busy);
@@ -135,11 +165,31 @@ static void convo_task(void *arg)
 
 /* ---- the MCP tools: each takes s_busy for its own length ---- */
 
-static bool take(char *out, size_t n)
+/* Waits up to 30 s for the lock. `wake`: the tool wants to be seen or heard,
+   so a resting screen flashes the orb amber and comes up. */
+static bool take_for(char *out, size_t n, bool wake)
 {
-    if (xSemaphoreTake(s_busy, pdMS_TO_TICKS(BUSY_WAIT_MS)) == pdTRUE) return true;
-    snprintf(out, n, "busy");
-    return false;
+    if (xSemaphoreTake(s_busy, pdMS_TO_TICKS(BUSY_WAIT_MS)) != pdTRUE) {
+        snprintf(out, n, "busy");
+        return false;
+    }
+    bool resting = s_light != 100;
+    s_in_use = true;
+    activity();
+    if (wake && resting) {
+        s_amber_until = esp_timer_get_time() + AMBER_MS * 1000LL;
+        vTaskDelay(pdMS_TO_TICKS(AMBER_MS + 60));
+    }
+    return true;
+}
+
+static bool take(char *out, size_t n) { return take_for(out, n, true); }
+
+static void give(void)
+{
+    s_in_use = false;
+    activity();
+    xSemaphoreGive(s_busy);
 }
 
 static bool t_speak(const char *text, char *out, size_t n)
@@ -149,7 +199,7 @@ static bool t_speak(const char *text, char *out, size_t n)
     if (was == UI_HOME) set_view(UI_SPEAKING, NULL, text, NULL, "an agent is speaking");
     int code = tts_speak(text);
     if (was == UI_HOME) set_view(UI_HOME, NULL, NULL, NULL, NULL);
-    xSemaphoreGive(s_busy);
+    give();
     ESP_LOGI(TAG, "MCP server stack after speak: %u bytes never used", (unsigned)uxTaskGetStackHighWaterMark(NULL));
     if (code == 200) { snprintf(out, n, "spoken"); return true; }
     service_error("ElevenLabs", code, out, n);
@@ -171,7 +221,7 @@ static bool t_listen(int max_seconds, char *out, size_t n)
 {
     if (!take(out, n)) return false;
     bool ok = hear(max_seconds, out, n);
-    xSemaphoreGive(s_busy);
+    give();
     return ok;
 }
 
@@ -183,7 +233,7 @@ static bool t_ask(const char *question, char *out, size_t n)
     bool ok;
     if (code != 200) { service_error("ElevenLabs", code, out, n); ok = false; }
     else ok = hear(20, out, n);
-    xSemaphoreGive(s_busy);
+    give();
     return ok;
 }
 
@@ -191,7 +241,7 @@ static bool t_show_text(const char *title, const char *text, char *out, size_t n
 {
     if (!take(out, n)) return false;
     set_view(UI_AGENT_TEXT, NULL, text, title, NULL);
-    xSemaphoreGive(s_busy);
+    give();
     snprintf(out, n, "shown");
     return true;
 }
@@ -224,15 +274,15 @@ static bool t_show_image(const uint8_t *jpeg, size_t len, char *out, size_t n)
     xSemaphoreGive(s_ui_lock);
     if (ok) snprintf(out, n, "shown");
     else snprintf(out, n, "could not decode that JPEG (baseline, at most 480x480)");
-    xSemaphoreGive(s_busy);
+    give();
     return ok;
 }
 
 static bool t_clear(char *out, size_t n)
 {
-    if (!take(out, n)) return false;
+    if (!take_for(out, n, false)) return false;
     set_view(UI_HOME, NULL, NULL, NULL, NULL);
-    xSemaphoreGive(s_busy);
+    give();
     snprintf(out, n, "cleared");
     return true;
 }
@@ -276,6 +326,10 @@ void app_main(void)
 
     ESP_ERROR_CHECK(lcd_init());
     bool touch = touch_init() == ESP_OK;
+    motion_init();
+    static knock_t knock;
+    knock_init(&knock);
+    activity();
     if (audio_init() != ESP_OK) set_view(UI_ERROR, NULL, "The speaker or microphones did not start.", "Audio failed", NULL);
     audio_on_mic(on_mic);
     gpio_config_t boot = { .pin_bit_mask = 1ULL << PIN_BOOT, .mode = GPIO_MODE_INPUT, .pull_up_en = GPIO_PULLUP_ENABLE };
@@ -293,14 +347,26 @@ void app_main(void)
         int x, y;
         bool now_down = touch && touch_read(&x, &y);
         bool boot_now = gpio_get_level(PIN_BOOT) != 0;
-        if (now_down && !down) {
+        bool awake = s_light == 100;
+        if (now_down && !down && !awake) {
+            activity();                     /* a tap on a resting screen only wakes it */
+        } else if (now_down && !down) {
+            activity();
             ui_mode_t m = s_view.mode;
             if (m == UI_HOME ? ui_hit_talk(x, y) : (m != UI_LISTENING && m != UI_THINKING && m != UI_SPEAKING)) {
                 if (m == UI_HOME) xSemaphoreGive(s_go);
                 else set_view(UI_HOME, NULL, NULL, NULL, NULL);          /* a tap clears answers and agent screens */
             }
         }
-        if (!boot_now && boot_was) xSemaphoreGive(s_go);
+        if (!boot_now && boot_was) {
+            if (awake) xSemaphoreGive(s_go);
+            activity();
+        }
+        if (!awake) {
+            float ax, ay, az;
+            if (motion_read(&ax, &ay, &az) && knock_feed(&knock, ax, ay, az, (long)(esp_timer_get_time() / 1000)))
+                activity();
+        }
         down = now_down;
         boot_was = boot_now;
 
@@ -320,11 +386,32 @@ void app_main(void)
             int m = lt.tm_hour * 60 + lt.tm_min;
             if (m != last_min) { last_min = m; s_view.now = m; s_dirty = true; }
         }
+        /* How awake to be, and the light for it. */
+        int64_t now_us = esp_timer_get_time();
+        int idle_s = s_in_use || s_mic ? 0 : (int)((now_us - s_active_at) / 1000000);
+        rest_level_t want = rest_level(idle_s, net_time_ok() ? s_view.now : -1);
+        bool amber = now_us < s_amber_until;
+        static rest_level_t shown = REST_AWAKE;
+        static bool shown_amber;
+        static int64_t rest_t0;
+        bool resting_screen = amber || want != REST_AWAKE;
+        if ((shown != REST_AWAKE) != resting_screen || amber != shown_amber) s_dirty = true;
+        if (want == REST_BREATHING && shown != REST_BREATHING) rest_t0 = now_us;
+        shown = amber ? REST_BREATHING : want;
+        shown_amber = amber;
+        light(amber ? 60 : want == REST_AWAKE ? 100 : want == REST_ASLEEP ? 0
+              : rest_breath_light((long)((now_us - rest_t0) / 1000)));
+
         if (s_dirty) {
             xSemaphoreTake(s_ui_lock, portMAX_DELAY);
             s_dirty = false;
             s_view.mic_open = s_mic;
-            ui_draw(lcd_canvas(), &s_view);
+            if (resting_screen) {
+                ui_view_t rv = { .mode = UI_RESTING, .now = s_view.now, .amber = amber, .mic_open = s_mic };
+                ui_draw(lcd_canvas(), &rv);
+            } else {
+                ui_draw(lcd_canvas(), &s_view);
+            }
             lcd_show();
             xSemaphoreGive(s_ui_lock);
         }

@@ -108,3 +108,4 @@ host_tests/test_sc_claude
 host_tests/test_sc_speech
 host_tests/test_sc_vad
 host_tests/test_sc_ui
+host_tests/test_sc_rest
