@@ -41,6 +41,7 @@
 #include "lcd.h"
 #include "knock.h"
 #include "mcpd.h"
+#include "memory.h"
 #include "motion.h"
 #include "net.h"
 #include "rest.h"
@@ -321,7 +322,7 @@ static void conversation(void)
             return;
         }
         if (s_stop) break;
-        bool last = claude_take_end(reply.text) || claude_is_signoff(heard);
+        bool last = reply.end || claude_is_signoff(heard);
         char note[96] = "";
         if (reply.mcp_error) snprintf(note, sizeof note, "MCP server unreachable");
         else if (reply.tools[0]) snprintf(note, sizeof note, "asked remote: %.70s", reply.tools);
@@ -518,6 +519,7 @@ void app_main(void)
     setenv("TZ", "EST5EDT,M3.2.0,M11.1.0", 1);
     tzset();
     cfg_load();
+    memory_init();
 
     /* The time from the clock chip, before anything else: a timer wake in
        off hours goes straight back to sleep, the panel never lit. */

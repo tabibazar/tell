@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #include "config.h"
 #include "esp_heap_caps.h"
@@ -11,17 +12,19 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "https.h"
-
-#define FORGET_US (5LL * 60 * 1000000)
+#include "memory.h"
 
 static claude_history_t *s_hist;       /* PSRAM: 12.6 KB internal RAM would rather keep for TLS */
-static int64_t s_last;
+static claude_facts_t *s_facts;        /* PSRAM: what it knows about the person */
+static int s_day = -1;                 /* the day (claude_day) the conversation belongs to */
 
 /* One request; Claude 429/529: one retry after 2 s. */
 static int post(const char *key, const char *model, const char *url, const char *tok, const char *question,
                 claude_reply_t *out)
 {
-    char *body = claude_request(model, url, tok, s_hist, question);
+    static char facts[FACTS_MAX * FACT_LEN];
+    claude_facts_line(s_facts, facts, sizeof facts);
+    char *body = claude_request(model, url, tok, s_hist, facts, question);
     if (!body) return -1;
     https_hdr_t h[] = {
         { "x-api-key", key },
@@ -47,15 +50,26 @@ static int post(const char *key, const char *model, const char *url, const char 
 int agent_ask(const char *question, claude_reply_t *out)
 {
     memset(out, 0, sizeof *out);
-    if (!s_hist) s_hist = heap_caps_calloc(1, sizeof *s_hist, MALLOC_CAP_SPIRAM);
-    if (!s_hist) { snprintf(out->error, sizeof out->error, "out of memory"); return -1; }
+    if (!s_hist) {
+        /* First question since boot: the conversation and the facts from flash. */
+        s_hist = heap_caps_calloc(1, sizeof *s_hist, MALLOC_CAP_SPIRAM);
+        s_facts = heap_caps_calloc(1, sizeof *s_facts, MALLOC_CAP_SPIRAM);
+        if (!s_hist || !s_facts) { snprintf(out->error, sizeof out->error, "out of memory"); return -1; }
+        if (!memory_load_history(s_hist, &s_day)) claude_history_clear(s_hist);
+        memory_load_facts(s_facts);
+    }
     char key[CFG_VAL], model[CFG_VAL], url[CFG_VAL], tok[CFG_VAL];
     cfg_get(CFG_CLAUDE_KEY, key, sizeof key);
     if (!key[0]) return 0;
     cfg_get(CFG_MODEL, model, sizeof model);
     cfg_get(CFG_MCP_URL, url, sizeof url);
     cfg_get(CFG_MCP_TOKEN, tok, sizeof tok);
-    if (esp_timer_get_time() - s_last > FORGET_US) claude_history_clear(s_hist);
+    /* A conversation lasts until 04:00 the next day (once the clock is known). */
+    time_t now = time(NULL);
+    if (now > 1767225600) {
+        int today = claude_day(now);
+        if (today != s_day) { claude_history_clear(s_hist); s_day = today; }
+    }
 
     int code = post(key, model, url, tok, question, out);
     if (url[0] && claude_mcp_failed(code, out)) {
@@ -64,8 +78,11 @@ int agent_ask(const char *question, claude_reply_t *out)
         out->mcp_error = true;          /* after the parse, which clears the reply */
     }
     if (code == 200) {
+        out->end = claude_take_end(out->text);             /* "that's all": Claude closed it */
+        if (claude_take_notes(out->text, s_facts) > 0) memory_save_facts(s_facts);
         claude_history_add(s_hist, question, out->text);
-        s_last = esp_timer_get_time();
+        memory_save_history(s_hist, s_day);
+        memory_log(question, out->text);
     }
     return code;
 }

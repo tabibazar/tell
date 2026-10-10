@@ -2,6 +2,7 @@
 
 #include <math.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "audio.h"
@@ -13,6 +14,8 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "net.h"
+#include "memory.h"
+#include "agent.h"
 #include "voices.h"
 #include <strings.h>
 
@@ -154,7 +157,27 @@ static void run(const char *line)
                why == VAD_DONE ? "speech then quiet" : why == VAD_CAPPED ? "capped" : "silent");
         return;
     }
-    printf("commands: wifi add|forget|list, key claude|deepgram|elevenlabs K, voice NAME|ID, model ID,\n"
+    if (strcmp(w[0], "ask") == 0 && n >= 2) {
+        /* Developer check: a typed question through Claude and memory, no speech. */
+        const char *q = strstr(line, "ask") + 3;
+        while (*q == ' ') q++;
+        static claude_reply_t r;
+        int code = agent_ask(q, &r);
+        if (code == 200) printf("A: %s%s\n", r.text, r.end ? "  [end]" : "");
+        else printf("no: Claude %d %s\n", code, r.error);
+        if (code == 200 && r.tools[0]) printf("   (asked remote: %s)\n", r.tools);
+        return;
+    }
+    if (strcmp(w[0], "memory") == 0) {
+        static claude_facts_t f;
+        memory_load_facts(&f);
+        for (int i = 0; i < f.n; i++) printf("  %s\n", f.fact[i]);
+        printf("%d fact(s) remembered\n", f.n);
+        return;
+    }
+    if (strcmp(w[0], "log") == 0) { memory_print_log(n >= 2 ? atoi(w[1]) : 10); return; }
+    if (strcmp(w[0], "forget") == 0) { memory_forget(); printf("ok: conversation and facts forgotten (restart to clear the one in RAM)\n"); return; }
+    printf("commands: wifi add|forget|list, key claude|deepgram|elevenlabs K, voice NAME|ID, model ID, memory, log [N], forget, ask TEXT,\n"
            "          mcp url URL, mcp token T, serve token T, beep, rec, status,\n"
            "          slots [beep], regs (developer tools)\n");
 }

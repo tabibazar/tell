@@ -2,6 +2,7 @@
 
 #include <ctype.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "cJSON.h"
@@ -28,12 +29,22 @@ static void add_msg(cJSON *msgs, const char *role, const char *text)
 }
 
 char *claude_request(const char *model, const char *mcp_url, const char *mcp_token,
-                     const claude_history_t *h, const char *question)
+                     const claude_history_t *h, const char *facts, const char *question)
 {
     cJSON *o = cJSON_CreateObject();
     cJSON_AddStringToObject(o, "model", model);
     cJSON_AddNumberToObject(o, "max_tokens", 1024);
-    cJSON_AddStringToObject(o, "system", CLAUDE_SYSTEM);
+    if (facts && facts[0]) {
+        size_t n = strlen(CLAUDE_SYSTEM) + strlen(facts) + 64;
+        char *sys = malloc(n);
+        if (sys) {
+            snprintf(sys, n, "%s What you already know about the person: %s", CLAUDE_SYSTEM, facts);
+            cJSON_AddStringToObject(o, "system", sys);
+            free(sys);
+        }
+    } else {
+        cJSON_AddStringToObject(o, "system", CLAUDE_SYSTEM);
+    }
     if (mcp_url && mcp_url[0]) {
         cJSON *servers = cJSON_AddArrayToObject(o, "mcp_servers");
         cJSON *s = cJSON_CreateObject();
@@ -86,6 +97,7 @@ bool claude_parse(const char *json, claude_reply_t *out)
             const cJSON *t = cJSON_GetObjectItemCaseSensitive(b, "text");
             if (cJSON_IsString(t) && t->valuestring[0]) append(out->text, sizeof out->text, " ", t->valuestring);
         } else if (strcmp(bt->valuestring, "mcp_tool_use") == 0) {
+            out->text[0] = 0;              /* what came before a tool call was "let me check": not the answer */
             const cJSON *nm = cJSON_GetObjectItemCaseSensitive(b, "name");
             if (!cJSON_IsString(nm)) continue;
             /* Each name once: look for it as a whole item of the list. */
@@ -152,4 +164,125 @@ bool claude_is_signoff(const char *heard)
         if (start_ok && end_ok) return true;
     }
     return false;
+}
+
+static bool same_fact(const char *a, const char *b)
+{
+    for (; *a && *b; a++, b++) {
+        char x = *a >= 'A' && *a <= 'Z' ? (char)(*a + 32) : *a, y = *b >= 'A' && *b <= 'Z' ? (char)(*b + 32) : *b;
+        if (x != y) return false;
+    }
+    return *a == *b;
+}
+
+static void add_fact(claude_facts_t *f, const char *s)
+{
+    char t[FACT_LEN];
+    while (*s == ' ') s++;
+    snprintf(t, sizeof t, "%s", s);
+    size_t l = strlen(t);
+    while (l && (t[l - 1] == ' ' || t[l - 1] == '.' || t[l - 1] == '\n')) t[--l] = 0;
+    if (!t[0]) return;
+    for (int i = 0; i < f->n; i++) if (same_fact(f->fact[i], t)) return;
+    if (f->n == FACTS_MAX) {
+        memmove(f->fact[0], f->fact[1], sizeof f->fact[0] * (FACTS_MAX - 1));
+        f->n--;
+    }
+    snprintf(f->fact[f->n++], FACT_LEN, "%s", t);
+}
+
+int claude_take_notes(char *text, claude_facts_t *f)
+{
+    int count = 0;
+    char *m;
+    while ((m = strstr(text, "[NOTE:")) != NULL) {
+        char *e = strchr(m, ']');
+        char *stop = e ? e + 1 : m + strlen(m);
+        if (e) {
+            char note[FACT_LEN];
+            size_t len = (size_t)(e - (m + 6));
+            if (len >= sizeof note) len = sizeof note - 1;
+            memcpy(note, m + 6, len);
+            note[len] = 0;
+            add_fact(f, note);
+            count++;
+        }
+        memmove(m, stop, strlen(stop) + 1);
+    }
+    size_t l = strlen(text);
+    while (l && (text[l - 1] == ' ' || text[l - 1] == '\n')) text[--l] = 0;
+    return count;
+}
+
+void claude_facts_line(const claude_facts_t *f, char *out, size_t n)
+{
+    out[0] = 0;
+    size_t o = 0;
+    for (int i = 0; i < f->n && o + 1 < n; i++)
+        o += (size_t)snprintf(out + o, n - o, "%s%s", i ? "; " : "", f->fact[i]);
+}
+
+void claude_facts_text(const claude_facts_t *f, char *out, size_t n)
+{
+    out[0] = 0;
+    size_t o = 0;
+    for (int i = 0; i < f->n && o + 1 < n; i++) o += (size_t)snprintf(out + o, n - o, "%s\n", f->fact[i]);
+}
+
+void claude_facts_parse(const char *text, claude_facts_t *f)
+{
+    f->n = 0;
+    char line[FACT_LEN];
+    size_t o = 0;
+    for (const char *p = text; ; p++) {
+        if (*p == '\n' || *p == 0) {
+            line[o] = 0;
+            if (o) add_fact(f, line);
+            o = 0;
+            if (!*p) break;
+        } else if (o + 1 < sizeof line) {
+            line[o++] = *p;
+        }
+    }
+}
+
+char *claude_history_json(const claude_history_t *h, int day)
+{
+    cJSON *o = cJSON_CreateObject();
+    cJSON_AddNumberToObject(o, "day", day);
+    cJSON *arr = cJSON_AddArrayToObject(o, "pairs");
+    for (int i = 0; i < h->n; i++) {
+        cJSON *p = cJSON_CreateObject();
+        cJSON_AddStringToObject(p, "u", h->pair[i].user);
+        cJSON_AddStringToObject(p, "a", h->pair[i].assistant);
+        cJSON_AddItemToArray(arr, p);
+    }
+    char *s = cJSON_PrintUnformatted(o);
+    cJSON_Delete(o);
+    return s;
+}
+
+bool claude_history_parse(const char *json, claude_history_t *h, int *day)
+{
+    cJSON *o = cJSON_Parse(json);
+    const cJSON *d = cJSON_GetObjectItemCaseSensitive(o, "day");
+    const cJSON *arr = cJSON_GetObjectItemCaseSensitive(o, "pairs");
+    if (!cJSON_IsNumber(d) || !cJSON_IsArray(arr)) { cJSON_Delete(o); return false; }
+    claude_history_clear(h);
+    const cJSON *p;
+    cJSON_ArrayForEach(p, arr) {
+        const cJSON *u = cJSON_GetObjectItemCaseSensitive(p, "u"), *a = cJSON_GetObjectItemCaseSensitive(p, "a");
+        if (cJSON_IsString(u) && cJSON_IsString(a)) claude_history_add(h, u->valuestring, a->valuestring);
+    }
+    *day = d->valueint;
+    cJSON_Delete(o);
+    return true;
+}
+
+int claude_day(time_t t)
+{
+    time_t s = t - 4 * 3600;
+    struct tm lt;
+    localtime_r(&s, &lt);
+    return (lt.tm_year + 1900) * 10000 + (lt.tm_mon + 1) * 100 + lt.tm_mday;
 }
