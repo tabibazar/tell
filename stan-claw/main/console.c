@@ -16,6 +16,8 @@
 #include "net.h"
 #include "memory.h"
 #include "agent.h"
+#include "care_net.h"
+#include <time.h>
 #include "voices.h"
 #include <strings.h>
 
@@ -113,6 +115,52 @@ static void run(const char *line)
         printf("mcp url: %.60s%s\n", v[0] ? v : "none", strlen(v) > 60 ? "..." : "");
         yes_no("mcp token", CFG_MCP_TOKEN);
         yes_no("serve token", CFG_SERVE_TOKEN);
+        yes_no("homeowner token", CFG_HW_TOKEN);
+        cfg_get(CFG_CLARITY, v, sizeof v);
+        printf("clarity: %s\n", v[0] == '0' ? "off" : "on");
+        cfg_get(CFG_TEXTSIZE, v, sizeof v);
+        printf("text: %s\n", v[0] == '1' ? "extra large" : "large");
+        cfg_get(CFG_CONTRAST, v, sizeof v);
+        printf("contrast: %s\n", v[0] == '1' ? "high" : "normal");
+        return;
+    }
+    if (strcmp(w[0], "clarity") == 0 && n >= 2) {
+        cfg_set(CFG_CLARITY, strcmp(w[1], "off") == 0 ? "0" : "1");
+        settings_reload();
+        printf("ok: clarity %s\n", strcmp(w[1], "off") == 0 ? "off" : "on");
+        return;
+    }
+    if (strcmp(w[0], "text") == 0 && n >= 2) {
+        cfg_set(CFG_TEXTSIZE, strcmp(w[1], "xl") == 0 ? "1" : "0");
+        settings_reload();
+        printf("ok: text %s\n", strcmp(w[1], "xl") == 0 ? "extra large" : "large");
+        return;
+    }
+    if (strcmp(w[0], "contrast") == 0 && n >= 2) {
+        cfg_set(CFG_CONTRAST, strcmp(w[1], "high") == 0 ? "1" : "0");
+        settings_reload();
+        printf("ok: contrast %s\n", strcmp(w[1], "high") == 0 ? "high" : "normal");
+        return;
+    }
+    if (strcmp(w[0], "hoa") == 0 && n >= 3 && strcmp(w[1], "token") == 0) {
+        cfg_set(CFG_HW_TOKEN, w[2]);
+        care_kick();
+        printf("ok: homeowner token set\n");
+        return;
+    }
+    if (strcmp(w[0], "hoa") == 0 && n >= 2 && strcmp(w[1], "forget") == 0) {
+        cfg_set(CFG_HW_TOKEN, "");
+        printf("ok: homeowner token forgotten\n");
+        return;
+    }
+    if (strcmp(w[0], "care") == 0) {
+        if (n >= 2 && strcmp(w[1], "check") == 0) { care_kick(); printf("ok: checking reminders and messages\n"); return; }
+        if (n >= 3 && strcmp(w[1], "test") == 0) {
+            care_demo(strcmp(w[2], "message") == 0 ? 1 : 0);
+            printf("ok: a pretend %s goes up in a few seconds\n", strcmp(w[2], "message") == 0 ? "message" : "reminder");
+            return;
+        }
+        care_net_print((long)time(NULL));
         return;
     }
     if (strcmp(w[0], "beep") == 0) {

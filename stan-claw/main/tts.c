@@ -11,10 +11,12 @@
 #include "speechfmt.h"
 
 /* Bytes arrive in any size; samples are two bytes: keep an odd one over. */
-typedef struct { uint8_t odd; bool have_odd; bool ok; fx_t fx; } play_ctx_t;
+typedef struct { uint8_t odd; bool have_odd; bool ok; fx_t fx; clarity_t clar; } play_ctx_t;
 
 static volatile bool s_stop;
+static volatile int s_played;          /* samples played of the speech in progress, for the captions */
 void tts_abort(void) { s_stop = true; }
+int tts_played(void) { return s_played; }
 
 static bool play_sink(const uint8_t *d, int len, void *vctx)
 {
@@ -34,26 +36,41 @@ static bool play_sink(const uint8_t *d, int len, void *vctx)
         }
         if (len == 1 && k < (int)(sizeof s / sizeof s[0])) { p->odd = d[0]; p->have_odd = true; len = 0; }
         if (k) fx_run(&p->fx, s, k);                     /* the robots' voices; a no-op for people */
+        if (k) clarity_run(&p->clar, s, k);              /* the consonants lifted, for ears that miss them */
         if (k && !audio_play_chunk(s, k)) { p->ok = false; return false; }
+        s_played += k;
     }
     return true;
 }
 
-int tts_speak(const char *text)
+static int speak(const char *voice, fx_kind_t fxk, const char *text, float speed);
+
+int tts_speak(const char *text) { return tts_speak_slow(text, 0); }
+
+int tts_speak_slow(const char *text, float speed)
 {
     char voice[CFG_VAL], fx[16];
     cfg_get(CFG_VOICE, voice, sizeof voice);
     cfg_get(CFG_VOICE_FX, fx, sizeof fx);
-    return tts_speak_as(voice, fx_from_name(fx), text);
+    return speak(voice, fx_from_name(fx), text, speed);
 }
 
-int tts_speak_as(const char *voice, fx_kind_t fxk, const char *text)
+int tts_speak_as(const char *voice, fx_kind_t fxk, const char *text) { return speak(voice, fxk, text, 0); }
+
+float tts_speed(void)
 {
-    char key[CFG_VAL], url[CFG_VAL + 100], sp[16];
-    cfg_get(CFG_ELEVEN_KEY, key, sizeof key);
+    char sp[16];
     cfg_get(CFG_SPEED, sp, sizeof sp);
     float speed = sp[0] ? (float)atof(sp) : 1.0f;
-    if (speed < 0.7f || speed > 1.2f) speed = 1.0f;
+    return speed < 0.7f || speed > 1.2f ? 1.0f : speed;
+}
+
+static int speak(const char *voice, fx_kind_t fxk, const char *text, float speed)
+{
+    char key[CFG_VAL], url[CFG_VAL + 100], cl[4];
+    cfg_get(CFG_ELEVEN_KEY, key, sizeof key);
+    cfg_get(CFG_CLARITY, cl, sizeof cl);
+    if (speed < 0.7f || speed > 1.2f) speed = tts_speed();
     if (fxk == FX_HAL) speed = speed * 0.9f < 0.7f ? 0.7f : speed * 0.9f;   /* Hal takes his time */
     if (!key[0]) return 0;
     if (!voice[0]) return TTS_NO_VOICE;
@@ -65,7 +82,9 @@ int tts_speak_as(const char *voice, fx_kind_t fxk, const char *text)
     memset(&p, 0, sizeof p);
     p.ok = true;
     fx_init(&p.fx, fxk);
+    clarity_init(&p.clar, cl[0] != '0');                 /* on unless switched off */
     s_stop = false;
+    s_played = 0;
     audio_play_begin();
     int code = https_post(url, h, 1, "application/json", body, strlen(body), 20000, NULL, 0, play_sink, &p);
     audio_play_end();

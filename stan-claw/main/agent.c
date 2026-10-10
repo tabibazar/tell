@@ -38,6 +38,13 @@ static int post(const char *key, const char *model, const char *url, const char 
         code = https_post("https://api.anthropic.com/v1/messages", h, nh, "application/json",
                           body, strlen(body), 60000, &resp, 65536, NULL, NULL);
         bool parsed = resp && claude_parse(resp, out);
+        /* The person signed in through stan-mcp: keep their token, so the board
+           can fetch their reminders and family messages itself. */
+        char hw[48], had[CFG_VAL];
+        if (code == 200 && resp && claude_find_homeowner_token(resp, hw, sizeof hw)) {
+            cfg_get(CFG_HW_TOKEN, had, sizeof had);
+            if (strcmp(had, hw) != 0) cfg_set(CFG_HW_TOKEN, hw);
+        }
         free(resp);
         if (code == 200 && !parsed) code = -1;
         if ((code == 429 || code == 529) && attempt == 0) { vTaskDelay(pdMS_TO_TICKS(2000)); continue; }
@@ -79,6 +86,7 @@ int agent_ask(const char *question, claude_reply_t *out)
     }
     if (code == 200) {
         out->end = claude_take_end(out->text);             /* "that's all": Claude closed it */
+        claude_take_confirm(out->text, out->confirm, sizeof out->confirm);   /* the Yes / No card */
         if (claude_take_notes(out->text, s_facts) > 0) memory_save_facts(s_facts);
         claude_history_add(s_hist, question, out->text);
         memory_save_history(s_hist, s_day);

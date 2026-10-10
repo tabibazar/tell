@@ -129,3 +129,17 @@ void memory_forget(void)
     remove(F_CONVO);
     remove(F_FACTS);
 }
+
+char *memory_read(const char *name, size_t max)
+{
+    char path[48];
+    snprintf(path, sizeof path, BASE "/%s", name);
+    return slurp(path, max);
+}
+
+void memory_write(const char *name, const char *text)
+{
+    char path[48];
+    snprintf(path, sizeof path, BASE "/%s", name);
+    put(path, text);
+}

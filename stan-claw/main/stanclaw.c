@@ -12,6 +12,13 @@
  * later, and dark at 45 s from 19:00 to 08:00. A tap, BOOT, a knock on the
  * desk or an agent's call wakes it; the first tap only wakes. Outside office
  * hours (Mon-Fri 08:00-16:00) it deep-sleeps instead, BOOT or 08:00 waking it.
+ *
+ * Care (docs/superpowers/specs/2026-10-10-stan-claw-care-design.md): in a
+ * conversation big buttons repeat the answer, repeat it slowly, or end it, and
+ * a question that needs a yes gets a Yes/No card; captions follow the speech;
+ * two knocks start a conversation. A care task fetches the homeowner's
+ * reminders and family's messages from stan-mcp, speaks them 9 am-7 pm with a
+ * chime and a card, and the board wakes from deep sleep for a reminder.
  */
 #include <math.h>
 #include <stdio.h>
@@ -34,6 +41,7 @@
 #include "nvs_flash.h"
 
 #include "agent.h"
+#include "care_net.h"
 #include "https.h"
 #include "audio.h"
 #include "config.h"
@@ -69,6 +77,17 @@ static int64_t s_answer_at;
 static int16_t *s_pcm;                 /* PSRAM, REC_MAX_S (or 30 s for listen) of audio */
 
 static void set_view(ui_mode_t mode, const char *heard, const char *text, const char *title, const char *note);
+static volatile bool s_stop, s_convo;
+
+/* Conversation buttons and the Yes/No card: the touch handler sets s_action
+   and cuts the recording short; conversation() acts on it. */
+enum { ACT_NONE, ACT_AGAIN, ACT_SLOWER, ACT_YES, ACT_NO };
+static volatile int s_action;
+static char s_confirm[160];            /* the Yes/No card's summary while it listens, "" for none */
+/* Captions: while it speaks, how far through the text it is (tts_played). */
+static volatile bool s_captions;
+static volatile float s_cap_rate;      /* characters a second at the speed in use */
+static volatile bool s_care_wake;      /* woke from deep sleep for a reminder */
 
 /* Rest (rest.h): untouched for 45 s the screen breathes, then sleeps. Anything
    holding s_busy counts as use; a touch, BOOT, a knock or an agent's call
@@ -113,6 +132,8 @@ static void deep_sleep_now(bool panel_up)
     struct tm lt;
     localtime_r(&t, &lt);
     long secs = rest_until_office(lt.tm_wday, lt.tm_hour * 60 + lt.tm_min, lt.tm_sec);
+    long remind = care_reminders() ? care_next_wake(care_reminders(), (long)t) : 0;   /* a reminder to say */
+    if (remind > 0 && remind - t < secs) secs = remind - t;
     if (secs > 3600) secs = 3600;
     if (secs < 20) secs = 20;
     ESP_LOGI(TAG, "deep sleep for %ld s (BOOT wakes it)", secs);
@@ -126,6 +147,8 @@ static void deep_sleep_now(bool panel_up)
 /* ---- settings ---- */
 
 static int s_volume = 70, s_speed = 1, s_model = 0;
+static int s_textsize;                 /* see and hear: 0 large, 1 extra large */
+static bool s_contrast, s_clarity = true;
 static char s_voice_name[32];
 static int s_cur = -1;                 /* VOICES index in use, -1 none */
 static spin_t s_spin;                  /* the voice wheel */
@@ -152,9 +175,31 @@ static void settings_load(void)
     cfg_get(CFG_VOICE_FX, fx, sizeof fx);
     s_cur = voices_find(v, fx);
     snprintf(s_voice_name, sizeof s_voice_name, "%s", s_cur >= 0 ? VOICES[s_cur].name : v[0] ? "Another voice" : "");
+    cfg_get(CFG_TEXTSIZE, v, sizeof v);
+    s_textsize = v[0] == '1';
+    cfg_get(CFG_CONTRAST, v, sizeof v);
+    s_contrast = v[0] == '1';
+    cfg_get(CFG_CLARITY, v, sizeof v);
+    s_clarity = v[0] != '0';
 }
 
 void settings_reload(void) { settings_load(); s_dirty = true; }
+
+/* A soft two-note chime before it speaks up on its own. */
+static void chime(void)
+{
+    static int16_t t[AUDIO_FS * 3 / 5];
+    const int n = AUDIO_FS * 3 / 5, half = n / 2;
+    for (int i = 0; i < n; i++) {
+        int k = i < half ? i : i - half;
+        float env = (k < 300 ? k / 300.0f : 1.0f) * expf(-3.5f * k / half);
+        float f = i < half ? 659.0f : 880.0f;
+        t[i] = (int16_t)(6000 * env * sinf(2 * 3.14159f * f * k / AUDIO_FS));
+    }
+    audio_play_begin();
+    audio_play_chunk(t, n);
+    audio_play_end();
+}
 
 static void tone(void)
 {
@@ -222,6 +267,11 @@ static void sync_view(void)
     s_view.model = s_model;
     s_view.spin = s_spin.pos;
     s_view.cur = s_cur;
+    s_view.textsize = s_textsize;
+    s_view.contrast = s_contrast;
+    s_view.clarity = s_clarity;
+    s_view.convo = s_convo;
+    s_view.confirm = s_confirm;
     xSemaphoreGive(s_ui_lock);
 }
 
@@ -247,6 +297,7 @@ static void set_view(ui_mode_t mode, const char *heard, const char *text, const 
     snprintf(s_title, sizeof s_title, "%s", title ? title : "");
     snprintf(s_note, sizeof s_note, "%s", note ? note : "");
     s_view.heard = s_heard; s_view.text = s_text; s_view.title = s_title; s_view.note = s_note;
+    s_view.spoken = -1;                    /* all bright, until captions move it */
     s_dirty = true;
     xSemaphoreGive(s_ui_lock);
 }
@@ -289,64 +340,98 @@ static const char *service_error(const char *who, int code, char *buf, size_t n)
    [END], or their own words), a tap ends it (s_stop), or nobody answers
    within 12 s twice -- after a kind "anything else?" in between.
    Holds s_busy throughout. Claude keeps the last CLAUDE_TURNS exchanges. */
-static volatile bool s_stop, s_convo;
 #define CONVO_WAIT_MS 12000   /* after an answer: this long to start talking before it checks in */
+
+/* Speaks `text` with captions following it, at `speed` (0: the setting). */
+static int say(const char *text, float speed)
+{
+    s_cap_rate = 14.5f * (speed > 0 ? speed : tts_speed());
+    s_captions = true;
+    int code = speed > 0 ? tts_speak_slow(text, speed) : tts_speak(text);
+    s_captions = false;
+    xSemaphoreTake(s_ui_lock, portMAX_DELAY);
+    s_view.spoken = -1;
+    s_dirty = true;
+    xSemaphoreGive(s_ui_lock);
+    return code;
+}
 
 static void conversation(void)
 {
     char err[64];
     if (!net_up()) { set_view(UI_HOME, NULL, NULL, NULL, "no WiFi"); return; }
-    static char heard[600];
+    static char heard[600], last[1500], last_heard[600], last_note[96];
     static claude_reply_t reply;
     bool checked_in = false;
+    last[0] = s_confirm[0] = 0;
+    s_action = ACT_NONE;
     for (int round = 0; !s_stop; round++) {
         set_view(UI_LISTENING, NULL, NULL, round ? "Your turn" : NULL, NULL);
         vad_result_t why;
         int n = audio_record_wait(s_pcm, AUDIO_FS * REC_MAX_S, REC_MAX_S * 1000,
                                   round ? CONVO_WAIT_MS : REC_MAX_S * 1000, &why);
         if (s_stop) break;
-        if (why == VAD_SILENT) {
-            if (round == 0) { set_view(UI_HOME, NULL, NULL, NULL, "didn't catch that"); return; }
-            /* No reply: check in once, kindly, before letting them go. */
-            if (!checked_in) {
-                checked_in = true;
-                set_view(UI_SPEAKING, NULL, "Is there anything else I can help you with?", NULL, NULL);
-                tts_speak("Is there anything else I can help you with?");
-                continue;
+        int act = s_action;
+        s_action = ACT_NONE;
+        if ((act == ACT_AGAIN || act == ACT_SLOWER) && last[0]) {
+            /* "Say it again" / "slower please": the last answer, once more. */
+            set_view(UI_SPEAKING, last_heard, last, NULL, last_note);
+            say(last, act == ACT_SLOWER ? 0.75f : 0);
+            round--;
+            continue;
+        }
+        if (act == ACT_YES || act == ACT_NO) {
+            snprintf(heard, sizeof heard, "%s", act == ACT_YES ? "Yes." : "No.");
+        } else {
+            if (why == VAD_SILENT) {
+                if (round == 0) { set_view(UI_HOME, NULL, NULL, NULL, "didn't catch that"); s_confirm[0] = 0; return; }
+                /* No reply: check in once, kindly, before letting them go. */
+                if (!checked_in) {
+                    checked_in = true;
+                    set_view(UI_SPEAKING, NULL, "Is there anything else I can help you with?", NULL, NULL);
+                    say("Is there anything else I can help you with?", 0);
+                    continue;
+                }
+                s_confirm[0] = 0;
+                set_view(UI_SPEAKING, NULL, "All right. Just tap the screen whenever you need me. Goodbye.", NULL, NULL);
+                say("All right. Just tap the screen whenever you need me. Goodbye.", 0);
+                break;
             }
-            set_view(UI_SPEAKING, NULL, "All right. Just tap the screen whenever you need me. Goodbye.", NULL, NULL);
-            tts_speak("All right. Just tap the screen whenever you need me. Goodbye.");
-            break;
+            set_view(UI_THINKING, "...", NULL, NULL, NULL);
+            int code = stt_transcribe(s_pcm, n, heard, sizeof heard);
+            if (code != 200) { s_confirm[0] = 0; set_view(UI_ERROR, NULL, "Check the key with: tools/stan-claw.py status", service_error("Deepgram", code, err, sizeof err), NULL); return; }
+            if (!heard[0]) continue;
+            if (s_stop) break;
         }
         checked_in = false;
-
-        set_view(UI_THINKING, "...", NULL, NULL, NULL);
-        int code = stt_transcribe(s_pcm, n, heard, sizeof heard);
-        if (code != 200) { set_view(UI_ERROR, NULL, "Check the key with: tools/stan-claw.py status", service_error("Deepgram", code, err, sizeof err), NULL); return; }
-        if (!heard[0]) continue;
-        if (s_stop) break;
+        s_confirm[0] = 0;
 
         set_view(UI_THINKING, heard, NULL, NULL, NULL);
-        code = agent_ask(heard, &reply);
+        int code = agent_ask(heard, &reply);
         if (code != 200) {
             set_view(UI_ERROR, heard, reply.error[0] ? reply.error : "", service_error("Claude", code, err, sizeof err), NULL);
             return;
         }
         if (s_stop) break;
-        bool last = reply.end || claude_is_signoff(heard);
+        bool end = reply.end || claude_is_signoff(heard);
         char note[96] = "";
         if (reply.mcp_error) snprintf(note, sizeof note, "I couldn't reach the HOA service just now");
         else if (reply.tools[0]) snprintf(note, sizeof note, "I checked your HOA records");
+        snprintf(last, sizeof last, "%s", reply.text);
+        snprintf(last_heard, sizeof last_heard, "%s", heard);
+        snprintf(last_note, sizeof last_note, "%s", note);
 
         set_view(UI_SPEAKING, heard, reply.text, NULL, note);
-        code = tts_speak(reply.text);
+        code = say(reply.text, 0);
         if (code != 200 && !s_stop) {
             s_answer_at = esp_timer_get_time();
             set_view(UI_ANSWER, heard, reply.text, NULL, service_error("ElevenLabs", code, err, sizeof err));
             return;
         }
-        if (last) break;                                    /* "that's all": the goodbye was the last word */
+        if (end) break;                                     /* "that's all": the goodbye was the last word */
+        if (reply.confirm[0]) snprintf(s_confirm, sizeof s_confirm, "%s", reply.confirm);   /* Yes / No, next round */
     }
+    s_confirm[0] = 0;
     s_answer_at = esp_timer_get_time();
     set_view(UI_HOME, NULL, NULL, NULL, s_stop ? NULL : "conversation ended");
 }
@@ -367,6 +452,90 @@ static void convo_task(void *arg)
         ESP_LOGI(TAG, "convo stack: %u bytes never used", (unsigned)uxTaskGetStackHighWaterMark(NULL));
         xSemaphoreTake(s_go, 0);        /* drop a BOOT press that queued during the conversation */
         xSemaphoreGive(s_busy);
+    }
+}
+
+/* ---- care: reminders and family messages ---- */
+
+static volatile bool s_care_kick;
+static volatile int s_care_demo = -1;
+static int64_t s_card_at;
+void care_kick(void) { s_care_kick = true; }
+void care_demo(int kind) { s_care_demo = kind; }
+
+static int minute_now(void)
+{
+    time_t t = time(NULL);
+    struct tm lt;
+    localtime_r(&t, &lt);
+    return lt.tm_hour * 60 + lt.tm_min;
+}
+
+/* Puts a card up and says it, holding s_busy; only when nobody is using it. */
+static bool present(ui_mode_t mode, const char *title, const char *text, const char *spoken)
+{
+    if (xSemaphoreTake(s_busy, 0) != pdTRUE) return false;
+    s_in_use = true;
+    activity();
+    vTaskDelay(pdMS_TO_TICKS(250));            /* the main loop brings the light up */
+    set_view(mode, NULL, text, title, NULL);
+    chime();
+    tts_speak(spoken);
+    s_card_at = esp_timer_get_time();
+    s_in_use = false;
+    activity();
+    xSemaphoreGive(s_busy);
+    return true;
+}
+
+static void care_task(void *arg)
+{
+    const int64_t INBOX_US = 120LL * 1000000, REMIND_US = 3LL * 3600 * 1000000;
+    int64_t inbox_at = -INBOX_US, remind_at = -REMIND_US;
+    char spoken[CARE_TEXT + 48], title[48];
+    for (;;) {
+        vTaskDelay(pdMS_TO_TICKS(3000));
+        int64_t now_us = esp_timer_get_time();
+        if (net_up() && care_net_ready()) {
+            if (s_care_kick || now_us - remind_at >= REMIND_US) {
+                /* A failure tries again in 10 minutes. */
+                remind_at = care_net_refresh_reminders() ? now_us : now_us - REMIND_US + 600LL * 1000000;
+            }
+            if (s_care_kick || now_us - inbox_at >= INBOX_US) {
+                care_net_check_inbox();
+                inbox_at = now_us;
+            }
+            s_care_kick = false;
+        }
+        bool idle = !s_in_use && !s_mic && !s_convo && !s_job && s_view.mode != UI_SETTINGS
+                    && s_view.mode != UI_VOICES && s_view.mode != UI_EASY;
+        /* One card at a time: the next waits for a tap, or 90 s. */
+        bool card_up = (s_view.mode == UI_MESSAGE || s_view.mode == UI_REMINDER)
+                       && now_us - s_card_at < 90LL * 1000000;
+        if (!idle || card_up) continue;
+        if (s_care_demo >= 0) {
+            int kind = s_care_demo;
+            s_care_demo = -1;
+            if (kind == 1) present(UI_MESSAGE, "Message from Reza", "Hi! I'll call you tonight at seven. Love you.",
+                                   "Message from Reza. Hi! I'll call you tonight at seven. Love you.");
+            else present(UI_REMINDER, "Reminder", "Tonight is trash night. The bins can go out to the curb now.",
+                         "Tonight is trash night. The bins can go out to the curb now.");
+            continue;
+        }
+        if (!net_time_ok() || !care_may_speak(minute_now())) continue;
+        int mi = care_next_message();
+        if (mi >= 0) {
+            care_item_t *m = &care_messages()->item[mi];
+            snprintf(title, sizeof title, "Message from %s", m->from[0] ? m->from : "family");
+            snprintf(spoken, sizeof spoken, "%s. %s", title, m->text);
+            if (present(UI_MESSAGE, title, m->text, spoken)) { m->done = true; care_net_save(); }
+            continue;
+        }
+        int ri = care_due(care_reminders(), (long)time(NULL), minute_now());
+        if (ri >= 0) {
+            care_item_t *r = &care_reminders()->item[ri];
+            if (present(UI_REMINDER, "Reminder", r->text, r->text)) { r->done = true; care_net_save(); }
+        }
     }
 }
 
@@ -542,8 +711,14 @@ void app_main(void)
         struct timeval tv = { .tv_sec = rt };
         settimeofday(&tv, NULL);
     }
-    if (esp_sleep_get_wakeup_cause() == ESP_SLEEP_WAKEUP_TIMER && clock_from_rtc && !office_now())
-        deep_sleep_now(false);
+    care_net_load();
+    if (esp_sleep_get_wakeup_cause() == ESP_SLEEP_WAKEUP_TIMER && clock_from_rtc && !office_now()) {
+        /* Woken for a reminder (due, or a moment away): stay up to say it. */
+        time_t now = time(NULL);
+        long next = care_next_wake(care_reminders(), (long)now);
+        if (care_due(care_reminders(), (long)now, minute_now()) >= 0 || (next > 0 && next - now < 90)) s_care_wake = true;
+        else deep_sleep_now(false);
+    }
 
     s_busy = xSemaphoreCreateMutex();
     s_ui_lock = xSemaphoreCreateMutex();
@@ -569,6 +744,8 @@ void app_main(void)
     mcpd_on_request(activity);
     mcpd_start(&TOOLS);
     xTaskCreatePinnedToCore(convo_task, "convo", 16384, NULL, 5, NULL, 1);      /* TLS x3 */
+    xTaskCreatePinnedToCore(care_task, "care", 12288, NULL, 4, NULL, 1);        /* TLS, and speech */
+    if (s_care_wake) ESP_LOGI(TAG, "awake for a reminder");
 
     bool down = false, boot_was = true;
     int last_min = -1;
@@ -600,10 +777,20 @@ void app_main(void)
                 if (phit == UI_HIT_TALK) xSemaphoreGive(s_go);
                 else if (phit == UI_HIT_GEAR) set_view(UI_SETTINGS, NULL, NULL, NULL, NULL);
             } else if (s_convo) {
-                s_stop = true;                                      /* a tap ends the conversation */
-                audio_abort();
-                tts_abort();
-            } else if (m != UI_SETTINGS && m != UI_VOICES && m != UI_LISTENING && m != UI_THINKING && m != UI_SPEAKING) {
+                /* The conversation's buttons; elsewhere a tap does nothing, so no one ends it by accident. */
+                if (phit == UI_HIT_DONE) {
+                    s_stop = true;
+                    audio_abort();
+                    tts_abort();
+                } else if (phit == UI_HIT_AGAIN || phit == UI_HIT_SLOWER || phit == UI_HIT_YES || phit == UI_HIT_NO) {
+                    s_action = phit == UI_HIT_AGAIN ? ACT_AGAIN : phit == UI_HIT_SLOWER ? ACT_SLOWER
+                             : phit == UI_HIT_YES ? ACT_YES : ACT_NO;
+                    audio_abort();
+                }
+            } else if (m == UI_MESSAGE || m == UI_REMINDER) {
+                tts_abort();                                        /* OK, or anywhere: put it away */
+                set_view(UI_HOME, NULL, NULL, NULL, NULL);
+            } else if (m != UI_SETTINGS && m != UI_EASY && m != UI_VOICES && m != UI_LISTENING && m != UI_THINKING && m != UI_SPEAKING) {
                 set_view(UI_HOME, NULL, NULL, NULL, NULL);          /* a tap clears answers and agent screens */
             }
         } else if (now_down && down && !ignore) {                   /* a drag */
@@ -643,7 +830,24 @@ void app_main(void)
                     s_model = pval;
                     cfg_set(CFG_MODEL, MODELS[pval]);
                     s_dirty = true;
+                } else if (!moved && phit == UI_HIT_EASY) {
+                    set_view(UI_EASY, NULL, NULL, NULL, NULL);
                 }
+            } else if (m == UI_EASY) {
+                if (phit == UI_HIT_BACK) {
+                    set_view(UI_SETTINGS, NULL, NULL, NULL, NULL);
+                } else if (phit == UI_HIT_TEXTSIZE) {
+                    s_textsize = pval;
+                    cfg_set(CFG_TEXTSIZE, pval ? "1" : "0");
+                } else if (phit == UI_HIT_CONTRAST) {
+                    s_contrast = pval;
+                    cfg_set(CFG_CONTRAST, pval ? "1" : "0");
+                } else if (phit == UI_HIT_CLARITY) {
+                    s_clarity = pval;
+                    cfg_set(CFG_CLARITY, pval ? "1" : "0");
+                    if (s_cur >= 0) job(s_cur);                     /* hear the difference */
+                }
+                s_dirty = true;
             } else if (m == UI_VOICES) {
                 (void)lx; (void)ly; (void)py;
                 if (moved) {
@@ -667,13 +871,27 @@ void app_main(void)
             }
         }
         if (!boot_now && boot_was) {
-            if (awake) xSemaphoreGive(s_go);
+            if (s_convo) {                                          /* BOOT ends a conversation, whatever the screen */
+                s_stop = true;
+                audio_abort();
+                tts_abort();
+            } else if (awake) {
+                xSemaphoreGive(s_go);
+            }
             activity();
         }
-        if (!awake) {
+        {
+            /* A knock wakes it; two knocks start a conversation. A finger on the
+               glass and its own speaker jolt the panel too: those are hushed. */
+            long ms = (long)(esp_timer_get_time() / 1000);
+            if (now_down || s_in_use || s_mic) knock_hush(&knock, ms + 400);
             float ax, ay, az;
-            if (motion_read(&ax, &ay, &az) && knock_feed(&knock, ax, ay, az, (long)(esp_timer_get_time() / 1000)))
+            if (motion_read(&ax, &ay, &az) && knock_feed(&knock, ax, ay, az, ms)) {
                 activity();
+                if (knock_double(&knock, ms) && !s_convo && !s_in_use
+                    && (s_view.mode == UI_HOME || s_view.mode == UI_ANSWER || !awake))
+                    xSemaphoreGive(s_go);
+            }
         }
         down = now_down;
         boot_was = boot_now;
@@ -682,6 +900,13 @@ void app_main(void)
         if (net_up() != was_up) { was_up = net_up(); s_dirty = true; }   /* the network name at the top */
         static unsigned tick;
         if (s_view.mode == UI_LISTENING && (++tick & 1)) s_dirty = true;   /* the waveform and timer move, ~16 fps */
+        if (s_view.mode == UI_SPEAKING && s_captions && (++tick & 1)) {     /* the captions follow the voice */
+            int len = (int)strlen(s_text), at = (int)(tts_played() / (float)AUDIO_FS * s_cap_rate);
+            xSemaphoreTake(s_ui_lock, portMAX_DELAY);
+            s_view.spoken = at < len ? at : len;
+            s_dirty = true;
+            xSemaphoreGive(s_ui_lock);
+        }
         if (s_view.mode == UI_VOICES) {
             /* Turn the wheel; once it has rested on a new card for a moment,
                that voice says hello. */
@@ -692,7 +917,7 @@ void app_main(void)
                 job(at);
             }
         }
-        if ((s_view.mode == UI_SETTINGS || s_view.mode == UI_VOICES)
+        if ((s_view.mode == UI_SETTINGS || s_view.mode == UI_VOICES || s_view.mode == UI_EASY)
             && esp_timer_get_time() - s_active_at > REST_BREATHE_S * 1000000LL)
             set_view(UI_HOME, NULL, NULL, NULL, NULL);
         if (s_view.mode == UI_ANSWER && esp_timer_get_time() - s_answer_at > ANSWER_US)
@@ -709,7 +934,14 @@ void app_main(void)
             struct tm lt;
             localtime_r(&t, &lt);
             int m = lt.tm_hour * 60 + lt.tm_min;
-            if (m != last_min) { last_min = m; s_view.now = m; s_dirty = true; }
+            if (m != last_min) {
+                last_min = m;
+                s_view.now = m;
+                s_view.wday = lt.tm_wday;
+                s_view.month = lt.tm_mon + 1;
+                s_view.mday = lt.tm_mday;
+                s_dirty = true;
+            }
         }
         /* A fresh time from the network goes into the clock chip. */
         if (sntp_get_sync_status() == SNTP_SYNC_STATUS_COMPLETED) clockchip_set(time(NULL));
@@ -740,7 +972,8 @@ void app_main(void)
             s_view.nlevels = s_nlevels;
             s_view.listen_ms = (int)((now_us - s_listen_t0) / 1000);
             if (resting_screen) {
-                ui_view_t rv = { .mode = UI_RESTING, .now = s_view.now, .amber = amber, .mic_open = s_mic };
+                ui_view_t rv = { .mode = UI_RESTING, .now = s_view.now, .amber = amber, .mic_open = s_mic,
+                                 .wday = s_view.wday, .month = s_view.month, .mday = s_view.mday, .spoken = -1 };
                 ui_draw(lcd_canvas(), &rv);
             } else {
                 ui_draw(lcd_canvas(), &s_view);

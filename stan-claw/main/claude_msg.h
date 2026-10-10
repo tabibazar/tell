@@ -45,6 +45,7 @@ typedef struct {
     bool mcp_error;        /* a remote tool call failed */
     char error[160];       /* why claude_parse returned false */
     bool end;              /* Claude ended the conversation ([END], taken out of text) */
+    char confirm[160];     /* the action to confirm ([CONFIRM: ...], taken out of text), for the Yes/No card */
 } claude_reply_t;
 
 #define FACTS_MAX 30
