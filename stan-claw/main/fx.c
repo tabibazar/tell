@@ -50,3 +50,39 @@ void fx_run(fx_t *f, int16_t *pcm, int n)
         pcm[i] = (int16_t)lrintf(out * 32767.0f);
     }
 }
+
+void clarity_init(clarity_t *c, bool on)
+{
+    memset(c, 0, sizeof *c);
+    c->on = on;
+    /* RBJ cookbook high shelf, S=1, +6 dB above a 2.5 kHz corner at 16 kHz;
+       no M_PI in strict C11, so a local literal. */
+    const float pi = 3.14159265f, fs = 16000.0f, f0 = 2500.0f, db = 6.0f, s = 1.0f;
+    float a = powf(10.0f, db / 40.0f);
+    float w0 = 2.0f * pi * f0 / fs;
+    float cosw0 = cosf(w0), sinw0 = sinf(w0);
+    float alpha = sinw0 / 2.0f * sqrtf((a + 1.0f / a) * (1.0f / s - 1.0f) + 2.0f);
+    float sqrtA = sqrtf(a);
+    float b0 = a * ((a + 1) + (a - 1) * cosw0 + 2 * sqrtA * alpha);
+    float b1 = -2 * a * ((a - 1) + (a + 1) * cosw0);
+    float b2 = a * ((a + 1) + (a - 1) * cosw0 - 2 * sqrtA * alpha);
+    float a0 = (a + 1) - (a - 1) * cosw0 + 2 * sqrtA * alpha;
+    float a1 = 2 * ((a - 1) - (a + 1) * cosw0);
+    float a2 = (a + 1) - (a - 1) * cosw0 - 2 * sqrtA * alpha;
+    c->b0 = b0 / a0; c->b1 = b1 / a0; c->b2 = b2 / a0; c->a1 = a1 / a0; c->a2 = a2 / a0;
+}
+
+void clarity_run(clarity_t *c, int16_t *pcm, int n)
+{
+    if (!c->on) return;
+    const float pregain = 0.6f;          /* -4.4 dB headroom so the boosted highs don't wrap */
+    for (int i = 0; i < n; i++) {
+        float x = pcm[i] / 32768.0f * pregain;
+        float y = c->b0 * x + c->b1 * c->x1 + c->b2 * c->x2 - c->a1 * c->y1 - c->a2 * c->y2;
+        c->x2 = c->x1; c->x1 = x;
+        c->y2 = c->y1; c->y1 = y;
+        if (y > 0.999f) y = 0.999f;
+        if (y < -0.999f) y = -0.999f;
+        pcm[i] = (int16_t)lrintf(y * 32767.0f);
+    }
+}

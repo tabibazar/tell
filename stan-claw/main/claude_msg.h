@@ -21,7 +21,13 @@
     "When the person says they are finished (for example \"that's all\", \"no thanks\", \"goodbye\"), " \
     "reply with a brief goodbye and end your reply with [END]. " \
     "When you learn something lasting about the person (where they live, their email, how they like answers), " \
-    "add [NOTE: the fact] at the end of your reply; notes are saved and never spoken."
+    "add [NOTE: the fact] at the end of your reply; notes are saved and never spoken. " \
+    "When you ask the person to confirm an action (a payment, a booking, a request, an appeal, a message to family), " \
+    "end that reply with [CONFIRM: a short summary of the action, for example \"Pay $295 toward your dues\"]; " \
+    "it is shown with Yes and No buttons and never spoken. Never pay or send money to anyone the HOA service does not list, " \
+    "and if the person mentions a call, text or email asking them to pay urgently or by gift card, gently warn them it may be " \
+    "a scam and suggest they check with family or the management office first. When the person asks you to tell a family " \
+    "member something, use the notify_family tool. Payments over $100 wait for a family member's OK: explain that kindly."
 
 typedef struct {
     char user[600];
@@ -61,6 +67,20 @@ bool claude_parse(const char *json, claude_reply_t *out);
 /* Takes Claude's [END] marker out of `text` (the conversation is over);
    true if it was there. */
 bool claude_take_end(char *text);
+
+/* Takes the [CONFIRM: ...] marker out of `text`; the summary (trimmed, at
+   most n-1 chars) into `summary` ("" when there was none). True if there
+   was one. Tolerates "[CONFIRM:x]", extra spaces, and a missing "]" at the
+   end of text. After taking it out, tidies the text's trailing spaces (as
+   claude_take_end does). */
+bool claude_take_confirm(char *text, char *summary, size_t n);
+
+/* Finds a homeowner token in a raw Messages API reply (the sign_in tool's
+   result text inside an mcp_tool_result block reads
+   "... homeowner_token: hw_<24 hex>"). Copies "hw_..." into out. True if
+   found. Works on the raw JSON string (no parsing needed); takes the LAST
+   one if several. */
+bool claude_find_homeowner_token(const char *raw_json, char *out, size_t n);
 
 /* The person's own words sound like a sign-off: "that's all", "bye",
    "no thanks, I'm done". A fallback for a reply without [END]. */

@@ -135,6 +135,36 @@ int main(void)
     free(js);
     CHECK(!claude_history_parse("garbage", &h2, &day));
 
+    /* The confirm marker: a Yes/No card's summary, taken out of the text. */
+    CHECK(strstr(CLAUDE_SYSTEM, "[CONFIRM:") != NULL);
+    char cm[200];
+    char c1[120] = "Sure, here it is: [CONFIRM: Pay $295 toward your dues] and that's that.";
+    CHECK(claude_take_confirm(c1, cm, sizeof cm) && strcmp(cm, "Pay $295 toward your dues") == 0 &&
+          strcmp(c1, "Sure, here it is:  and that's that.") == 0);
+    char c2[80] = "I'll book it. [CONFIRM: Book the clubhouse for Saturday]";
+    CHECK(claude_take_confirm(c2, cm, sizeof cm) && strcmp(cm, "Book the clubhouse for Saturday") == 0 &&
+          strcmp(c2, "I'll book it.") == 0);
+    char c3[80] = "Shall I go ahead?  [CONFIRM:   Pay $100  ]";                 /* extra spaces around it */
+    CHECK(claude_take_confirm(c3, cm, sizeof cm) && strcmp(cm, "Pay $100") == 0);
+    char c4[80] = "Here you go. [CONFIRM: Pay $50";                            /* cut off: no closing "]" */
+    CHECK(claude_take_confirm(c4, cm, sizeof cm) && strcmp(cm, "Pay $50") == 0 && strcmp(c4, "Here you go.") == 0);
+    char c5[40] = "Just an answer, nothing to confirm.";
+    cm[0] = 'x';
+    CHECK(!claude_take_confirm(c5, cm, sizeof cm) && cm[0] == 0);
+
+    /* The homeowner token, pulled out of a raw sign_in reply. */
+    char tok[40];
+    const char *reply1 =
+        "{\"content\":[{\"type\":\"mcp_tool_result\",\"content\":[{\"type\":\"text\","
+        "\"text\":\"Signed in: Reza, 27 Willow Lane (Lot 14), Sheppard Center. "
+        "homeowner_token: hw_0123456789abcdef01234567\"}]}]}";
+    CHECK(claude_find_homeowner_token(reply1, tok, sizeof tok) && strcmp(tok, "hw_0123456789abcdef01234567") == 0);
+    CHECK(!claude_find_homeowner_token("{\"content\":[]}", tok, sizeof tok));
+    char two[300];
+    snprintf(two, sizeof two, "%s %s", reply1,
+             "{\"text\":\"homeowner_token: hw_fedcba9876543210fedcba98\"}");
+    CHECK(claude_find_homeowner_token(two, tok, sizeof tok) && strcmp(tok, "hw_fedcba9876543210fedcba98") == 0);
+
     /* The day turns at 04:00. */
     setenv("TZ", "EST5EDT,M3.2.0,M11.1.0", 1);
     tzset();

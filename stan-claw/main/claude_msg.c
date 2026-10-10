@@ -134,6 +134,43 @@ bool claude_take_end(char *text)
     return true;
 }
 
+bool claude_take_confirm(char *text, char *summary, size_t n)
+{
+    summary[0] = 0;
+    char *m = strstr(text, "[CONFIRM:");
+    if (!m) return false;
+    char *start = m + 9;
+    while (*start == ' ') start++;
+    char *close = strchr(start, ']');
+    const char *end = close ? close : start + strlen(start);     /* tolerate a missing "]" */
+    size_t len = (size_t)(end - start);
+    while (len && start[len - 1] == ' ') len--;
+    if (len >= n) len = n ? n - 1 : 0;
+    memcpy(summary, start, len);
+    summary[len] = 0;
+    char *stop = close ? close + 1 : start + strlen(start);
+    memmove(m, stop, strlen(stop) + 1);
+    size_t l = strlen(text);
+    while (l && (text[l - 1] == ' ' || text[l - 1] == '\n')) text[--l] = 0;
+    return true;
+}
+
+bool claude_find_homeowner_token(const char *raw_json, char *out, size_t n)
+{
+    const char *needle = "homeowner_token: ";
+    const char *p = raw_json, *last = NULL;
+    while ((p = strstr(p, needle)) != NULL) { last = p; p += strlen(needle); }
+    if (!last) return false;
+    const char *start = last + strlen(needle);
+    if (strncmp(start, "hw_", 3) != 0) return false;
+    size_t len = 0;
+    while (start[len] && (isalnum((unsigned char)start[len]) || start[len] == '_')) len++;
+    if (len >= n) len = n ? n - 1 : 0;
+    memcpy(out, start, len);
+    out[len] = 0;
+    return true;
+}
+
 bool claude_is_signoff(const char *heard)
 {
     /* Lower case, letters and spaces only, then whole-phrase checks: a short

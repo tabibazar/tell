@@ -28,4 +28,15 @@ void fx_run(fx_t *f, int16_t *pcm, int n);
 fx_kind_t fx_from_name(const char *name);   /* "hal", "jarvis", anything else FX_NONE */
 const char *fx_name(fx_kind_t kind);        /* "hal", "jarvis", "" */
 
+/*
+ * A high-shelf boost for hearing loss, run on ALL speech after the robot
+ * effect above (which may be FX_NONE). A plain RBJ-cookbook biquad.
+ */
+#include <stdbool.h>
+
+typedef struct { float b0, b1, b2, a1, a2, x1, x2, y1, y2; bool on; } clarity_t;
+
+void clarity_init(clarity_t *c, bool on);      /* +6 dB shelf above ~2.5 kHz at 16 kHz (RBJ cookbook high shelf, S=1) */
+void clarity_run(clarity_t *c, int16_t *pcm, int n);   /* in place; no-op when !on */
+
 #endif /* FX_H */

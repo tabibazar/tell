@@ -62,6 +62,56 @@ int main(void)
     knock_feed(&k, 0.0f, 0.7f, 0.7f, 0);                     /* tilted panel: gravity does not count */
     CHECK(!knock_feed(&k, 0.0f, 0.7f, 0.7f, 30));
 
+    /* Two knocks make a double when 250-900 ms apart; too close (swallowed
+       by the now-shorter quiet spell) or too far apart, no double -- but a
+       third knock soon enough after the second still pairs with it. */
+    knock_init(&k);
+    t = 0;
+    knock_feed(&k, 0.0f, 0.0f, 1.0f, t);                     /* primes */
+    t += 400;
+    CHECK(knock_feed(&k, 0.0f, 0.0f, 1.3f, t));
+    CHECK(!knock_double(&k, t));                             /* the first of the pair */
+    t += 400;
+    CHECK(knock_feed(&k, 0.0f, 0.0f, 1.0f, t));              /* back down: a second jolt */
+    CHECK(knock_double(&k, t));                              /* 400 ms later: a double */
+
+    knock_init(&k);
+    t = 0;
+    knock_feed(&k, 0.0f, 0.0f, 1.0f, t);
+    t += 400;
+    CHECK(knock_feed(&k, 0.0f, 0.0f, 1.3f, t));
+    knock_double(&k, t);
+    t += 150;
+    CHECK(!knock_feed(&k, 0.0f, 0.0f, 1.0f, t));             /* 150 ms: eaten by the 180 ms quiet spell */
+
+    knock_init(&k);
+    t = 0;
+    knock_feed(&k, 0.0f, 0.0f, 1.0f, t);
+    t += 400;
+    CHECK(knock_feed(&k, 0.0f, 0.0f, 1.3f, t));
+    knock_double(&k, t);                                     /* first */
+    t += 1200;
+    CHECK(knock_feed(&k, 0.0f, 0.0f, 1.0f, t));
+    CHECK(!knock_double(&k, t));                             /* 1200 ms: too far apart, becomes the new first */
+    t += 400;
+    CHECK(knock_feed(&k, 0.0f, 0.0f, 1.3f, t));
+    CHECK(knock_double(&k, t));                              /* 400 ms after that one: a double */
+
+    /* A knock arriving during a hush (a finger on the screen) does nothing,
+       and does not half-pair with whatever comes after it. */
+    knock_init(&k);
+    t = 0;
+    knock_feed(&k, 0.0f, 0.0f, 1.0f, t);
+    t += 400;
+    CHECK(knock_feed(&k, 0.0f, 0.0f, 1.3f, t));
+    CHECK(!knock_double(&k, t));                             /* pending first */
+    knock_hush(&k, t + 1000);
+    t += 300;
+    CHECK(!knock_feed(&k, 0.0f, 0.0f, 1.6f, t));             /* inside the hush: ignored outright */
+    t += 1000;                                                /* past the hush */
+    CHECK(knock_feed(&k, 0.0f, 0.0f, 1.0f, t));
+    CHECK(!knock_double(&k, t));                             /* the earlier pending first was forgotten */
+
     printf(fails ? "%d FAILED\n" : "sc_rest: all passed\n", fails);
     return fails != 0;
 }
