@@ -83,6 +83,20 @@ int main(void)
     CHECK(!claude_parse("{\"type\":\"error\",\"error\":{\"type\":\"authentication_error\",\"message\":\"invalid x-api-key\"}}", &r));
     CHECK(!claude_mcp_failed(401, &r));                                      /* a bad key is not the server */
 
+    char t1[64] = "Goodbye, have a lovely evening! [END]";
+    CHECK(claude_take_end(t1) && strcmp(t1, "Goodbye, have a lovely evening!") == 0);
+    char t2[64] = "Your balance is $595.";
+    CHECK(!claude_take_end(t2) && strcmp(t2, "Your balance is $595.") == 0);
+    CHECK(claude_is_signoff("That's all, thanks."));
+    CHECK(claude_is_signoff("No thanks, I'm done"));
+    CHECK(claude_is_signoff("Bye!"));
+    CHECK(claude_is_signoff("ok that is it"));
+    CHECK(!claude_is_signoff("How do I stop my neighbor's dog from barking at night?"));   /* a question, not a sign-off */
+    CHECK(!claude_is_signoff("Can you tell me about the bylaws?"));
+    CHECK(!claude_is_signoff("byelaws for sheds"));
+    CHECK(!claude_is_signoff(""));
+    CHECK(strstr(CLAUDE_SYSTEM, "[END]") != NULL);
+
     printf(fails ? "%d FAILED\n" : "sc_claude: all passed\n", fails);
     return fails != 0;
 }

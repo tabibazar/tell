@@ -155,6 +155,11 @@ esp_err_t audio_init(void)
 
 int audio_record(int16_t *buf, int max_samples, int max_ms, vad_result_t *why)
 {
+    return audio_record_wait(buf, max_samples, max_ms, max_ms, why);
+}
+
+int audio_record_wait(int16_t *buf, int max_samples, int max_ms, int wait_ms, vad_result_t *why)
+{
     static int16_t tdm[FRAME * SLOTS];
     vad_t v;
     vad_init(&v, AUDIO_FS, max_ms);
@@ -174,6 +179,7 @@ int audio_record(int16_t *buf, int max_samples, int max_ms, vad_result_t *why)
         if (s_level_cb) s_level_cb(frame_rms(buf + n, FRAME));
         r = vad_feed(&v, buf + n, FRAME);
         n += FRAME;
+        if (r == VAD_WAITING && n * 1000 / AUDIO_FS >= wait_ms) { r = VAD_SILENT; break; }   /* nobody began */
         if (r == VAD_DONE || r == VAD_SILENT || r == VAD_CAPPED) break;
     }
     if (r == VAD_WAITING || r == VAD_SPEAKING) r = vad_speech_ms(&v) >= 300 ? VAD_CAPPED : VAD_SILENT;   /* buffer full */

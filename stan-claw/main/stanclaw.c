@@ -284,10 +284,12 @@ static const char *service_error(const char *who, int code, char *buf, size_t n)
 
 /* A tap or BOOT: listen, transcribe, ask, speak. Holds s_busy throughout. */
 /* A conversation: listen, transcribe, ask, speak -- and then listen again,
-   round after round, until a tap ends it (s_stop) or nobody speaks for 30 s.
+   round after round, until the person signs off ("that's all" -- Claude's
+   [END], or their own words), a tap ends it (s_stop), or nobody starts
+   talking within 8 s of an answer.
    Holds s_busy throughout. Claude keeps the last CLAUDE_TURNS exchanges. */
 static volatile bool s_stop, s_convo;
-#define CONVO_QUIET_S 30
+#define CONVO_WAIT_MS 8000    /* after an answer: this long to start talking, or it ends */
 
 static void conversation(void)
 {
@@ -295,19 +297,16 @@ static void conversation(void)
     if (!net_up()) { set_view(UI_HOME, NULL, NULL, NULL, "no WiFi"); return; }
     static char heard[600];
     static claude_reply_t reply;
-    int quiet_s = 0;
     for (int round = 0; !s_stop; round++) {
         set_view(UI_LISTENING, NULL, NULL, round ? "Your turn" : NULL, NULL);
         vad_result_t why;
-        int n = audio_record(s_pcm, AUDIO_FS * REC_MAX_S, REC_MAX_S * 1000, &why);
+        int n = audio_record_wait(s_pcm, AUDIO_FS * REC_MAX_S, REC_MAX_S * 1000,
+                                  round ? CONVO_WAIT_MS : REC_MAX_S * 1000, &why);
         if (s_stop) break;
         if (why == VAD_SILENT) {
-            quiet_s += REC_MAX_S;
             if (round == 0) { set_view(UI_HOME, NULL, NULL, NULL, "didn't catch that"); return; }
-            if (quiet_s >= CONVO_QUIET_S) break;
-            continue;
+            break;                                          /* nothing more to say */
         }
-        quiet_s = 0;
 
         set_view(UI_THINKING, "...", NULL, NULL, NULL);
         int code = stt_transcribe(s_pcm, n, heard, sizeof heard);
@@ -322,6 +321,7 @@ static void conversation(void)
             return;
         }
         if (s_stop) break;
+        bool last = claude_take_end(reply.text) || claude_is_signoff(heard);
         char note[96] = "";
         if (reply.mcp_error) snprintf(note, sizeof note, "MCP server unreachable");
         else if (reply.tools[0]) snprintf(note, sizeof note, "asked remote: %.70s", reply.tools);
@@ -333,6 +333,7 @@ static void conversation(void)
             set_view(UI_ANSWER, heard, reply.text, NULL, service_error("ElevenLabs", code, err, sizeof err));
             return;
         }
+        if (last) break;                                    /* "that's all": the goodbye was the last word */
     }
     s_answer_at = esp_timer_get_time();
     set_view(UI_HOME, NULL, NULL, NULL, s_stop ? NULL : "conversation ended");

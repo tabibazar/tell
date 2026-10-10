@@ -11,7 +11,9 @@
 #include <stdbool.h>
 
 #define CLAUDE_TURNS 7
-#define CLAUDE_SYSTEM "You are stan-claw, a voice assistant on a small screen. Answer in one to three short spoken sentences."
+#define CLAUDE_SYSTEM "You are stan-claw, a voice assistant on a small screen. Answer in one to three short spoken sentences. " \
+    "When the person says they are finished (for example \"that's all\", \"no thanks\", \"goodbye\"), " \
+    "reply with a brief goodbye and end your reply with [END]."
 
 typedef struct {
     char user[600];
@@ -35,6 +37,14 @@ void claude_history_clear(claude_history_t *h);
 char *claude_request(const char *model, const char *mcp_url, const char *mcp_token,
                      const claude_history_t *h, const char *question);
 bool claude_parse(const char *json, claude_reply_t *out);
+
+/* Takes Claude's [END] marker out of `text` (the conversation is over);
+   true if it was there. */
+bool claude_take_end(char *text);
+
+/* The person's own words sound like a sign-off: "that's all", "bye",
+   "no thanks, I'm done". A fallback for a reply without [END]. */
+bool claude_is_signoff(const char *heard);
 /* A refusal because of the remote MCP server: a 4xx whose error names it
    (an unreachable server is a 400, "mcp_servers[0] 'remote': Error while
    communicating with MCP server."). The caller asks again without it. */

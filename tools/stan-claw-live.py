@@ -43,7 +43,9 @@ heard = json.loads(body)["results"]["channels"][0]["alternatives"][0]["transcrip
 print("  heard:", heard)
 
 req = {"model": env.get("MODEL") or "claude-sonnet-5", "max_tokens": 1024,
-       "system": "You are stan-claw, a voice assistant on a small screen. Answer in one to three short spoken sentences.",
+       "system": "You are stan-claw, a voice assistant on a small screen. Answer in one to three short spoken sentences. "
+                 "When the person says they are finished (for example \"that's all\", \"no thanks\", \"goodbye\"), "
+                 "reply with a brief goodbye and end your reply with [END].",
        "messages": [{"role": "user", "content": heard}]}
 headers = {"x-api-key": env["CLAUDE_KEY"], "anthropic-version": "2023-06-01", "content-type": "application/json"}
 if env.get("MCP_URL"):

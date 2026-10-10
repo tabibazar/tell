@@ -111,3 +111,45 @@ bool claude_mcp_failed(int code, const claude_reply_t *r)
             return true;
     return false;
 }
+
+bool claude_take_end(char *text)
+{
+    char *m = strstr(text, "[END]");
+    if (!m) return false;
+    memmove(m, m + 5, strlen(m + 5) + 1);
+    size_t l = strlen(text);
+    while (l && (text[l - 1] == ' ' || text[l - 1] == '\n')) text[--l] = 0;
+    return true;
+}
+
+bool claude_is_signoff(const char *heard)
+{
+    /* Lower case, letters and spaces only, then whole-phrase checks: a short
+       utterance that is (or ends with) a sign-off, not one that merely
+       contains "stop" somewhere in a question. */
+    char t[160];
+    size_t o = 0;
+    for (const char *p = heard; *p && o + 1 < sizeof t; p++) {
+        char c = *p;
+        if (c >= 'A' && c <= 'Z') c = (char)(c - 'A' + 'a');
+        if ((c >= 'a' && c <= 'z') || c == ' ') t[o++] = c;
+        else if (c == '\'') continue;
+        else t[o++] = ' ';
+    }
+    t[o] = 0;
+    int words = 0;
+    for (char *p = t; *p; p++) if (*p != ' ' && (p == t || p[-1] == ' ')) words++;
+    if (words == 0 || words > 8) return false;
+    static const char *const ends[] = { "thats all", "that is all", "thats it", "that is it", "goodbye", "bye",
+                                        "im done", "i am done", "were done", "nothing else", "no thanks",
+                                        "no thank you", "stop", "see you", "talk later", "never mind" };
+    for (size_t i = 0; i < sizeof ends / sizeof ends[0]; i++) {
+        const char *hit = strstr(t, ends[i]);
+        if (!hit) continue;
+        const char *after = hit + strlen(ends[i]);
+        bool start_ok = hit == t || hit[-1] == ' ';
+        bool end_ok = *after == 0 || *after == ' ';
+        if (start_ok && end_ok) return true;
+    }
+    return false;
+}

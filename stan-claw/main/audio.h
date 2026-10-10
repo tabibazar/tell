@@ -17,6 +17,10 @@
 
 esp_err_t audio_init(void);
 int audio_record(int16_t *buf, int max_samples, int max_ms, vad_result_t *why);
+
+/* As audio_record, but gives up (VAD_SILENT) if no speech has begun within
+   wait_ms; once speech starts the cap is max_ms as usual. */
+int audio_record_wait(int16_t *buf, int max_samples, int max_ms, int wait_ms, vad_result_t *why);
 bool audio_play_begin(void);
 bool audio_play_chunk(const int16_t *mono, int samples);
 void audio_play_end(void);
