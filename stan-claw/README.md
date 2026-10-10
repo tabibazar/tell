@@ -17,6 +17,9 @@ network for its speaker, mics and screen. Design:
 3. Keys: `tools/stan-claw.py key claude ...`, `key deepgram ...`, `key elevenlabs ...`, `voice <id>`,
    `mcp url https://...`, `mcp token ...`, `serve token <long random>`; check with `tools/stan-claw.py status`.
 4. Hardware check: `tools/stan-claw.py beep`, then `tools/stan-claw.py rec` while speaking.
+   Deeper: `regs` (the ES7210's setup; 00 reads 41, 02 reads C1) and `slots` / `slots beep`
+   (each TDM slot's level: 0 MIC1 and 2 MIC2 hear the room, 1 the speaker reference is ~0
+   until the beep, 3 is unused).
 
 Back to room bookings: `cd panel1 && idf.py build && tools/flash-panel1.sh --full`
 (its settings come back from NVS, or `esptool write_flash 0x9000 secrets/panel1-nvs.bin`).
