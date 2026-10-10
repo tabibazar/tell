@@ -28,7 +28,12 @@ typedef struct {
     const uint16_t *image;   /* RGB565, img_w x img_h, for UI_AGENT_IMAGE */
     int img_w, img_h;
     bool amber;              /* UI_RESTING: the orb amber, an agent asking for attention */
+    const uint8_t *levels;   /* UI_LISTENING: the voice's loudness, 0-255, oldest first */
+    int nlevels;             /* how many of UI_WAVE_BARS are filled */
+    int listen_ms;           /* UI_LISTENING: how long the mics have been open */
 } ui_view_t;
+
+#define UI_WAVE_BARS 48
 
 void ui_draw(canvas_t *c, const ui_view_t *v);
 bool ui_hit_talk(int x, int y);

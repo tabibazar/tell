@@ -47,8 +47,15 @@ int main(void)
     v.note = "Deepgram key missing";
     ui_draw(&c, &v); bmp("home-note");
 
-    v = (ui_view_t){ .mode = UI_LISTENING, .mic_open = true, .now = 9 * 60 + 41 };
+    /* A voice: two words and a pause, louder in the middle of each. */
+    static uint8_t lv[UI_WAVE_BARS];
+    for (int i = 0; i < 40; i++) {
+        int w = i < 16 ? i : i < 22 ? -1 : i - 22;
+        lv[i] = (uint8_t)(w < 0 ? 6 : 40 + (w * 37 % 170) + (w % 3) * 18);
+    }
+    v = (ui_view_t){ .mode = UI_LISTENING, .mic_open = true, .now = 9 * 60 + 41, .levels = lv, .nlevels = 40, .listen_ms = 2400 };
     ui_draw(&c, &v); bmp("listening");
+    CHECK(fb[250 * 480 + 428] != fb[250 * 480 + 2]);         /* the newest bar, at the right, is drawn */
     CHECK(fb[10 * 480 + 240] != banner_off);                 /* the banner is drawn */
     uint16_t banner_on = fb[10 * 480 + 240];
 

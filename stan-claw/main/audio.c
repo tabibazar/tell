@@ -40,6 +40,16 @@ static void (*s_mic_cb)(bool);
 
 void audio_on_mic(void (*cb)(bool open)) { s_mic_cb = cb; }
 
+static void (*s_level_cb)(int);
+void audio_on_level(void (*cb)(int rms)) { s_level_cb = cb; }
+
+static int frame_rms(const int16_t *p, int n)
+{
+    int64_t sum = 0;
+    for (int i = 0; i < n; i++) sum += (int32_t)p[i] * p[i];
+    return (int)sqrt((double)sum / n);
+}
+
 static bool i2s_start(void)
 {
     i2s_chan_config_t chan = I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_0, I2S_ROLE_MASTER);
@@ -157,6 +167,7 @@ int audio_record(int16_t *buf, int max_samples, int max_ms, vad_result_t *why)
             break;
         }
         for (int i = 0; i < FRAME; i++) buf[n + i] = tdm[i * SLOTS + SLOT_MIC];
+        if (s_level_cb) s_level_cb(frame_rms(buf + n, FRAME));
         r = vad_feed(&v, buf + n, FRAME);
         n += FRAME;
         if (r == VAD_DONE || r == VAD_SILENT || r == VAD_CAPPED) break;

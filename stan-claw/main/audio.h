@@ -24,6 +24,10 @@ void audio_set_volume(int level);
 int audio_volume(void);
 void audio_on_mic(void (*cb)(bool open));
 
+/* Called with each 20 ms frame's loudness (RMS) while recording, for the
+   listening page's waveform. From the recording task: keep it short. */
+void audio_on_level(void (*cb)(int rms));
+
 /* Developer tools for the console. audio_slot_levels records `ms` of the
    ES7210's raw TDM frames (all four slots), playing `tone` (looped, may be
    NULL) as it goes, and gives each slot's peak, RMS, and the RMS of its

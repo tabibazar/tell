@@ -21,3 +21,21 @@ int rest_breath_light(long t_ms)
     double v = 0.5 - 0.5 * cos(2.0 * 3.14159265358979 * ph);
     return 3 + (int)lround(11.0 * v);
 }
+
+bool rest_office(int wday, int minute)
+{
+    return wday >= 1 && wday <= 5 && minute >= REST_OFFICE_FROM && minute < REST_OFFICE_TO;
+}
+
+long rest_until_office(int wday, int minute, int second)
+{
+    if (rest_office(wday, minute)) return 0;
+    long now = (long)minute * 60 + second;
+    for (int d = 0; d < 8; d++) {
+        int wd = (wday + d) % 7;
+        if (wd < 1 || wd > 5) continue;
+        long start = (long)d * 86400 + REST_OFFICE_FROM * 60L;
+        if (start > now) return start - now;
+    }
+    return 86400;    /* not reached */
+}

@@ -10,13 +10,18 @@
  *
  * Untouched, the screen rests (rest.h): a breathing orb at 45 s, dark 5 min
  * later, and dark at 45 s from 19:00 to 08:00. A tap, BOOT, a knock on the
- * desk or an agent's call wakes it; the first tap only wakes.
+ * desk or an agent's call wakes it; the first tap only wakes. Outside office
+ * hours (Mon-Fri 08:00-16:00) it deep-sleeps instead, BOOT or 08:00 waking it.
  */
+#include <math.h>
 #include <stdio.h>
 #include <string.h>
+#include <sys/time.h>
 #include <time.h>
 
 #include "driver/gpio.h"
+#include "esp_sleep.h"
+#include "esp_sntp.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_netif.h"
@@ -37,6 +42,7 @@
 #include "motion.h"
 #include "net.h"
 #include "rest.h"
+#include "rtc.h"
 #include "stt.h"
 #include "touch.h"
 #include "tts.h"
@@ -69,6 +75,55 @@ static volatile int s_light = -1;      /* the backlight as last set, percent */
 
 static void activity(void) { s_active_at = esp_timer_get_time(); }
 
+/* The listening page's waveform: each bar the loudest of three 20 ms frames,
+   on a log scale from the room's hush to a raised voice. */
+static uint8_t s_levels[UI_WAVE_BARS];
+static int s_nlevels;
+static int64_t s_listen_t0;
+
+static void on_level(int rms)
+{
+    static int peak, frames;
+    if (rms > peak) peak = rms;
+    if (++frames < 3) return;
+    float x = peak <= 40 ? 0.0f : (logf((float)peak) - logf(40.0f)) / (logf(6000.0f) - logf(40.0f));
+    uint8_t lv = (uint8_t)(x >= 1.0f ? 255 : x * 255.0f);
+    frames = peak = 0;
+    xSemaphoreTake(s_ui_lock, portMAX_DELAY);
+    if (s_nlevels == UI_WAVE_BARS) memmove(s_levels, s_levels + 1, UI_WAVE_BARS - 1);
+    else s_nlevels++;
+    s_levels[s_nlevels - 1] = lv;
+    s_dirty = true;
+    xSemaphoreGive(s_ui_lock);
+}
+
+/* Off hours (rest.h): deep sleep until BOOT, or until the next start of office
+   hours -- in steps of at most an hour, so the clock chip can correct the
+   ESP32's drifting timer on each brief wake. */
+static void deep_sleep_now(bool panel_up)
+{
+    time_t t = time(NULL);
+    struct tm lt;
+    localtime_r(&t, &lt);
+    long secs = rest_until_office(lt.tm_wday, lt.tm_hour * 60 + lt.tm_min, lt.tm_sec);
+    if (secs > 3600) secs = 3600;
+    if (secs < 20) secs = 20;
+    ESP_LOGI(TAG, "deep sleep for %ld s (BOOT wakes it)", secs);
+    if (panel_up) lcd_off_for_sleep();
+    gpio_deep_sleep_hold_en();
+    esp_sleep_enable_timer_wakeup((uint64_t)secs * 1000000ULL);
+    esp_sleep_enable_ext0_wakeup(GPIO_NUM_0, 0);
+    esp_deep_sleep_start();
+}
+
+static bool office_now(void)
+{
+    time_t t = time(NULL);
+    struct tm lt;
+    localtime_r(&t, &lt);
+    return rest_office(lt.tm_wday, lt.tm_hour * 60 + lt.tm_min);
+}
+
 static void light(int pct)
 {
     if (pct != s_light) { lcd_backlight(pct); s_light = pct; }
@@ -92,7 +147,13 @@ static void on_mic(bool open)
     s_mic = open;
     s_dirty = true;
     activity();
-    if (open) light(100);
+    if (open) {
+        light(100);
+        xSemaphoreTake(s_ui_lock, portMAX_DELAY);
+        s_nlevels = 0;                      /* a fresh waveform */
+        s_listen_t0 = esp_timer_get_time();
+        xSemaphoreGive(s_ui_lock);
+    }
     /* Draw now, so the banner is up before the first sample is taken. */
     xSemaphoreTake(s_ui_lock, portMAX_DELAY);
     s_view.mic_open = open;
@@ -318,6 +379,20 @@ void app_main(void)
     setenv("TZ", "EST5EDT,M3.2.0,M11.1.0", 1);
     tzset();
     cfg_load();
+
+    /* The time from the clock chip, before anything else: a timer wake in
+       off hours goes straight back to sleep, the panel never lit. */
+    lcd_bus_init();
+    clockchip_init();
+    time_t rt;
+    bool clock_from_rtc = clockchip_get(&rt);
+    if (clock_from_rtc) {
+        struct timeval tv = { .tv_sec = rt };
+        settimeofday(&tv, NULL);
+    }
+    if (esp_sleep_get_wakeup_cause() == ESP_SLEEP_WAKEUP_TIMER && clock_from_rtc && !office_now())
+        deep_sleep_now(false);
+
     s_busy = xSemaphoreCreateMutex();
     s_ui_lock = xSemaphoreCreateMutex();
     s_go = xSemaphoreCreateBinary();
@@ -332,6 +407,7 @@ void app_main(void)
     activity();
     if (audio_init() != ESP_OK) set_view(UI_ERROR, NULL, "The speaker or microphones did not start.", "Audio failed", NULL);
     audio_on_mic(on_mic);
+    audio_on_level(on_level);
     gpio_config_t boot = { .pin_bit_mask = 1ULL << PIN_BOOT, .mode = GPIO_MODE_INPUT, .pull_up_en = GPIO_PULLUP_ENABLE };
     gpio_config(&boot);
 
@@ -370,6 +446,8 @@ void app_main(void)
         down = now_down;
         boot_was = boot_now;
 
+        static unsigned tick;
+        if (s_view.mode == UI_LISTENING && (++tick & 1)) s_dirty = true;   /* the waveform and timer move, ~16 fps */
         if (s_view.mode == UI_ANSWER && esp_timer_get_time() - s_answer_at > ANSWER_US)
             set_view(UI_HOME, NULL, NULL, NULL, NULL);
         if (s_view.mode == UI_HOME) {
@@ -386,9 +464,13 @@ void app_main(void)
             int m = lt.tm_hour * 60 + lt.tm_min;
             if (m != last_min) { last_min = m; s_view.now = m; s_dirty = true; }
         }
+        /* A fresh time from the network goes into the clock chip. */
+        if (sntp_get_sync_status() == SNTP_SYNC_STATUS_COMPLETED) clockchip_set(time(NULL));
+
         /* How awake to be, and the light for it. */
         int64_t now_us = esp_timer_get_time();
         int idle_s = s_in_use || s_mic ? 0 : (int)((now_us - s_active_at) / 1000000);
+        if (net_time_ok() && !office_now() && idle_s >= REST_BREATHE_S) deep_sleep_now(true);
         rest_level_t want = rest_level(idle_s, net_time_ok() ? s_view.now : -1);
         bool amber = now_us < s_amber_until;
         static rest_level_t shown = REST_AWAKE;
@@ -406,6 +488,9 @@ void app_main(void)
             xSemaphoreTake(s_ui_lock, portMAX_DELAY);
             s_dirty = false;
             s_view.mic_open = s_mic;
+            s_view.levels = s_levels;
+            s_view.nlevels = s_nlevels;
+            s_view.listen_ms = (int)((now_us - s_listen_t0) / 1000);
             if (resting_screen) {
                 ui_view_t rv = { .mode = UI_RESTING, .now = s_view.now, .amber = amber, .mic_open = s_mic };
                 ui_draw(lcd_canvas(), &rv);

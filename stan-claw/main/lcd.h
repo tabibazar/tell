@@ -12,7 +12,15 @@
 #include "esp_err.h"
 #include "driver/i2c_master.h"
 
+/* The shared I2C bus alone, for a wake from deep sleep that goes straight
+   back to sleep without lighting the panel. lcd_init calls it too. */
+esp_err_t lcd_bus_init(void);
+
 esp_err_t lcd_init(void);
+
+/* Before deep sleep: the panel asleep, the amplifier off, the backlight
+   held off through the sleep (lcd_init releases it). */
+void lcd_off_for_sleep(void);
 canvas_t *lcd_canvas(void);
 void lcd_show(void);
 void lcd_backlight(int percent);   /* 0..100 */

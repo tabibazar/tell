@@ -157,6 +157,17 @@ void lcd_backlight(int percent)
     ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_1);
 }
 
+esp_err_t lcd_bus_init(void)
+{
+    if (s_bus) return ESP_OK;
+    i2c_master_bus_config_t bc = {
+        .i2c_port = I2C_NUM_0, .sda_io_num = PIN_SDA, .scl_io_num = PIN_SCL,
+        .clk_source = I2C_CLK_SRC_DEFAULT, .glitch_ignore_cnt = 7,
+        .flags.enable_internal_pullup = true,
+    };
+    return i2c_new_master_bus(&bc, &s_bus);
+}
+
 esp_err_t lcd_init(void)
 {
     /* Backlight first, dark, so the panel's power-on noise is not seen. */
@@ -171,12 +182,10 @@ esp_err_t lcd_init(void)
     };
     ESP_ERROR_CHECK(ledc_channel_config(&lc));
 
-    i2c_master_bus_config_t bc = {
-        .i2c_port = I2C_NUM_0, .sda_io_num = PIN_SDA, .scl_io_num = PIN_SCL,
-        .clk_source = I2C_CLK_SRC_DEFAULT, .glitch_ignore_cnt = 7,
-        .flags.enable_internal_pullup = true,
-    };
-    ESP_ERROR_CHECK(i2c_new_master_bus(&bc, &s_bus));
+    /* The backlight pin was held "off" through deep sleep: LEDC owns it now. */
+    gpio_hold_dis(PIN_BL);
+
+    ESP_ERROR_CHECK(lcd_bus_init());
     i2c_device_config_t dc = { .dev_addr_length = I2C_ADDR_BIT_LEN_7, .device_address = TCA_ADDR, .scl_speed_hz = 400000 };
     ESP_ERROR_CHECK(i2c_master_bus_add_device(s_bus, &dc, &s_tca));
 
@@ -258,4 +267,17 @@ void lcd_show(void)
 void lcd_amp(bool on)
 {
     tca_set(X_AMP, on);
+}
+
+void lcd_off_for_sleep(void)
+{
+    /* The panel into its own sleep, the amplifier off, and the backlight pin
+       driven high -- off, as it is inverted -- and held there: let go, it
+       floats and the backlight comes on full. */
+    st_cmd(0x28, NULL, 0);                  /* display off */
+    st_cmd(0x10, NULL, 0);                  /* sleep in */
+    vTaskDelay(pdMS_TO_TICKS(120));
+    tca_set(X_AMP, false);
+    ledc_stop(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_1, 1);
+    gpio_hold_en(PIN_BL);
 }

@@ -21,6 +21,19 @@ typedef enum { REST_AWAKE, REST_BREATHING, REST_ASLEEP } rest_level_t;
    minute: minute of the local day, or -1 when the clock is not set yet. */
 rest_level_t rest_level(int idle_s, int minute);
 
+/* Office hours, the only time it stays up: Monday to Friday, 08:00-16:00.
+   Outside them it deep-sleeps after REST_BREATHE_S untouched, wakes on BOOT,
+   and wakes by itself at the next 08:00 on a weekday. */
+#define REST_OFFICE_FROM (8 * 60)
+#define REST_OFFICE_TO   (16 * 60)
+
+/* wday 0 = Sunday .. 6 = Saturday; minute of the local day. */
+bool rest_office(int wday, int minute);
+
+/* Seconds from (wday, minute, second) to the next start of office hours;
+   0 inside them. */
+long rest_until_office(int wday, int minute, int second);
+
 /* The backlight while breathing, percent, at time t_ms into the rest: a
    smooth rise from 3 % to 14 % and back over REST_BREATH_MS. */
 int rest_breath_light(long t_ms);

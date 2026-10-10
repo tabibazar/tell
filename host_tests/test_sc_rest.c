@@ -33,6 +33,16 @@ int main(void)
     }
     CHECK(lo == 3 && hi == 14);
 
+    /* Office hours: Monday to Friday, 08:00-16:00. */
+    CHECK(rest_office(1, 8 * 60) && rest_office(5, 16 * 60 - 1));
+    CHECK(!rest_office(1, 8 * 60 - 1) && !rest_office(3, 16 * 60) && !rest_office(0, 10 * 60) && !rest_office(6, 10 * 60));
+    CHECK(rest_until_office(2, 10 * 60, 0) == 0);                          /* Tuesday 10:00: in */
+    CHECK(rest_until_office(2, 7 * 60 + 59, 30) == 30);                    /* Tuesday 07:59:30 */
+    CHECK(rest_until_office(2, 16 * 60, 0) == 16 * 3600);                  /* Tuesday 16:00 -> Wednesday 08:00 */
+    CHECK(rest_until_office(5, 16 * 60, 0) == 2 * 86400 + 16 * 3600);      /* Friday 16:00 -> Monday 08:00 */
+    CHECK(rest_until_office(6, 12 * 60, 0) == 86400 + 20 * 3600);          /* Saturday noon -> Monday 08:00 */
+    CHECK(rest_until_office(0, 23 * 60 + 59, 59) == 8 * 3600 + 1);         /* Sunday 23:59:59 */
+
     knock_t k;
     knock_init(&k);
     long t = 0;

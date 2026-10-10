@@ -101,6 +101,61 @@ static void talk_button(canvas_t *c, uint16_t col, const char *label, const char
     if (hint) aafont_draw(c, &aafont_rooms_small, W / 2, TALK_Y + TALK_R + 24, hint, C_DIM, AAFONT_CENTRE);
 }
 
+/* The microphones are open: a red bar across the top, the dot and the word
+   centred together as one. */
+static void banner(canvas_t *c)
+{
+    const aafont_t *f = &aafont_rooms_title;
+    const char *t = "LISTENING";
+    const int r = 5, gap = 10;
+    int w = 2 * r + gap + aafont_width(f, t);
+    int x = (W - w) / 2;
+    canvas_fill_rect(c, 0, 0, W, 44, C_BANNER);
+    canvas_disc(c, x + r, 22, r, C_TEXT);
+    aafont_draw(c, f, x + 2 * r + gap, 22 - f->cap / 2, t, C_TEXT, AAFONT_LEFT);
+}
+
+/* A colour part way from a to b, t in 0..1 (each channel, gamma ignored:
+   for a fade of bars it reads well enough). */
+static uint16_t mix(uint16_t a, uint16_t b, float t)
+{
+    int ar = a >> 11, ag = (a >> 5) & 63, ab = a & 31;
+    int br = b >> 11, bg = (b >> 5) & 63, bb = b & 31;
+    return (uint16_t)(((int)(ar + (br - ar) * t) << 11) | ((int)(ag + (bg - ag) * t) << 5) | (int)(ab + (bb - ab) * t));
+}
+
+/* The listening page: a prompt, the voice as a row of rounded bars that
+   scroll in from the right (older ones fading), the time so far, a hint. */
+#define WAVE_Y   250          /* centre line */
+#define WAVE_H   92           /* tallest half-bar */
+#define BAR_W    5
+#define BAR_GAP  3
+static void listening(canvas_t *c, const ui_view_t *v)
+{
+    aafont_draw(c, &aafont_rooms_head, W / 2, 96, "Go ahead, I'm listening", C_TEXT, AAFONT_CENTRE);
+    int span = UI_WAVE_BARS * (BAR_W + BAR_GAP) - BAR_GAP;
+    int x0 = (W - span) / 2;
+    uint16_t hot = RGB(0xFF, 0x6B, 0x5E), cold = RGB(0x3A, 0x22, 0x24);
+    for (int i = 0; i < UI_WAVE_BARS; i++) {
+        /* Bar i shows level k: the newest at the right, empty ones flat. */
+        int k = v->nlevels - UI_WAVE_BARS + i;
+        int lv = v->levels && k >= 0 && k < v->nlevels ? v->levels[k] : 0;
+        int half = 3 + lv * WAVE_H / 255;
+        float age = (float)(UI_WAVE_BARS - 1 - i) / (UI_WAVE_BARS - 1);   /* 0 newest .. 1 oldest */
+        uint16_t col = mix(hot, cold, age * 0.8f);
+        int x = x0 + i * (BAR_W + BAR_GAP);
+        /* A pill: the body, then each end a pixel narrower, so it reads round. */
+        canvas_fill_rect(c, x, WAVE_Y - half + 1, BAR_W, 2 * half - 2, col);
+        canvas_fill_rect(c, x + 1, WAVE_Y - half, BAR_W - 2, 1, col);
+        canvas_fill_rect(c, x + 1, WAVE_Y + half - 1, BAR_W - 2, 1, col);
+    }
+    char t[24];
+    int s10 = v->listen_ms / 100;
+    snprintf(t, sizeof t, "%d.%d s", s10 / 10, s10 % 10);
+    aafont_draw(c, &aafont_inter_sub, W / 2, WAVE_Y + WAVE_H + 34, t, C_DIM, AAFONT_CENTRE | AAFONT_ADVANCE);
+    aafont_draw(c, &aafont_rooms_small, W / 2, H - 52, "pause when you're done", C_DIM, AAFONT_CENTRE);
+}
+
 /* The resting orb: a core and a glow that fades into the black, drawn as
    rings from the outside in, each a little brighter. */
 static void orb(canvas_t *c, int cx, int cy, bool amber)
@@ -131,11 +186,7 @@ void ui_draw(canvas_t *c, const ui_view_t *v)
 {
     if (v->mode == UI_RESTING) {
         resting(c, v);
-        if (v->mic_open) {
-            canvas_fill_rect(c, 0, 0, W, 44, C_BANNER);
-            canvas_disc(c, W / 2 - 78, 22, 7, C_TEXT);
-            aafont_draw(c, &aafont_rooms_title, W / 2 + 10, 22 - aafont_rooms_title.cap / 2, "LISTENING", C_TEXT, AAFONT_CENTRE);
-        }
+        if (v->mic_open) banner(c);
         return;
     }
     canvas_fill_rect(c, 0, 0, W, H, C_BG);
@@ -147,7 +198,7 @@ void ui_draw(canvas_t *c, const ui_view_t *v)
         note(c, v->note);
         break;
     case UI_LISTENING:
-        talk_button(c, C_RED, "Listening", "stop talking to finish");
+        listening(c, v);
         break;
     case UI_THINKING:
         para(c, &aafont_rooms_title, v->heard, 24, 70, W - 48, 22, 3, C_DIM);
@@ -178,10 +229,5 @@ void ui_draw(canvas_t *c, const ui_view_t *v)
             canvas_blit(c, v->image, v->img_w, v->img_h, (W - v->img_w) / 2, (H - v->img_h) / 2);
         break;
     }
-    if (v->mic_open) {
-        /* Last, over everything: the microphones are open. */
-        canvas_fill_rect(c, 0, 0, W, 44, C_BANNER);
-        canvas_disc(c, W / 2 - 78, 22, 7, C_TEXT);
-        aafont_draw(c, &aafont_rooms_title, W / 2 + 10, 22 - aafont_rooms_title.cap / 2, "LISTENING", C_TEXT, AAFONT_CENTRE);
-    }
+    if (v->mic_open) banner(c);         /* last, over everything: the microphones are open */
 }
