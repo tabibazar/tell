@@ -9,6 +9,7 @@
 #include "freertos/task.h"
 #include "nvs_flash.h"
 
+#include "audio.h"
 #include "config.h"
 #include "console.h"
 #include "lcd.h"
@@ -29,6 +30,7 @@ void app_main(void)
     canvas_fill_rect(lcd_canvas(), 0, 0, 480, 480, 0x0841);
     lcd_show();
     ESP_LOGI(TAG, "touch %s", touch_init() == ESP_OK ? "ok" : "missing");
+    ESP_LOGI(TAG, "audio %s", audio_init() == ESP_OK ? "ok" : "failed");
     net_start();
     console_start();
     for (;;) vTaskDelay(pdMS_TO_TICKS(1000));

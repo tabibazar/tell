@@ -1,11 +1,14 @@
 #include "console.h"
 
+#include <math.h>
 #include <stdio.h>
 #include <string.h>
 
+#include "audio.h"
 #include "cmdline.h"
 #include "config.h"
 #include "driver/uart.h"
+#include "esp_heap_caps.h"
 #include "esp_netif.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -76,8 +79,29 @@ static void run(const char *line)
         yes_no("serve token", CFG_SERVE_TOKEN);
         return;
     }
+    if (strcmp(w[0], "beep") == 0) {
+        static int16_t tone[AUDIO_FS / 2];
+        for (int i = 0; i < AUDIO_FS / 2; i++) tone[i] = (int16_t)(8000 * sinf(2 * 3.14159f * 440 * i / AUDIO_FS));
+        audio_play_begin();
+        audio_play_chunk(tone, AUDIO_FS / 2);
+        audio_play_end();
+        printf("ok: beeped\n");
+        return;
+    }
+    if (strcmp(w[0], "rec") == 0) {
+        static int16_t *pcm;
+        if (!pcm) pcm = heap_caps_malloc(AUDIO_FS * 5 * sizeof(int16_t), MALLOC_CAP_SPIRAM);
+        if (!pcm) { printf("no: out of memory\n"); return; }
+        vad_result_t why;
+        int n = audio_record(pcm, AUDIO_FS * 5, 5000, &why);
+        double peak = 0;
+        for (int i = 0; i < n; i++) peak = fabs((double)pcm[i]) > peak ? fabs((double)pcm[i]) : peak;
+        printf("ok: %d ms, peak %.0f, %s\n", n * 1000 / AUDIO_FS, peak,
+               why == VAD_DONE ? "speech then quiet" : why == VAD_CAPPED ? "capped" : "silent");
+        return;
+    }
     printf("commands: wifi add|forget|list, key claude|deepgram|elevenlabs K, voice ID, model ID,\n"
-           "          mcp url URL, mcp token T, serve token T, status\n");
+           "          mcp url URL, mcp token T, serve token T, beep, rec, status\n");
 }
 
 static void console_task(void *arg)
