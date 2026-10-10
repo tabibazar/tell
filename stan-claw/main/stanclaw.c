@@ -56,7 +56,7 @@
 static const char *TAG = "stanclaw";
 
 #define PIN_BOOT     0
-#define REC_MAX_S    15
+#define REC_MAX_S    25          /* long enough for a slow, careful question */
 #define ANSWER_US    (30LL * 1000000)
 #define BUSY_WAIT_MS 30000
 
@@ -286,11 +286,11 @@ static const char *service_error(const char *who, int code, char *buf, size_t n)
 /* A tap or BOOT: listen, transcribe, ask, speak. Holds s_busy throughout. */
 /* A conversation: listen, transcribe, ask, speak -- and then listen again,
    round after round, until the person signs off ("that's all" -- Claude's
-   [END], or their own words), a tap ends it (s_stop), or nobody starts
-   talking within 8 s of an answer.
+   [END], or their own words), a tap ends it (s_stop), or nobody answers
+   within 12 s twice -- after a kind "anything else?" in between.
    Holds s_busy throughout. Claude keeps the last CLAUDE_TURNS exchanges. */
 static volatile bool s_stop, s_convo;
-#define CONVO_WAIT_MS 8000    /* after an answer: this long to start talking, or it ends */
+#define CONVO_WAIT_MS 12000   /* after an answer: this long to start talking before it checks in */
 
 static void conversation(void)
 {
@@ -298,6 +298,7 @@ static void conversation(void)
     if (!net_up()) { set_view(UI_HOME, NULL, NULL, NULL, "no WiFi"); return; }
     static char heard[600];
     static claude_reply_t reply;
+    bool checked_in = false;
     for (int round = 0; !s_stop; round++) {
         set_view(UI_LISTENING, NULL, NULL, round ? "Your turn" : NULL, NULL);
         vad_result_t why;
@@ -306,8 +307,18 @@ static void conversation(void)
         if (s_stop) break;
         if (why == VAD_SILENT) {
             if (round == 0) { set_view(UI_HOME, NULL, NULL, NULL, "didn't catch that"); return; }
-            break;                                          /* nothing more to say */
+            /* No reply: check in once, kindly, before letting them go. */
+            if (!checked_in) {
+                checked_in = true;
+                set_view(UI_SPEAKING, NULL, "Is there anything else I can help you with?", NULL, NULL);
+                tts_speak("Is there anything else I can help you with?");
+                continue;
+            }
+            set_view(UI_SPEAKING, NULL, "All right. Just tap the screen whenever you need me. Goodbye.", NULL, NULL);
+            tts_speak("All right. Just tap the screen whenever you need me. Goodbye.");
+            break;
         }
+        checked_in = false;
 
         set_view(UI_THINKING, "...", NULL, NULL, NULL);
         int code = stt_transcribe(s_pcm, n, heard, sizeof heard);
@@ -324,8 +335,8 @@ static void conversation(void)
         if (s_stop) break;
         bool last = reply.end || claude_is_signoff(heard);
         char note[96] = "";
-        if (reply.mcp_error) snprintf(note, sizeof note, "MCP server unreachable");
-        else if (reply.tools[0]) snprintf(note, sizeof note, "asked remote: %.70s", reply.tools);
+        if (reply.mcp_error) snprintf(note, sizeof note, "I couldn't reach the HOA service just now");
+        else if (reply.tools[0]) snprintf(note, sizeof note, "I checked your HOA records");
 
         set_view(UI_SPEAKING, heard, reply.text, NULL, note);
         code = tts_speak(reply.text);

@@ -1,117 +1,61 @@
 """stan-mcp: an imaginary homeowners' association service, as an MCP server.
 
-Sheppard Center HOA, a made-up community, so stan-claw has something to talk
-to about life in an HOA: the bylaws, a homeowner's account, violation
-notices, requests to the architectural committee, the board's next meeting.
+Four fictional communities (hoa_data.py) -- Sheppard Center (single-family),
+Stan Meadows (gated townhomes), Harbor View (a condo tower) and Oak Ridge
+(large lots, private roads) -- with their rules, amenities, finances, board,
+events and residents, so stan-claw can talk about anything life in an HOA
+brings up.
 
-A homeowner signs in first with their community and email (sign_in), which
-returns a token the account tools need. The token is an HMAC of the pair
-under MCP_TOKEN, so nothing is stored. This identifies; it does not verify --
-there is no code by email, as befits a pretend service.
+Public tools answer about a community; the homeowner's own account,
+violations, requests, bookings and household need sign_in first (community +
+email), which returns a homeowner token: an HMAC of the pair under MCP_TOKEN,
+so nothing is stored. It identifies; it does not verify -- there is no code by
+email, as befits a pretend service. Payments, bookings, passes, requests and
+appeals are simulated: they return a confirmation but change nothing.
 
 Runs as an AWS Lambda behind a function URL: MCP Streamable HTTP, one JSON
-answer per POST, protocol 2025-06-18, tools only. Every request needs
+answer per POST, tools only. Every request needs
 `Authorization: Bearer <MCP_TOKEN>` (an environment variable; never in git).
-Everything here is fiction.
 """
 import hashlib
 import hmac
 import json
 import os
+import re
+
+from hoa_data import ALIASES, COMMUNITIES
 
 PROTOCOL = "2025-06-18"
 
-COMMUNITY = "Sheppard Center HOA (a fictional community of 212 homes)"
 
-# Who may sign in: community -> email -> their home. One homeowner for now.
-HOMEOWNERS = {
-    "sheppard center": {
-        "info@avriz.io": {"address": "27 Willow Lane", "lot": "Lot 114", "owner_since": "2021"},
-    },
-}
-
-RULES = {
-    "fences": ("Section 7.2", "Fences may be at most 6 feet tall in back yards and 4 feet in front, in white vinyl or "
-               "natural cedar. Chain link is not allowed. Any new fence needs architectural approval first; "
-               "review takes up to 30 days."),
-    "parking": ("Section 9.1", "Cars park in garages or driveways. Street parking is allowed for guests up to 72 hours. "
-                "Boats, RVs and trailers may stay at most 48 hours for loading. Commercial vehicles over one ton "
-                "may not be kept overnight."),
-    "pets": ("Section 11.4", "Up to three household pets. Dogs on a leash in common areas, waste picked up at once. "
-             "Persistent barking after two written warnings is a violation with a $50 fine."),
-    "paint": ("Section 7.5", "Exterior colours must come from the approved palette (14 colours, at the clubhouse and "
-              "online). Repainting in the same colour needs no approval; a new colour does."),
-    "trash": ("Section 10.2", "Bins may go to the curb after 6 pm the night before pickup (Tuesday) and must be back "
-              "out of sight from the street by 8 pm on pickup day."),
-    "short-term rentals": ("Section 12.3", "Rentals shorter than 30 days are not allowed. Longer leases must be "
-                           "registered with management, with a copy of the lease, within 10 days."),
-    "noise": ("Section 11.1", "Quiet hours are 10 pm to 7 am. Construction and lawn equipment only 8 am to 6 pm on "
-              "weekdays, 9 am to 5 pm on Saturdays, never on Sundays."),
-    "solar": ("Section 7.9", "Solar panels are allowed (state law protects them). Roof panels should sit flush and "
-              "face the back or side where it does not cost more than 10% of output. Submit a request so the "
-              "committee can note it; it cannot be refused on looks alone."),
-    "satellite dishes": ("Section 7.10", "Dishes under 1 metre are allowed where reception works, preferably not "
-                         "facing the street. No approval needed."),
-    "holiday decorations": ("Section 8.3", "Up from 30 days before a holiday, down within 15 days after."),
-    "pool": ("Section 13.1", "The community pool is open Memorial Day to Labor Day, 8 am to 9 pm. Two guests per "
-             "home; children under 14 need an adult. Key fobs from management, $25 to replace."),
-    "landscaping": ("Section 7.7", "Lawns kept under 6 inches, beds weeded. Removing a tree over 6 inches across "
-                    "needs approval. Drought-tolerant landscaping is welcome and has a fast-track review."),
-    "sheds": ("Section 7.4", "One shed per lot, at most 120 square feet and 10 feet high, behind the house, in a "
-              "colour matching the home. Needs architectural approval."),
-}
-
-ACCOUNT = {
-    "monthly_dues": 285.00,
-    "balance_due": 595.00,
-    "detail": "Dues for September and October ($570) plus one $25 late fee.",
-    "late_fee_policy": "A $25 late fee after the 15th; after 90 days the account goes to collections and a lien may be filed.",
-    "autopay": False,
-    "last_payment": "August 3, 2026: $285.00",
-    "special_assessment": "A one-time $400 roof-repair assessment for the clubhouse is due January 15, 2027.",
-}
-
-VIOLATIONS = [
-    {"id": "V-2026-0412", "opened": "October 3, 2026", "rule": "Section 10.2 (trash)",
-     "notice": "Trash bins visible from the street on a non-pickup day.",
-     "status": "Courtesy notice. Cure by October 17 or a $50 fine applies."},
-    {"id": "V-2026-0388", "opened": "September 20, 2026", "rule": "Section 7.4 (sheds)",
-     "notice": "Shed painted a colour not on the approved palette.",
-     "status": "Second notice. A hearing with the board is set for October 22; you may attend and explain, "
-               "or apply for approval of the colour before then."},
-]
-
-MEETING = {
-    "when": "Thursday, October 22, 2026, 7:00 pm",
-    "where": "The clubhouse, 1 Meadow Circle (and by video; the link is sent the day before)",
-    "agenda": ["2027 budget and dues (a proposed rise from $285 to $299 a month)", "Clubhouse roof assessment",
-               "Violation hearings, including V-2026-0388", "Pool resurfacing bids", "Homeowner open forum"],
-    "speaking": "Sign up with management at least 24 hours before; each homeowner gets 3 minutes in the open forum.",
-}
-
-MANAGEMENT = {
-    "company": "Lakeside Property Management (fictional)",
-    "manager": "Dana Ortiz, community manager",
-    "phone": "555-0142", "email": "sheppardcenter@lakeside.example",
-    "hours": "Weekdays 9 am to 5 pm; an after-hours line for emergencies such as a burst pipe in a common area.",
-}
-
-def _norm_community(c):
-    import re
+# --------------------------------------------------------------------------
+# Finding things from what speech-to-text heard
+# --------------------------------------------------------------------------
+def norm_community(c):
     c = re.sub(r"[^a-z ]", " ", (c or "").lower())
     c = c.replace("shepherd", "sheppard").replace("shepard", "sheppard").replace("centre", "center")
-    c = re.sub(r"\b(hoa|community|homeowners|association|the|of)\b", " ", c)
+    c = c.replace("harbour", "harbor").replace("oakridge", "oak ridge")
+    c = re.sub(r"\b(hoa|community|homeowners|homeowner|owners|association|the|of|condominiums|condos|condo|"
+               r"estates|townhome|townhomes|property|poa)\b", " ", c)
     return " ".join(c.split())
 
 
-def _norm_email(e):
+def find_community(c):
+    n = norm_community(c)
+    if n in COMMUNITIES:
+        return n
+    for key in COMMUNITIES:                       # "stan" -> stan meadows, "harbor" -> harbor view
+        if n and (n in key or key in n or key.split()[0] == n.split()[0]):
+            return key
+    return None
+
+
+def norm_email(e):
     e = (e or "").lower().strip()
-    e = e.replace(" at ", "@").replace(" dot ", ".").replace(" ", "")
-    return e
+    return e.replace(" at ", "@").replace(" dot ", ".").replace(" ", "")
 
 
-def _distance(a, b):
-    """Edit distance, for an email heard slightly wrong ("avris" for "avriz")."""
+def distance(a, b):
     prev = list(range(len(b) + 1))
     for i, ca in enumerate(a, 1):
         cur = [i]
@@ -121,140 +65,342 @@ def _distance(a, b):
     return prev[-1]
 
 
-def _token_for(community, email):
+def token_for(community, email):
     key = os.environ.get("MCP_TOKEN", "").encode()
     return "hw_" + hmac.new(key, f"{community}|{email}".encode(), hashlib.sha256).hexdigest()[:24]
 
 
-def sign_in(community, email):
-    c = _norm_community(community)
-    if c not in HOMEOWNERS:
-        return None, (f"I don't know a community called \"{community}\". Communities on this service: " +
-                      ", ".join(k.title() for k in HOMEOWNERS) + ".")
-    e = _norm_email(email)
-    match = next((known for known in HOMEOWNERS[c] if _distance(e, known) <= 2), None)
-    if not match:
-        return None, f"No homeowner with that email in {c.title()}. Check the spelling, or contact management."
-    home = HOMEOWNERS[c][match]
-    return _token_for(c, match), (f"Signed in: {match}, {home['address']} ({home['lot']}), {c.title()}. "
-                                  f"Pass homeowner_token to the account tools.")
-
-
-def _who(token):
-    """The (community, email) a homeowner token belongs to, or None."""
-    for c, people in HOMEOWNERS.items():
-        for e in people:
-            if token and hmac.compare_digest(token, _token_for(c, e)):
+def who(token):
+    for c, data in COMMUNITIES.items():
+        for e in data["homeowners"]:
+            if token and hmac.compare_digest(token, token_for(c, e)):
                 return c, e
     return None
 
 
+def ticket(prefix, *parts):
+    return f"{prefix}-2026-{int(hashlib.sha256('|'.join(parts).encode()).hexdigest()[:6], 16) % 9000 + 1000}"
+
+
+def j(o):
+    return json.dumps(o, ensure_ascii=False)
+
+
+UNKNOWN = "I don't know that community. Communities on this service: {}."
 NEEDS_SIGN_IN = ("Not signed in. Ask the homeowner which community they live in and their email, then call sign_in "
                  "and pass its homeowner_token.")
 
-TOOLS = [
-    {"name": "sign_in", "description": "Sign a homeowner in before anything about their own account, violations or "
-     "requests. Ask them which community they live in and their email address first. Returns a homeowner_token.",
-     "inputSchema": {"type": "object", "properties": {"community": {"type": "string"}, "email": {"type": "string"}},
-                     "required": ["community", "email"]}},
-    {"name": "lookup_rule", "description": "What Sheppard Center HOA's bylaws say about a topic (fences, parking, pets, paint, "
-     "trash, short-term rentals, noise, solar, satellite dishes, holiday decorations, pool, landscaping, sheds).",
-     "inputSchema": {"type": "object", "properties": {"topic": {"type": "string"}}, "required": ["topic"]}},
-    {"name": "my_account", "description": "The signed-in homeowner's HOA account: dues, balance, late fees, last payment, "
-     "assessments. Needs homeowner_token from sign_in.",
-     "inputSchema": {"type": "object", "properties": {"homeowner_token": {"type": "string", "description": "from sign_in"}}, "required": ["homeowner_token"]}},
-    {"name": "violations", "description": "Open violation notices on the signed-in homeowner's lot, with deadlines and "
-     "hearings. Needs homeowner_token from sign_in.",
-     "inputSchema": {"type": "object", "properties": {"homeowner_token": {"type": "string", "description": "from sign_in"}}, "required": ["homeowner_token"]}},
-    {"name": "file_request", "description": "File an architectural request (deck, fence, paint, solar...), a maintenance "
-     "request for a common area, or a complaint, for the signed-in homeowner. Returns a ticket number and what happens "
-     "next. Needs homeowner_token from sign_in.",
-     "inputSchema": {"type": "object", "properties": {
-         "homeowner_token": {"type": "string", "description": "from sign_in"},
-         "kind": {"type": "string", "enum": ["architectural", "maintenance", "complaint"]},
-         "details": {"type": "string"}}, "required": ["homeowner_token", "kind", "details"]}},
-    {"name": "next_board_meeting", "description": "When and where the board meets next, the agenda, and how to speak.",
-     "inputSchema": {"type": "object", "properties": {}}},
-    {"name": "contact_management", "description": "How to reach the community's property management company.",
-     "inputSchema": {"type": "object", "properties": {}}},
-]
+
+def names():
+    return ", ".join(COMMUNITIES[k]["profile"]["name"] for k in COMMUNITIES)
 
 
-ALIASES = {"dog": "pets", "cat": "pets", "bark": "pets", "garbage": "trash", "bin": "trash", "bins": "trash",
-           "recycling": "trash", "rent": "short-term rentals", "rental": "short-term rentals", "airbnb": "short-term rentals",
-           "lease": "short-term rentals", "tree": "landscaping", "lawn": "landscaping", "grass": "landscaping",
-           "colour": "paint", "color": "paint", "car": "parking", "boat": "parking", "truck": "parking", "rv": "parking",
-           "quiet": "noise", "loud": "noise", "music": "noise", "dish": "satellite dishes", "christmas": "holiday decorations",
-           "lights": "holiday decorations", "swim": "pool", "shed": "sheds", "panel": "solar", "panels": "solar"}
+# --------------------------------------------------------------------------
+# The tools
+# --------------------------------------------------------------------------
+def t_list_communities(a):
+    return j([{"name": d["profile"]["name"], "type": d["profile"]["type"], "homes": d["profile"]["homes"],
+               "city": d["profile"]["city"]} for d in COMMUNITIES.values()])
 
 
-def lookup_rule(topic):
-    import re
-    words = re.findall(r"[a-z]+", (topic or "").lower())
-    for w in words:                                   # a synonym first: "my dog" -> pets
-        if w in ALIASES:
-            key = ALIASES[w]
-            return f"{RULES[key][0]}, {key}: {RULES[key][1]}"
-    for key, (section, text) in RULES.items():        # then the topic's own words, by their first four letters
+def community_arg(a):
+    c = find_community(a.get("community", ""))
+    if c:
+        return c, None
+    who_ = who(a.get("homeowner_token", ""))         # signed in: their own community by default
+    if who_ and not a.get("community"):
+        return who_[0], None
+    return None, UNKNOWN.format(names())
+
+
+def public(fn):
+    def run(a):
+        c, err = community_arg(a)
+        return err if err else fn(COMMUNITIES[c], a)
+    return run
+
+
+def t_community_info(d, a):
+    return j({"profile": d["profile"], "management": d["management"],
+              "amenities": list(d["amenities"]), "dues": d["dues"]})
+
+
+def t_lookup_rule(d, a):
+    words = re.findall(r"[a-z]+", (a.get("topic") or "").lower())
+    rules = d["rules"]
+    phrase = " ".join(words)
+    for alias, key in ALIASES.items():
+        if (alias in words or (" " in alias and alias in phrase)) and key in rules:
+            return f"{d['profile']['name']}, {key}: {rules[key]}"
+    for key, text in rules.items():
         for kw in key.split():
             if any(len(w) >= 4 and w[:4] == kw[:4] for w in words):
-                return f"{section}, {key}: {text}"
-    return ("No rule by that name in the Sheppard Center bylaws. Topics covered: " + ", ".join(RULES) +
-            ". Anything not covered is up to the board; ask management.")
+                return f"{d['profile']['name']}, {key}: {text}"
+    return (f"No rule on that in {d['profile']['name']}'s documents. Rules cover: {', '.join(rules)}. "
+            "Anything not covered is up to the board; ask management.")
 
 
-def file_request(kind, details):
-    kind = kind if kind in ("architectural", "maintenance", "complaint") else "complaint"
-    prefix = {"architectural": "ARC", "maintenance": "MNT", "complaint": "CMP"}[kind]
-    ticket = f"{prefix}-2026-{int(hashlib.sha256(details.encode()).hexdigest()[:6], 16) % 9000 + 1000}"
-    nxt = {"architectural": "The architectural committee meets on the first Monday of the month and decides within 30 "
-                            "days; if they have not answered in 30 days the request counts as approved.",
-           "maintenance": "Management will look at it within 3 business days (same day for anything unsafe).",
-           "complaint": "Management will contact the neighbour with a courtesy notice; your name stays confidential."}[kind]
-    return f"Filed {kind} request {ticket}: \"{details[:200]}\". {nxt}"
+def t_fines_schedule(d, a):
+    return j(d["fines"])
+
+
+def t_amenities(d, a):
+    want = (a.get("amenity") or "").lower()
+    if want:
+        for name, info in d["amenities"].items():
+            if want in name or name in want or want[:4] == name[:4]:
+                return j({name: info})
+        return f"{d['profile']['name']} has no amenity called that. It has: {', '.join(d['amenities'])}."
+    return j(d["amenities"])
+
+
+def t_events_and_notices(d, a):
+    return j({"events": d["events"], "notices": d["notices"], "schedule": d["schedule"]})
+
+
+def t_documents(d, a):
+    return j({"documents": d["documents"], "finances": d["finances"], "insurance": d["insurance"],
+              "how_to_get_them": f"Copies from {d['management']['company']} ({d['management']['email']}) or the "
+                                 f"portal; owners have a right to inspect the records within 10 business days."})
+
+
+def t_board_and_meetings(d, a):
+    return j({"board": d["board"], "committees": d["committees"], "meetings": d["meetings"]})
+
+
+def t_who_fixes_what(d, a):
+    item = (a.get("item") or "").lower()
+    resp = d["responsibilities"]
+    if item:
+        words = re.findall(r"[a-z]+", item)
+        for key, text in resp.items():
+            if any(len(w) >= 4 and w[:4] in key for w in words):
+                return f"{key}: {text}"
+        return f"Not in the responsibility list. Listed: {', '.join(resp)}. Ask management for anything else."
+    return j(resp)
+
+
+def t_contacts(d, a):
+    return j({"management": d["management"], "vendors": d["vendors"], "emergency": d["emergency"]})
+
+
+def t_sign_in(a):
+    c = find_community(a.get("community", ""))
+    if not c:
+        return UNKNOWN.format(names())
+    e = norm_email(a.get("email", ""))
+    people = COMMUNITIES[c]["homeowners"]
+    match = next((known for known in people if distance(e, known) <= 2), None)
+    if not match:
+        return f"No homeowner with that email in {COMMUNITIES[c]['profile']['name']}. Check the spelling, or contact management."
+    p = people[match]
+    return (f"Signed in: {p['name']}, {p['address']} ({p['lot']}), {COMMUNITIES[c]['profile']['name']}. "
+            f"homeowner_token: {token_for(c, match)}")
+
+
+def private(fn):
+    def run(a):
+        w = who(a.get("homeowner_token", ""))
+        if not w:
+            return NEEDS_SIGN_IN
+        c, e = w
+        return fn(COMMUNITIES[c], COMMUNITIES[c]["homeowners"][e], e, a)
+    return run
+
+
+def t_my_account(d, p, e, a):
+    return j({"name": p["name"], "home": f"{p['address']} ({p['lot']})", "community": d["profile"]["name"],
+              "occupancy": p["occupancy"], "dues": d["dues"], **p["account"]})
+
+
+def t_make_payment(d, p, e, a):
+    amt = float(a.get("amount") or 0)
+    bal = p["account"]["balance_due"]
+    if amt <= 0:
+        return f"How much would they like to pay? The balance is ${bal:,.2f}."
+    return (f"Payment of ${amt:,.2f} accepted (simulated), confirmation {ticket('PAY', e, str(amt))}. "
+            f"The balance would be ${max(bal - amt, 0):,.2f}. It posts in 1-2 business days.")
+
+
+def t_payment_plan(d, p, e, a):
+    bal = p["account"]["balance_due"]
+    if p["account"].get("payment_plan"):
+        return f"Already on a plan: {p['account']['payment_plan']}"
+    if bal <= 0:
+        return "The account is paid up; no plan needed."
+    months = int(a.get("months") or 3)
+    return (f"Policy: {d['dues'].get('payment_plans', 'ask management')}. A {months}-month plan on ${bal:,.2f} "
+            f"would be ${bal / months:,.2f} a month on top of dues. Request {ticket('PLN', e, str(months))} sent to "
+            f"management for approval (simulated); late fees stop while the plan is kept.")
+
+
+def t_violations(d, p, e, a):
+    return j(p["violations"] or "No open violations.")
+
+
+def t_appeal_violation(d, p, e, a):
+    vid = (a.get("violation_id") or "").upper()
+    v = next((x for x in p["violations"] if x["id"] == vid), None)
+    if not v:
+        return f"No violation {vid} on this account. Open ones: {', '.join(x['id'] for x in p['violations']) or 'none'}."
+    if not v.get("appealable"):
+        return f"{vid} is resolved or not appealable: {v['status']}"
+    when = d["meetings"]["next"]["when"]
+    return (f"Appeal of {vid} filed (simulated), reference {ticket('APL', e, vid)}: \"{a.get('reason', '')[:200]}\". "
+            f"The board will hear it at the next meeting, {when}; fines are paused until then.")
+
+
+def t_my_requests(d, p, e, a):
+    return j({"requests": p["requests"] or "None open.", "reservations": p["reservations"] or "None."})
+
+
+def t_file_request(d, p, e, a):
+    kind = a.get("kind") if a.get("kind") in ("architectural", "maintenance", "complaint", "renovation") else "complaint"
+    prefix = {"architectural": "ARC", "maintenance": "MNT", "complaint": "CMP", "renovation": "REN"}[kind]
+    details = a.get("details", "")
+    nxt = {"architectural": "The architectural committee decides within 30 days; no answer in 30 days counts as approval.",
+           "maintenance": "Management looks at it within 3 business days (the same day for anything unsafe).",
+           "complaint": "Management sends a courtesy notice; your name stays confidential.",
+           "renovation": "Needs the renovation application, the contractor's insurance and the deposit before work starts."}[kind]
+    return f"Filed {kind} request {ticket(prefix, e, details)} (simulated): \"{details[:200]}\". {nxt}"
+
+
+def t_reserve_amenity(d, p, e, a):
+    want = (a.get("amenity") or "").lower()
+    name, info = next(((n, i) for n, i in d["amenities"].items() if want and (want in n or n in want or want[:4] == n[:4])),
+                      (None, None))
+    if not name:
+        return f"No amenity called that. {d['profile']['name']} has: {', '.join(d['amenities'])}."
+    if not info.get("reservable"):
+        return f"The {name} can't be booked; it is first come, first served. {info.get('rules', '')}"
+    return (f"Booked the {name} for {a.get('when', 'the time asked')} (simulated), confirmation "
+            f"{ticket('RSV', e, name, a.get('when', ''))}. Fee: {info.get('fee', 'free')}. Rules: {info.get('rules', '')} "
+            f"Booking terms: {info.get('booking', '')}")
+
+
+def t_guest_pass(d, p, e, a):
+    code = int(hashlib.sha256(f"{e}|{a.get('guest_name')}|{a.get('date')}".encode()).hexdigest()[:4], 16) % 9000 + 1000
+    parking = d["rules"].get("parking", "")
+    extra = f" Gate one-time code {code}." if d["profile"].get("gated") else ""
+    return (f"Guest pass for {a.get('guest_name', 'the guest')} on {a.get('date', 'the day asked')} "
+            f"(plate {a.get('plate', 'not given')}) registered (simulated).{extra} Parking: {parking}")
+
+
+def t_my_household(d, p, e, a):
+    return j({"name": p["name"], "home": f"{p['address']} ({p['lot']})", "occupancy": p["occupancy"], **p["household"]})
+
+
+def t_update_household(d, p, e, a):
+    return (f"Updated (simulated): {a.get('kind', 'record')} -- \"{a.get('details', '')[:200]}\". "
+            f"Reference {ticket('HH', e, a.get('details', ''))}. Management keeps pet, vehicle and tenant records for "
+            f"parking, gate and emergency use.")
+
+
+def t_resale_certificate(d, p, e, a):
+    return (f"Resale (estoppel) certificate ordered (simulated), {ticket('RES', e)}: it shows the balance, any open "
+            f"violations, pending assessments and the documents a buyer receives. Fee $250 ($100 more for rush), "
+            f"ready in 10 business days (3 with rush). Current balance on the account: ${p['account']['balance_due']:,.2f}.")
+
+
+TOK = {"homeowner_token": {"type": "string", "description": "from sign_in"}}
+COM = {"community": {"type": "string", "description": "the community's name, as the person said it"}}
+
+
+def schema(props=None, required=None):
+    return {"type": "object", "properties": props or {}, **({"required": required} if required else {})}
+
+
+TOOLS = [
+    ("list_communities", "The communities on this service.", schema(), t_list_communities),
+    ("community_info", "A community's overview: type, size, location, management company, amenities, dues.",
+     schema(COM, ["community"]), public(t_community_info)),
+    ("lookup_rule", "What a community's rules say about a topic: fences, parking, pets, paint, trash, rentals, noise, "
+     "solar, signs, flags, sheds, grills, balconies, renovations, horses, septic, and more.",
+     schema({**COM, "topic": {"type": "string"}}, ["community", "topic"]), public(t_lookup_rule)),
+    ("fines_schedule", "The community's fine schedule and how long a homeowner has to fix a violation.",
+     schema(COM, ["community"]), public(t_fines_schedule)),
+    ("amenities", "Amenities (pool, clubhouse, gym, courts, guest suite, elevator, trails...): hours, rules, fees, "
+     "how to book. Leave amenity empty for all.",
+     schema({**COM, "amenity": {"type": "string"}}, ["community"]), public(t_amenities)),
+    ("events_and_notices", "Upcoming events, current notices (water shut-offs, closures) and the trash, recycling, "
+     "landscaping and snow schedule.", schema(COM, ["community"]), public(t_events_and_notices)),
+    ("documents", "The governing documents, budget, reserve fund and study, insurance, and how to get copies.",
+     schema(COM, ["community"]), public(t_documents)),
+    ("board_and_meetings", "Board members, committees, the next meeting and agenda, how to speak, elections, voting.",
+     schema(COM, ["community"]), public(t_board_and_meetings)),
+    ("who_fixes_what", "Who is responsible for repairing something: roof, shared fence, sidewalk, trees, plumbing, "
+     "windows, roads... Leave item empty for the whole list.",
+     schema({**COM, "item": {"type": "string"}}, ["community"]), public(t_who_fixes_what)),
+    ("contacts", "Management office, after-hours and emergency numbers, and the community's vendors.",
+     schema(COM, ["community"]), public(t_contacts)),
+    ("sign_in", "Sign a homeowner in before anything about their own account, violations, requests, bookings or "
+     "household. Ask which community they live in and their email first. Returns a homeowner_token.",
+     schema({**COM, "email": {"type": "string"}}, ["community", "email"]), t_sign_in),
+    ("my_account", "The signed-in homeowner's account: balance, dues, late fees, payment history, plan, assessments.",
+     schema(TOK, ["homeowner_token"]), private(t_my_account)),
+    ("make_payment", "Pay toward the signed-in homeowner's balance (simulated; nothing is charged).",
+     schema({**TOK, "amount": {"type": "number"}}, ["homeowner_token", "amount"]), private(t_make_payment)),
+    ("payment_plan", "Ask for a payment plan on an overdue balance (simulated request to management).",
+     schema({**TOK, "months": {"type": "integer"}}, ["homeowner_token"]), private(t_payment_plan)),
+    ("violations", "Open violation notices on the signed-in homeowner's home, with deadlines and hearings.",
+     schema(TOK, ["homeowner_token"]), private(t_violations)),
+    ("appeal_violation", "Appeal a violation to the board (simulated).",
+     schema({**TOK, "violation_id": {"type": "string"}, "reason": {"type": "string"}},
+            ["homeowner_token", "violation_id", "reason"]), private(t_appeal_violation)),
+    ("my_requests", "The signed-in homeowner's open requests (architectural, maintenance, renovation, resale) and bookings.",
+     schema(TOK, ["homeowner_token"]), private(t_my_requests)),
+    ("file_request", "File an architectural, maintenance, renovation request or a complaint (simulated). Returns a ticket.",
+     schema({**TOK, "kind": {"type": "string", "enum": ["architectural", "maintenance", "renovation", "complaint"]},
+             "details": {"type": "string"}}, ["homeowner_token", "kind", "details"]), private(t_file_request)),
+    ("reserve_amenity", "Book a reservable amenity (clubhouse, courts, guest suite, party room, service elevator, "
+     "barn...) for a date and time (simulated).",
+     schema({**TOK, "amenity": {"type": "string"}, "when": {"type": "string"}}, ["homeowner_token", "amenity", "when"]),
+     private(t_reserve_amenity)),
+    ("guest_pass", "Register a guest's visit and parking (and a one-time gate code in gated communities), simulated.",
+     schema({**TOK, "guest_name": {"type": "string"}, "date": {"type": "string"}, "plate": {"type": "string"}},
+            ["homeowner_token", "guest_name", "date"]), private(t_guest_pass)),
+    ("my_household", "The signed-in homeowner's household record: pets, vehicles, tenant, gate code, fob, locker.",
+     schema(TOK, ["homeowner_token"]), private(t_my_household)),
+    ("update_household", "Register or change a pet, vehicle, tenant or emergency contact (simulated).",
+     schema({**TOK, "kind": {"type": "string", "enum": ["pet", "vehicle", "tenant", "emergency contact"]},
+             "details": {"type": "string"}}, ["homeowner_token", "kind", "details"]), private(t_update_household)),
+    ("resale_certificate", "Order the resale (estoppel) certificate needed to sell the home (simulated).",
+     schema(TOK, ["homeowner_token"]), private(t_resale_certificate)),
+]
+TOOL_LIST = [{"name": n, "description": d, "inputSchema": s} for n, d, s, _ in TOOLS]
+TOOL_FN = {n: f for n, _, _, f in TOOLS}
 
 
 def call_tool(name, args):
-    if name == "sign_in":
-        token, text = sign_in(args.get("community", ""), args.get("email", ""))
-        return text + (f" homeowner_token: {token}" if token else "")
-    if name in ("my_account", "violations", "file_request"):
-        who = _who(args.get("homeowner_token", ""))
-        if not who:
-            return NEEDS_SIGN_IN
-        home = HOMEOWNERS[who[0]][who[1]]
-        if name == "my_account":
-            return json.dumps({"community": COMMUNITY, "email": who[1], "home": home, **ACCOUNT})
-        if name == "violations":
-            return json.dumps(VIOLATIONS)
-        return file_request(args.get("kind", ""), args.get("details", ""))
-    if name == "lookup_rule":
-        return lookup_rule(args.get("topic", ""))
-    if name == "next_board_meeting":
-        return json.dumps(MEETING)
-    if name == "contact_management":
-        return json.dumps(MANAGEMENT)
-    return None
+    fn = TOOL_FN.get(name)
+    return fn(args) if fn else None
 
 
+# --------------------------------------------------------------------------
+# MCP over HTTP
+# --------------------------------------------------------------------------
 def rpc(msg):
-    """One JSON-RPC message in; (http status, reply dict or None)."""
     if not isinstance(msg, dict) or "method" not in msg:
         return 400, {"jsonrpc": "2.0", "id": None, "error": {"code": -32600, "message": "not a single JSON-RPC request"}}
     mid, method, params = msg.get("id"), msg["method"], msg.get("params") or {}
     if mid is None:
-        return 202, None                              # a notification: accepted
+        return 202, None
     ok = lambda result: (200, {"jsonrpc": "2.0", "id": mid, "result": result})
     if method == "initialize":
         return ok({"protocolVersion": params.get("protocolVersion") or PROTOCOL,
                    "capabilities": {"tools": {"listChanged": False}},
-                   "serverInfo": {"name": "stan-mcp", "version": "0.1.0"},
-                   "instructions": "Sheppard Center HOA, a fictional homeowners' association. Use the tools to answer "
-                                   "a homeowner's questions about rules, dues, violations, requests and meetings."})
+                   "serverInfo": {"name": "stan-mcp", "version": "0.2.0"},
+                   "instructions": "A fictional homeowners' association service for four communities: " + names() +
+                                   ". Public tools answer about a community; before anything about a homeowner's own "
+                                   "account, violations, requests, bookings or household, ask which community they "
+                                   "live in and their email, and call sign_in. Many homeowners here are older: be "
+                                   "patient, explain HOA terms in plain words, go one step at a time, say amounts and "
+                                   "dates clearly, and describe and confirm any payment, booking, appeal or request "
+                                   "before making it."})
     if method == "ping":
         return ok({})
     if method == "tools/list":
-        return ok({"tools": TOOLS})
+        return ok({"tools": TOOL_LIST})
     if method == "tools/call":
         text = call_tool(params.get("name"), params.get("arguments") or {})
         if text is None:
@@ -267,8 +413,7 @@ def handler(event, context):
     headers = {k.lower(): v for k, v in (event.get("headers") or {}).items()}
     method = event.get("requestContext", {}).get("http", {}).get("method", "POST")
     token = os.environ.get("MCP_TOKEN", "")
-    given = headers.get("authorization", "")
-    if not token or not hmac.compare_digest(given, "Bearer " + token):
+    if not token or not hmac.compare_digest(headers.get("authorization", ""), "Bearer " + token):
         return {"statusCode": 401, "headers": {"WWW-Authenticate": "Bearer"}, "body": ""}
     if method != "POST":
         return {"statusCode": 405, "headers": {"Allow": "POST"}, "body": ""}
@@ -283,6 +428,6 @@ def handler(event, context):
                 "body": json.dumps({"jsonrpc": "2.0", "id": None, "error": {"code": -32700, "message": "parse error"}})}
     status, reply = rpc(msg)
     out = {"statusCode": status, "headers": {"Content-Type": "application/json"}, "body": json.dumps(reply) if reply else ""}
-    if msg.get("method") == "initialize":
+    if isinstance(msg, dict) and msg.get("method") == "initialize":
         out["headers"]["Mcp-Session-Id"] = hashlib.sha256(os.urandom(16)).hexdigest()[:32]
     return out

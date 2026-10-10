@@ -4,7 +4,7 @@
 /*
  * When has the person stopped talking? The first 300 ms measure the room;
  * a frame is speech when it is three times the room and above 300 RMS.
- * After speech, 800 ms of quiet ends it -- DONE, or SILENT if under 300 ms
+ * After speech, 1.2 s of quiet ends it -- DONE, or SILENT if under 300 ms
  * of it was speech (a cough, a click). Nothing by max_ms: SILENT; still
  * talking at max_ms: CAPPED. Pure: host_tests/test_sc_vad.c.
  */

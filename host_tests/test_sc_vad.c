@@ -45,7 +45,7 @@ int main(void)
     vad_init(&v, FS, 15000);
     CHECK(run(&v, 500, 0, &seed) == VAD_WAITING);
     CHECK(run(&v, 1500, 3000, &seed) == VAD_SPEAKING);
-    CHECK(run(&v, 1000, 0, &seed) == VAD_DONE);
+    CHECK(run(&v, 1500, 0, &seed) == VAD_DONE);
     CHECK(vad_speech_ms(&v) >= 1400 && vad_speech_ms(&v) <= 1600);
 
     vad_init(&v, FS, 3000);
@@ -54,7 +54,7 @@ int main(void)
     vad_init(&v, FS, 15000);
     run(&v, 400, 0, &seed);
     run(&v, 100, 3000, &seed);                               /* a cough */
-    CHECK(run(&v, 1000, 0, &seed) == VAD_SILENT);
+    CHECK(run(&v, 1500, 0, &seed) == VAD_SILENT);
 
     vad_init(&v, FS, 2000);
     run(&v, 400, 0, &seed);
@@ -63,9 +63,9 @@ int main(void)
     vad_init(&v, FS, 15000);
     run(&v, 400, 0, &seed);
     run(&v, 600, 3000, &seed);
-    CHECK(run(&v, 500, 0, &seed) == VAD_SPEAKING);           /* a 500 ms pause is not the end */
+    CHECK(run(&v, 1000, 0, &seed) == VAD_SPEAKING);          /* a whole second's pause is not the end */
     run(&v, 600, 3000, &seed);
-    CHECK(run(&v, 1000, 0, &seed) == VAD_DONE);
+    CHECK(run(&v, 1500, 0, &seed) == VAD_DONE);
 
     printf(fails ? "%d FAILED\n" : "sc_vad: all passed\n", fails);
     return fails != 0;

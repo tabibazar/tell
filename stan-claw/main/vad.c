@@ -4,7 +4,7 @@
 #include <string.h>
 
 #define FLOOR_MS 300
-#define END_QUIET_MS 800
+#define END_QUIET_MS 1200      /* older speakers pause mid-sentence: give them a breath */
 #define MIN_SPEECH_MS 300
 #define MIN_LEVEL 300.0
 

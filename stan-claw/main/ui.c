@@ -487,7 +487,7 @@ void ui_draw(canvas_t *c, const ui_view_t *v)
     case UI_SPEAKING:
     case UI_ANSWER: {
         int y = para(c, &aafont_rooms_title, v->heard, 24, 70, W - 48, 22, 2, C_DIM);
-        para(c, sub, v->text, 24, y + 22, W - 48, 32, 10, C_TEXT);
+        para(c, &aafont_rooms_head, v->text, 24, y + 24, W - 48, 42, 8, C_TEXT);   /* large: easy to read at arm's length */
         note(c, v->note);
         break;
     }
