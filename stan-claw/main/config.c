@@ -13,7 +13,7 @@ static const char *TAG = "config";
 #define NS "stanclaw"
 
 static const char *const KEYS[CFG_N] = { "k_claude", "k_dg", "k_el", "voice", "model", "mcp_url", "mcp_tok", "srv_tok",
-                                          "voice_nm", "volume", "speed" };
+                                          "voice_nm", "volume", "speed", "voice_fx" };
 static SemaphoreHandle_t s_lock;
 static cfg_net_t s_nets[CFG_NETS];
 static int s_n;

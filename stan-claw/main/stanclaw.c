@@ -49,6 +49,7 @@
 #include "touch.h"
 #include "tts.h"
 #include "ui.h"
+#include "spin.h"
 #include "voices.h"
 
 static const char *TAG = "stanclaw";
@@ -124,20 +125,20 @@ static void deep_sleep_now(bool panel_up)
 /* ---- settings ---- */
 
 static int s_volume = 70, s_speed = 1, s_model = 0;
-static char s_voice_name[32], s_cur_voice[40];
-static voice_t *s_voices;              /* PSRAM, VOICES_MAX */
-static volatile int s_nvoices = -1;    /* -1 loading, -2 could not */
-static int s_scroll, s_sel = -1;
-static volatile bool s_job;            /* a fetch, sample or tone is running */
-#define JOB_FETCH (-2)
-#define JOB_TONE  (-1)
+static char s_voice_name[32];
+static int s_cur = -1;                 /* VOICES index in use, -1 none */
+static spin_t s_spin;                  /* the voice wheel */
+static int s_previewed = -1;           /* the card whose sample last played */
+static int64_t s_settled_at;
+static volatile bool s_job;            /* a sample or tone is running */
+#define JOB_TONE (-1)
 
 static const char *const SPEEDS[3] = { "0.85", "1.0", "1.15" };
 static const char *const MODELS[2] = { "claude-sonnet-5", "claude-haiku-4-5-20251001" };
 
 static void settings_load(void)
 {
-    char v[CFG_VAL];
+    char v[CFG_VAL], fx[16];
     cfg_get(CFG_VOLUME, v, sizeof v);
     s_volume = v[0] ? atoi(v) : 70;
     if (s_volume < 0 || s_volume > 100) s_volume = 70;
@@ -146,30 +147,10 @@ static void settings_load(void)
     s_speed = strcmp(v, SPEEDS[0]) == 0 ? 0 : strcmp(v, SPEEDS[2]) == 0 ? 2 : 1;
     cfg_get(CFG_MODEL, v, sizeof v);
     s_model = strstr(v, "haiku") ? 1 : 0;
-    cfg_get(CFG_VOICE, s_cur_voice, sizeof s_cur_voice);
-    cfg_get(CFG_VOICE_NAME, s_voice_name, sizeof s_voice_name);
-    if (!s_voice_name[0] && s_cur_voice[0]) snprintf(s_voice_name, sizeof s_voice_name, "Current voice");
-}
-
-static void fetch_voices(void)
-{
-    char key[CFG_VAL];
-    cfg_get(CFG_ELEVEN_KEY, key, sizeof key);
-    if (!key[0] || !s_voices) { s_nvoices = -2; return; }
-    https_hdr_t h[] = { { "xi-api-key", key } };
-    char *resp = NULL;
-    int code = https_get("https://api.elevenlabs.io/v1/voices", h, 1, 15000, &resp, 256 * 1024);
-    int n = code == 200 && resp ? voices_parse(resp, s_voices, VOICES_MAX) : -1;
-    free(resp);
-    if (n < 0) { ESP_LOGW(TAG, "voices: HTTP %d", code); s_nvoices = -2; s_dirty = true; return; }
-    for (int i = 0; i < n; i++) {
-        if (strcmp(s_voices[i].id, s_cur_voice) == 0 && strcmp(s_voice_name, s_voices[i].name) != 0) {
-            snprintf(s_voice_name, sizeof s_voice_name, "%s", s_voices[i].name);
-            cfg_set(CFG_VOICE_NAME, s_voice_name);
-        }
-    }
-    s_nvoices = n;
-    s_dirty = true;
+    cfg_get(CFG_VOICE, v, sizeof v);
+    cfg_get(CFG_VOICE_FX, fx, sizeof fx);
+    s_cur = voices_find(v, fx);
+    snprintf(s_voice_name, sizeof s_voice_name, "%s", s_cur >= 0 ? VOICES[s_cur].name : v[0] ? "Another voice" : "");
 }
 
 static void tone(void)
@@ -187,25 +168,19 @@ static void tone(void)
 static void job_task(void *arg)
 {
     int what = (int)(intptr_t)arg;
-    if (xSemaphoreTake(s_busy, pdMS_TO_TICKS(what == JOB_FETCH ? 10000 : 0)) == pdTRUE) {
+    if (xSemaphoreTake(s_busy, 0) == pdTRUE) {
         s_in_use = true;
         activity();
-        if (what == JOB_FETCH) {
-            fetch_voices();
-        } else if (what == JOB_TONE) {
+        if (what == JOB_TONE) {
             tone();
-        } else if (what >= 0 && what < s_nvoices) {
-            char id[40], text[64];
-            snprintf(id, sizeof id, "%s", s_voices[what].id);
-            snprintf(text, sizeof text, "Hi, I'm %s.", s_voices[what].name);
-            tts_speak_in(id, text);
+        } else if (what >= 0 && what < VOICES_N) {
+            char text[48];
+            snprintf(text, sizeof text, "Hi, I'm %s.", VOICES[what].name);
+            tts_speak_as(VOICES[what].id, VOICES[what].fx, text);
         }
         s_in_use = false;
         activity();
         xSemaphoreGive(s_busy);
-    } else if (what == JOB_FETCH) {
-        s_nvoices = -2;
-        s_dirty = true;
     }
     s_job = false;
     vTaskDelete(NULL);
@@ -220,11 +195,18 @@ static void job(int what)
 
 static void open_voices(void)
 {
-    s_nvoices = -1;
-    s_scroll = 0;
-    s_sel = -1;
+    spin_init(&s_spin, VOICES_N, s_cur >= 0 ? s_cur : 0);
+    s_previewed = spin_index(&s_spin);     /* no sample for the one already in use */
     set_view(UI_VOICES, NULL, NULL, NULL, NULL);
-    job(JOB_FETCH);
+}
+
+static void use_voice(int i)
+{
+    s_cur = i;
+    snprintf(s_voice_name, sizeof s_voice_name, "%s", VOICES[i].name);
+    cfg_set(CFG_VOICE, VOICES[i].id);
+    cfg_set(CFG_VOICE_FX, fx_name(VOICES[i].fx));
+    cfg_set(CFG_VOICE_NAME, VOICES[i].name);
 }
 
 /* The page fields of the view, from the settings state (main loop only). */
@@ -235,11 +217,8 @@ static void sync_view(void)
     s_view.volume = s_volume;
     s_view.speed = s_speed;
     s_view.model = s_model;
-    s_view.voices = s_voices;
-    s_view.nvoices = s_nvoices;
-    s_view.scroll = s_scroll;
-    s_view.sel = s_sel;
-    s_view.cur_voice = s_cur_voice;
+    s_view.spin = s_spin.pos;
+    s_view.cur = s_cur;
     xSemaphoreGive(s_ui_lock);
 }
 
@@ -540,7 +519,6 @@ void app_main(void)
     if (audio_init() != ESP_OK) set_view(UI_ERROR, NULL, "The speaker or microphones did not start.", "Audio failed", NULL);
     audio_on_mic(on_mic);
     audio_on_level(on_level);
-    s_voices = heap_caps_calloc(VOICES_MAX, sizeof(voice_t), MALLOC_CAP_SPIRAM);
     settings_load();
     gpio_config_t boot = { .pin_bit_mask = 1ULL << PIN_BOOT, .mode = GPIO_MODE_INPUT, .pull_up_en = GPIO_PULLUP_ENABLE };
     gpio_config(&boot);
@@ -560,14 +538,19 @@ void app_main(void)
         bool awake = s_light == 100;
         sync_view();
         static bool ignore, moved;
-        static int py, lx, ly, scroll0, pval;
+        static int px, py, lx, ly, pval, prevx;
+        static int64_t last_t;
+        static float vx;
         static ui_hit_t phit;
         if (now_down) { lx = x; ly = y; }
         if (now_down && !down) {                                    /* a press */
             activity();
             ignore = !awake;                                        /* on a resting screen it only wakes */
             moved = false;
-            py = y; scroll0 = s_scroll;
+            px = prevx = x; py = y;
+            vx = 0;
+            last_t = esp_timer_get_time();
+            if (!ignore && s_view.mode == UI_VOICES) spin_grab(&s_spin);
             phit = ignore ? UI_HIT_NONE : ui_hit(&s_view, x, y, &pval);
             ui_mode_t m = s_view.mode;
             if (ignore) {
@@ -582,11 +565,17 @@ void app_main(void)
             if (s_view.mode == UI_SETTINGS && phit == UI_HIT_VOLUME) {
                 int vol = ui_slider_value(x);
                 if (vol != s_volume) { s_volume = vol; audio_set_volume(vol); s_dirty = true; }
-            } else if (s_view.mode == UI_VOICES && (moved || abs(y - py) > 10)) {
-                moved = true;
-                int sc = scroll0 - (y - py), mx = ui_voices_max_scroll(&s_view);
-                sc = sc < 0 ? 0 : sc > mx ? mx : sc;
-                if (sc != s_scroll) { s_scroll = sc; s_dirty = true; }
+            } else if (s_view.mode == UI_VOICES) {
+                if (abs(x - px) > 10) moved = true;
+                spin_drag(&s_spin, (float)(x - px));
+                int64_t t = esp_timer_get_time();
+                float dt = (t - last_t) / 1e6f;
+                if (dt > 0.005f) {                                  /* the finger's speed, smoothed, for a flick */
+                    vx = 0.5f * vx + 0.5f * (x - prevx) / dt;
+                    prevx = x;
+                    last_t = t;
+                }
+                s_dirty = true;
             }
         } else if (!now_down && down && !ignore) {                  /* a release */
             ui_mode_t m = s_view.mode;
@@ -609,21 +598,26 @@ void app_main(void)
                     cfg_set(CFG_MODEL, MODELS[pval]);
                     s_dirty = true;
                 }
-            } else if (m == UI_VOICES && !moved) {
-                (void)lx; (void)ly;
-                if (phit == UI_HIT_BACK) {
-                    set_view(UI_SETTINGS, NULL, NULL, NULL, NULL);
-                } else if (phit == UI_HIT_ROW) {
-                    s_sel = pval;
-                    s_dirty = true;
-                    job(pval);                                      /* "Hi, I'm Bella." */
-                } else if (phit == UI_HIT_USE && s_sel >= 0 && s_sel < s_nvoices) {
-                    snprintf(s_cur_voice, sizeof s_cur_voice, "%s", s_voices[s_sel].id);
-                    snprintf(s_voice_name, sizeof s_voice_name, "%s", s_voices[s_sel].name);
-                    cfg_set(CFG_VOICE, s_cur_voice);
-                    cfg_set(CFG_VOICE_NAME, s_voice_name);
-                    set_view(UI_SETTINGS, NULL, NULL, NULL, NULL);
+            } else if (m == UI_VOICES) {
+                (void)lx; (void)ly; (void)py;
+                if (moved) {
+                    /* A finger that stopped before lifting is not a flick. */
+                    if (esp_timer_get_time() - last_t > 80000) vx = 0;
+                    spin_release(&s_spin, vx);
+                } else {
+                    spin_release(&s_spin, 0);
+                    if (phit == UI_HIT_BACK) {
+                        set_view(UI_SETTINGS, NULL, NULL, NULL, NULL);
+                    } else if (phit == UI_HIT_CARD && pval == spin_index(&s_spin)) {
+                        job(pval);                                  /* the middle card again: hear it again */
+                    } else if (phit == UI_HIT_CARD) {
+                        spin_go(&s_spin, pval);                     /* a side card: turn to it */
+                    } else if (phit == UI_HIT_USE && spin_index(&s_spin) != s_cur) {
+                        use_voice(spin_index(&s_spin));
+                        set_view(UI_SETTINGS, NULL, NULL, NULL, NULL);
+                    }
                 }
+                s_dirty = true;
             }
         }
         if (!boot_now && boot_was) {
@@ -640,6 +634,16 @@ void app_main(void)
 
         static unsigned tick;
         if (s_view.mode == UI_LISTENING && (++tick & 1)) s_dirty = true;   /* the waveform and timer move, ~16 fps */
+        if (s_view.mode == UI_VOICES) {
+            /* Turn the wheel; once it has rested on a new card for a moment,
+               that voice says hello. */
+            if (spin_step(&s_spin, 0.03f)) { s_dirty = true; s_settled_at = esp_timer_get_time(); }
+            int at = spin_index(&s_spin);
+            if (!s_spin.moving && at != s_previewed && esp_timer_get_time() - s_settled_at > 350000) {
+                s_previewed = at;
+                job(at);
+            }
+        }
         if ((s_view.mode == UI_SETTINGS || s_view.mode == UI_VOICES)
             && esp_timer_get_time() - s_active_at > REST_BREATHE_S * 1000000LL)
             set_view(UI_HOME, NULL, NULL, NULL, NULL);

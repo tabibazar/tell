@@ -100,25 +100,19 @@ int main(void)
     CHECK(ui_hit(&v, 450, 218, &val) == UI_HIT_VOLUME && val == 100);
     CHECK(ui_hit(&v, 380, 310, &val) == UI_HIT_SPEED && val == 2);
     CHECK(ui_hit(&v, 300, 400, &val) == UI_HIT_MODEL && val == 1);
-    static voice_t vs[25];
-    static const char *const names[] = { "Bella", "Roger", "Sarah", "Laura", "Charlie", "George", "Callum", "River",
-                                         "Harry", "Liam", "Alice", "Matilda" };
-    for (int i = 0; i < 12; i++) {
-        snprintf(vs[i].id, sizeof vs[i].id, "id%d", i);
-        snprintf(vs[i].name, sizeof vs[i].name, "%s", names[i]);
-        snprintf(vs[i].desc, sizeof vs[i].desc, "%s", i % 2 ? "Laid-Back, Casual, Resonant" : "Professional, Bright, Warm");
-        snprintf(vs[i].tags, sizeof vs[i].tags, "female, american, middle aged");
-    }
-    v = (ui_view_t){ .mode = UI_VOICES, .now = 10 * 60, .voices = vs, .nvoices = 12, .scroll = 0, .sel = -1, .cur_voice = "id1" };
-    ui_draw(&c, &v); bmp("voices");
-    CHECK(ui_hit(&v, 200, 64 + 68 + 20, &val) == UI_HIT_ROW && val == 1);
-    v.scroll = 100; v.sel = 3;
-    ui_draw(&c, &v); bmp("voices-scrolled");
-    CHECK(ui_hit(&v, 200, 64 + 20, &val) == UI_HIT_ROW && val == 1);            /* row 1, scrolled half off the top */
-    CHECK(ui_hit(&v, 240, 430, &val) == UI_HIT_USE);
-    CHECK(ui_voices_max_scroll(&v) == 12 * 68 - (404 - 64));
-    v.nvoices = -1;
-    ui_draw(&c, &v); bmp("voices-loading");
+    v = (ui_view_t){ .mode = UI_VOICES, .now = 10 * 60, .spin = 0.0f, .cur = 0 };
+    ui_draw(&c, &v); bmp("voices");                                   /* Roger, in use */
+    CHECK(ui_hit(&v, 240, 222, &val) == UI_HIT_CARD && val == 0);
+    CHECK(ui_hit(&v, 450, 222, &val) == UI_HIT_CARD && val == 1);   /* the neighbour at the right */
+    CHECK(ui_hit(&v, 20, 222, &val) == UI_HIT_NONE);                 /* nothing left of the first */
+    v.spin = 4.45f;
+    ui_draw(&c, &v); bmp("voices-turning");
+    v.spin = 8.0f;
+    ui_draw(&c, &v); bmp("voices-hal");
+    CHECK(ui_hit(&v, 240, 420, &val) == UI_HIT_USE);
+    CHECK(ui_hit(&v, 20, 222, &val) == UI_HIT_CARD && val == 7);
+    v.spin = 9.0f;
+    ui_draw(&c, &v); bmp("voices-jarvis");
     v = (ui_view_t){ .mode = UI_HOME, .now = 10 * 60 };
     CHECK(ui_hit(&v, 438, 438, &val) == UI_HIT_GEAR && ui_hit(&v, 240, 250, &val) == UI_HIT_TALK);
 

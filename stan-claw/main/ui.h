@@ -37,22 +37,18 @@ typedef struct {
     int volume;              /* 0-100 */
     int speed;               /* 0 slower, 1 normal, 2 faster */
     int model;               /* 0 Sonnet 5, 1 Haiku 4.5 */
-    /* UI_VOICES */
-    const voice_t *voices;
-    int nvoices;             /* -1 still loading, -2 could not load */
-    int scroll;              /* px the list is scrolled down */
-    int sel;                 /* the row last tapped, -1 none */
-    const char *cur_voice;   /* id of the voice in use */
+    /* UI_VOICES: the wheel of VOICES (voices.h) */
+    float spin;              /* which card is in the middle, fractional while it turns */
+    int cur;                 /* the voice in use, -1 none */
 } ui_view_t;
 
 /* What a touch at (x, y) lands on, on the page v shows; *value carries the
-   volume (0-100), the speed or model button, or the voice row index. */
+   volume (0-100), the speed or model button, or the voice card's index
+   (the middle one, or a neighbour tapped at the side). */
 typedef enum { UI_HIT_NONE, UI_HIT_TALK, UI_HIT_GEAR, UI_HIT_BACK, UI_HIT_VOICE, UI_HIT_VOLUME,
-               UI_HIT_SPEED, UI_HIT_MODEL, UI_HIT_ROW, UI_HIT_USE } ui_hit_t;
+               UI_HIT_SPEED, UI_HIT_MODEL, UI_HIT_CARD, UI_HIT_USE } ui_hit_t;
 ui_hit_t ui_hit(const ui_view_t *v, int x, int y, int *value);
 
-/* How far the voice list can scroll, px. */
-int ui_voices_max_scroll(const ui_view_t *v);
 
 /* The volume a finger at x on the slider means, 0-100, wherever it has wandered vertically. */
 int ui_slider_value(int x);

@@ -1,7 +1,9 @@
-/* stan-claw's voice list: an ElevenLabs /v1/voices reply cut down for the
-   settings page, and the speed in the speech request. */
+/* stan-claw's ten voices (four men, four women, two machines), the robots'
+   effect, and the speed in the speech request. */
+#include "fx.h"
 #include "speechfmt.h"
 #include "voices.h"
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -11,32 +13,48 @@ static int fails;
 
 int main(void)
 {
-    const char *reply =
-        "{\"voices\":["
-        "{\"voice_id\":\"EXAVITQu4vr4xnSDxMaL\",\"name\":\"Bella - Professional, Bright, Warm\",\"category\":\"premade\","
-        " \"labels\":{\"gender\":\"female\",\"accent\":\"american\",\"age\":\"middle_aged\"},\"samples\":null},"
-        "{\"voice_id\":\"abc123\",\"name\":\"Peppa\",\"labels\":{}},"
-        "{\"voice_id\":42,\"name\":\"broken\"},"
-        "{\"voice_id\":\"x9\",\"name\":\"Ren\\u00e9e - Calm\",\"labels\":{\"accent\":\"french\"}}"
-        "],\"has_more\":false}";
-    voice_t v[VOICES_MAX];
-    int n = voices_parse(reply, v, VOICES_MAX);
-    CHECK(n == 3);                                            /* the broken one is skipped */
-    CHECK(strcmp(v[0].id, "EXAVITQu4vr4xnSDxMaL") == 0 && strcmp(v[0].name, "Bella") == 0);
-    CHECK(strcmp(v[0].desc, "Professional, Bright, Warm") == 0);
-    CHECK(strcmp(v[0].tags, "female, american, middle aged") == 0);
-    CHECK(strcmp(v[1].name, "Peppa") == 0 && v[1].desc[0] == 0 && v[1].tags[0] == 0);
-    CHECK(strcmp(v[2].name, "Rene") == 0 && strcmp(v[2].tags, "french") == 0);   /* ASCII only */
-    CHECK(voices_parse(reply, v, 1) == 1);
-    CHECK(voices_parse("{\"detail\":{\"status\":\"invalid_api_key\"}}", v, VOICES_MAX) == -1);
-    CHECK(voices_parse("nope", v, VOICES_MAX) == -1);
+    int men = 0, women = 0, robots = 0;
+    for (int i = 0; i < VOICES_N; i++) {
+        CHECK(strlen(VOICES[i].id) == 20 && VOICES[i].name[0]);
+        if (VOICES[i].fx != FX_NONE) robots++;
+        else if (strncmp(VOICES[i].tags, "male", 4) == 0) men++;
+        else if (strncmp(VOICES[i].tags, "female", 6) == 0) women++;
+    }
+    CHECK(men == 4 && women == 4 && robots == 2);
+    CHECK(voices_find("CwhRBWXzGAHq8TQ4Fs17", "") == 0);          /* Roger */
+    CHECK(voices_find("cjVigY5qzO86Huf0OWal", "hal") == 8);       /* Hal: Eric's voice through the effect */
+    CHECK(voices_find("cjVigY5qzO86Huf0OWal", "") == -1);         /* plain Eric is not on the list */
+    CHECK(voices_find("nope", "") == -1 && voices_find(NULL, NULL) == -1);
+    CHECK(fx_from_name("jarvis") == FX_JARVIS && strcmp(fx_name(FX_HAL), "hal") == 0);
 
-    char *b = elevenlabs_body("Hi", 1.0f);
-    CHECK(b && strstr(b, "\"model_id\":\"eleven_flash_v2_5\"") && !strstr(b, "voice_settings"));   /* normal: no settings */
-    free(b);
-    b = elevenlabs_body("Hi", 0.85f);
-    CHECK(b && strstr(b, "\"voice_settings\":{\"speed\":0.85"));
-    free(b);
+    /* The effect: none leaves it alone; the robots change it, never clip,
+       and keep silence silent. */
+    static int16_t a[1600], b[1600];
+    for (int i = 0; i < 1600; i++) a[i] = (int16_t)(30000 * sin(2 * 3.14159265 * 220 * i / 16000.0));
+    fx_t f;
+    for (int k = FX_NONE; k <= FX_JARVIS; k++) {
+        memcpy(b, a, sizeof a);
+        fx_init(&f, (fx_kind_t)k);
+        fx_run(&f, b, 800);
+        fx_run(&f, b + 800, 800);                                  /* in chunks, as it streams */
+        int diff = 0, peak = 0;
+        for (int i = 0; i < 1600; i++) { diff += b[i] != a[i]; peak = abs(b[i]) > peak ? abs(b[i]) : peak; }
+        if (k == FX_NONE) CHECK(diff == 0);
+        else CHECK(diff > 1000 && peak <= 32767 && peak > 8000);
+    }
+    memset(b, 0, sizeof b);
+    fx_init(&f, FX_JARVIS);
+    fx_run(&f, b, 1600);
+    int loud = 0;
+    for (int i = 0; i < 1600; i++) loud |= b[i];
+    CHECK(loud == 0);
+
+    char *body = elevenlabs_body("Hi", 1.0f);
+    CHECK(body && strstr(body, "\"model_id\":\"eleven_flash_v2_5\"") && !strstr(body, "voice_settings"));
+    free(body);
+    body = elevenlabs_body("Hi", 0.85f);
+    CHECK(body && strstr(body, "\"voice_settings\":{\"speed\":0.85"));
+    free(body);
 
     printf(fails ? "%d FAILED\n" : "sc_voices: all passed\n", fails);
     return fails != 0;

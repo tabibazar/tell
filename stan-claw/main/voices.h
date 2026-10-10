@@ -1,20 +1,25 @@
 #ifndef VOICES_H
 #define VOICES_H
 
-/* The ElevenLabs voices on the account (GET /v1/voices), cut down to what the
-   settings page shows. "Bella - Professional, Bright" becomes the name Bella
-   and the description Professional, Bright; the labels become tags. Pure:
+/* stan-claw's ten voices: four men, four women and two machines. The people
+   are ElevenLabs' stock voices (their ids are public); the machines are a
+   stock voice through an effect made on the board (fx.h). Pure:
    host_tests/test_sc_voices.c. */
-#define VOICES_MAX 40
+#include "fx.h"
+
+#define VOICES_N 10
 
 typedef struct {
-    char id[32];
-    char name[24];
-    char desc[48];
-    char tags[48];       /* "female, british, middle aged" */
+    const char *id;          /* the ElevenLabs voice it speaks with */
+    const char *name;
+    const char *desc;
+    const char *tags;
+    fx_kind_t fx;
 } voice_t;
 
-/* Returns how many were read into out[max], or -1 when it is not a voices reply. */
-int voices_parse(const char *json, voice_t *out, int max);
+extern const voice_t VOICES[VOICES_N];
+
+/* The entry for a saved choice (voice id + effect name), or -1. */
+int voices_find(const char *id, const char *fx_name);
 
 #endif /* VOICES_H */

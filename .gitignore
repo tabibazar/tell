@@ -110,3 +110,4 @@ host_tests/test_sc_vad
 host_tests/test_sc_ui
 host_tests/test_sc_rest
 host_tests/test_sc_voices
+host_tests/test_sc_spin

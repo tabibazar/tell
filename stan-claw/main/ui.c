@@ -1,5 +1,7 @@
 #include "ui.h"
 
+#include <math.h>
+
 #include <stdio.h>
 #include <string.h>
 
@@ -101,6 +103,8 @@ static void talk_button(canvas_t *c, uint16_t col, const char *label, const char
     if (hint) aafont_draw(c, &aafont_rooms_small, W / 2, TALK_Y + TALK_R + 24, hint, C_DIM, AAFONT_CENTRE);
 }
 
+static uint16_t mix(uint16_t a, uint16_t b, float t);
+
 /* ---- settings ---- */
 
 #define GEAR_X 438
@@ -192,53 +196,113 @@ static void settings(canvas_t *c, const ui_view_t *v)
     button(c, 244, MODEL_Y, 196, SEG_H, "Haiku 4.5 - faster", v->model == 1);
 }
 
-/* ---- the voice list ---- */
-
-#define LIST_Y0  TOP_H
-#define LIST_Y1  404
-#define ROW_H    68
-
-int ui_voices_max_scroll(const ui_view_t *v)
-{
-    int content = (v->nvoices > 0 ? v->nvoices : 0) * ROW_H, room = LIST_Y1 - LIST_Y0;
-    return content > room ? content - room : 0;
-}
-
 static void check(canvas_t *c, int x, int y, uint16_t col)
 {
     for (int i = 0; i < 6; i++) canvas_fill_rect(c, x + i, y + i, 3, 3, col);          /* the short stroke */
     for (int i = 0; i < 12; i++) canvas_fill_rect(c, x + 5 + i, y + 5 - i, 3, 3, col); /* the long one */
 }
 
+/* ---- the voice wheel ---- */
+
+#define WHEEL_Y   222           /* cards' centre line */
+#define CARD_W    250
+#define CARD_H    230
+#define CARD_STEP 205           /* px between neighbouring cards' centres */
+#define USE_Y     402
+
+static uint16_t card_colour(int i)
+{
+    const voice_t *v = &VOICES[i];
+    if (v->fx == FX_HAL) return RGB(0xE0, 0x2A, 0x2A);
+    if (v->fx == FX_JARVIS) return RGB(0x3C, 0xD6, 0xF0);
+    return strncmp(v->tags, "female", 6) == 0 ? RGB(0xE8, 0x7A, 0xB4) : RGB(0x5A, 0x8E, 0xF0);
+}
+
+/* The emblem at the top of a card: a person's initial in a coloured circle;
+   Hal a red eye that glows; Jarvis a cyan ring. */
+static void emblem(canvas_t *c, int i, int cx, int cy, int r, float fade)
+{
+    uint16_t col = mix(card_colour(i), C_BTN, fade);
+    if (VOICES[i].fx == FX_HAL) {
+        for (int k = r; k > 0; k -= 2) canvas_disc(c, cx, cy, k, mix(col, RGB(0x10, 0x10, 0x12), (float)k / r * 0.9f));
+        canvas_disc(c, cx, cy, r / 4, mix(RGB(0xFF, 0xE0, 0x60), C_BTN, fade));
+    } else if (VOICES[i].fx == FX_JARVIS) {
+        canvas_disc(c, cx, cy, r, col);
+        canvas_disc(c, cx, cy, r - r / 4, C_BTN);
+        canvas_disc(c, cx, cy, r / 3, col);
+    } else {
+        canvas_disc(c, cx, cy, r, col);
+        char ini[2] = { VOICES[i].name[0], 0 };
+        aafont_draw(c, &aafont_rooms_head, cx, cy - aafont_rooms_head.cap / 2, ini, mix(C_TEXT, C_BTN, fade), AAFONT_CENTRE);
+    }
+}
+
+/* One card at centre x, d cards from the middle (0 = the chosen one). */
+static void card(canvas_t *c, int i, int cx, float d, bool in_use)
+{
+    float ad = d < 0 ? -d : d;
+    float scale = 1.0f - 0.24f * (ad > 1.5f ? 1.5f : ad);
+    float fade = ad > 1.0f ? 0.65f : ad * 0.65f;
+    int w = (int)(CARD_W * scale), h = (int)(CARD_H * scale);
+    int x = cx - w / 2, y = WHEEL_Y - h / 2;
+    uint16_t bg = mix(RGB(0x22, 0x27, 0x31), C_BG, fade * 0.5f);
+    canvas_fill_rect(c, x + 8, y, w - 16, h, bg);
+    canvas_fill_rect(c, x, y + 8, w, h - 16, bg);
+    canvas_disc(c, x + 8, y + 8, 8, bg);
+    canvas_disc(c, x + w - 9, y + 8, 8, bg);
+    canvas_disc(c, x + 8, y + h - 9, 8, bg);
+    canvas_disc(c, x + w - 9, y + h - 9, 8, bg);
+    if (ad < 0.5f) {                                        /* the chosen card: a thin coloured edge */
+        uint16_t e = card_colour(i);
+        canvas_fill_rect(c, x + 8, y, w - 16, 2, e);
+        canvas_fill_rect(c, x + 8, y + h - 2, w - 16, 2, e);
+    }
+    emblem(c, i, cx, y + (int)(58 * scale), (int)(34 * scale), fade);
+    const aafont_t *nf = ad < 0.5f ? &aafont_rooms_head : &aafont_rooms_title;
+    aafont_draw(c, nf, cx, y + (int)(112 * scale), VOICES[i].name, mix(C_TEXT, C_BG, fade), AAFONT_CENTRE);
+    if (ad < 0.8f) {
+        char t[64];
+        snprintf(t, sizeof t, "%s", VOICES[i].desc);
+        while (t[0] && aafont_width(&aafont_rooms_small, t) > w - 24) t[strlen(t) - 1] = 0;
+        aafont_draw(c, &aafont_rooms_small, cx, y + (int)(156 * scale), t, mix(C_DIM, C_BG, fade), AAFONT_CENTRE);
+        snprintf(t, sizeof t, "%s", VOICES[i].tags);
+        aafont_draw(c, &aafont_rooms_small, cx, y + (int)(182 * scale), t, mix(card_colour(i), C_BG, fade + 0.2f), AAFONT_CENTRE);
+    }
+    if (in_use) check(c, x + w - 34, y + 16, card_colour(i));
+}
+
+
 static void voices_page(canvas_t *c, const ui_view_t *v)
 {
-    if (v->nvoices < 0) {
-        topbar(c, "Voice");
-        aafont_draw(c, &aafont_inter_sub, W / 2, H / 2 - 10, v->nvoices == -1 ? "Loading voices..." : "Could not load the voices",
-                    C_DIM, AAFONT_CENTRE);
-        return;
+    /* Farthest cards first, so nearer ones sit on top. */
+    int order[VOICES_N];
+    for (int i = 0; i < VOICES_N; i++) order[i] = i;
+    for (int a = 0; a < VOICES_N; a++)
+        for (int b = a + 1; b < VOICES_N; b++) {
+            float da = fabsf(order[a] - v->spin), db = fabsf(order[b] - v->spin);
+            if (db > da) { int t = order[a]; order[a] = order[b]; order[b] = t; }
+        }
+    for (int k = 0; k < VOICES_N; k++) {
+        int i = order[k];
+        float d = i - v->spin;
+        int cx = W / 2 + (int)lroundf(d * CARD_STEP);
+        if (cx < -CARD_W / 2 || cx > W + CARD_W / 2) continue;
+        card(c, i, cx, d, i == v->cur);
     }
-    for (int i = 0; i < v->nvoices; i++) {
-        int y = LIST_Y0 + i * ROW_H - v->scroll;
-        if (y + ROW_H <= LIST_Y0 || y >= LIST_Y1) continue;
-        const voice_t *vo = &v->voices[i];
-        bool cur = v->cur_voice && strcmp(vo->id, v->cur_voice) == 0;
-        if (i == v->sel) canvas_fill_rect(c, 0, y, W, ROW_H - 1, RGB(0x1A, 0x2A, 0x48));
-        aafont_draw(c, &aafont_rooms_title, 40, y + 14, vo->name, C_TEXT, AAFONT_LEFT);
-        char d[64];
-        snprintf(d, sizeof d, "%s", vo->desc[0] ? vo->desc : vo->tags);
-        while (d[0] && aafont_width(&aafont_rooms_small, d) > 360) d[strlen(d) - 1] = 0;
-        aafont_draw(c, &aafont_rooms_small, 40, y + 40, d, C_DIM, AAFONT_LEFT);
-        if (cur) check(c, 428, y + 26, C_BLUE);
-        canvas_fill_rect(c, 40, y + ROW_H - 1, W - 80, 1, C_LINE);
-    }
-    /* The bars over the list's ends, so a half-scrolled row is cut clean. */
     topbar(c, "Voice");
-    canvas_fill_rect(c, 0, LIST_Y1, W, H - LIST_Y1, C_BG);
-    canvas_fill_rect(c, 0, LIST_Y1, W, 1, C_LINE);
-    bool chosen = v->sel >= 0 && v->sel < v->nvoices && !(v->cur_voice && strcmp(v->voices[v->sel].id, v->cur_voice) == 0);
-    if (chosen) button(c, 40, LIST_Y1 + 18, W - 80, 50, "Use this voice", true);
-    else aafont_draw(c, &aafont_rooms_small, W / 2, LIST_Y1 + 36, "tap a voice to hear it", C_DIM, AAFONT_CENTRE);
+    /* A dot for each voice, the middle one lit. */
+    int mid = (int)lroundf(v->spin);
+    for (int i = 0; i < VOICES_N; i++)
+        canvas_disc(c, W / 2 + (i - (VOICES_N - 1) / 2.0f) * 16, 360, i == mid ? 4 : 3, i == mid ? card_colour(i) : C_BTN);
+    float off = v->spin - mid;
+    bool settled = off > -0.02f && off < 0.02f;
+    if (mid != v->cur && settled) {
+        char t[40];
+        snprintf(t, sizeof t, "Use %s", VOICES[mid].name);
+        button(c, 70, USE_Y, W - 140, 50, t, true);
+    } else if (mid == v->cur) {
+        aafont_draw(c, &aafont_rooms_small, W / 2, USE_Y + 18, "in use  -  swipe for others", C_DIM, AAFONT_CENTRE);
+    }
 }
 
 int ui_slider_value(int x)
@@ -275,12 +339,13 @@ ui_hit_t ui_hit(const ui_view_t *v, int x, int y, int *value)
         }
         return UI_HIT_NONE;
     }
-    if (y >= LIST_Y1) return y < LIST_Y1 + 80 ? UI_HIT_USE : UI_HIT_NONE;
-    if (v->nvoices <= 0) return UI_HIT_NONE;
-    int row = (y - LIST_Y0 + v->scroll) / ROW_H;
-    if (row < 0 || row >= v->nvoices) return UI_HIT_NONE;
-    *value = row;
-    return UI_HIT_ROW;
+    if (y >= USE_Y - 10 && y < USE_Y + 64) return UI_HIT_USE;
+    if (y < WHEEL_Y - CARD_H / 2 || y > WHEEL_Y + CARD_H / 2) return UI_HIT_NONE;
+    int mid = (int)lroundf(v->spin);
+    int i = x < W / 2 - CARD_W / 2 ? mid - 1 : x > W / 2 + CARD_W / 2 ? mid + 1 : mid;
+    if (i < 0 || i >= VOICES_N) return UI_HIT_NONE;
+    *value = i;
+    return UI_HIT_CARD;
 }
 
 /* The microphones are open: a red bar across the top, the dot and the word
