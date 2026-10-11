@@ -11,7 +11,10 @@
  * day in words. In a conversation the listening and speaking pages carry big
  * buttons (Again, Slower, Done; Stop), and a question needing a yes gets a
  * Yes/No card. UI_EASY is the See and hear settings page; UI_MESSAGE and
- * UI_REMINDER are cards for a family message and a spoken reminder.
+ * UI_REMINDER are cards for a family message and a spoken reminder. Home
+ * carries the day and date, large, over the talk button. With an image set,
+ * UI_RESTING shows that family photo (time and day on a dark band) in place
+ * of the orb -- unless the orb is amber -- and UI_MESSAGE becomes a photo card.
  * Pure: host_tests/test_sc_ui.c renders every screen.
  */
 #include <stdbool.h>
@@ -33,7 +36,7 @@ typedef struct {
     const char *text;        /* the answer, an error's detail, an agent's text */
     const char *title;       /* an error's or an agent's title */
     const char *note;        /* small amber line: "no WiFi", "asked remote: search" */
-    const uint16_t *image;   /* RGB565, img_w x img_h, for UI_AGENT_IMAGE */
+    const uint16_t *image;   /* RGB565, img_w x img_h (each <= 480): UI_AGENT_IMAGE; a photo on UI_RESTING / UI_MESSAGE */
     int img_w, img_h;
     bool amber;              /* UI_RESTING: the orb amber, an agent asking for attention */
     const uint8_t *levels;   /* UI_LISTENING: the voice's loudness, 0-255, oldest first */
@@ -55,6 +58,7 @@ typedef struct {
     bool convo;              /* UI_LISTENING / UI_SPEAKING inside a conversation: show the conversation buttons */
     const char *confirm;     /* UI_LISTENING: non-empty = the Yes/No confirm card with this summary */
     int spoken;              /* UI_SPEAKING: captions -- chars of `text` already spoken; <0 = all bright */
+    const char *photo_from;  /* UI_RESTING / UI_MESSAGE: who sent v->image, e.g. "Reza" */
 } ui_view_t;
 
 /* What a touch at (x, y) lands on, on the page v shows; *value carries the

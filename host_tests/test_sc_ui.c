@@ -36,6 +36,7 @@ static void bmp(const char *name)
 }
 
 #define RGB(r, g, b) ((uint16_t)((((r) & 0xF8) << 8) | (((g) & 0xFC) << 3) | ((b) >> 3)))
+#define C_BG_PLAIN RGB(0x0E, 0x10, 0x14)
 
 /* How many pixels of colour col there are in the band of rows y0..y1. */
 static int count(uint16_t col, int y0, int y1)
@@ -173,6 +174,66 @@ static void care(canvas_t *c, const uint8_t *lv)
     CHECK(strcmp(part, "Sunday afternoon") == 0 && strcmp(date, "January 1") == 0);
     ui_day_words(6, 0, 10, 15 * 60, part, sizeof part, date, sizeof date);
     CHECK(part[0] == 0 && date[0] == 0);
+
+    /* Home with the day and the date over the Talk button; none when the date is unknown. */
+    v = (ui_view_t){ .mode = UI_HOME, .now = 15 * 60 + 12, .ssid = "Office WiFi", .wday = 6, .month = 10, .mday = 10 };
+    ui_draw(c, &v); bmp("home-day");
+    CHECK(count(text, 50, 140) > 200);
+    CHECK(ui_hit(&v, 240, 272, &val) == UI_HIT_TALK && ui_hit(&v, 438, 438, &val) == UI_HIT_GEAR);
+    v.note = "Deepgram key missing";
+    ui_draw(c, &v); bmp("home-day-note");
+    v.contrast = true;
+    ui_draw(c, &v); bmp("home-day-contrast");
+    CHECK(count(yellow, 50, 140) > 200);
+    v = (ui_view_t){ .mode = UI_HOME, .now = 15 * 60 + 12, .ssid = "Office WiFi", .wday = 6, .month = 0, .mday = 10 };
+    ui_draw(c, &v);
+    CHECK(count(text, 50, 140) == 0);
+
+    /* A family photo at rest: a 400x300 gradient, scaled to 480x360, centred. */
+    static uint16_t photo[400 * 300];
+    for (int y = 0; y < 300; y++)
+        for (int x = 0; x < 400; x++)
+            photo[y * 400 + x] = (uint16_t)((31 - x * 31 / 399) << 11 | (20 + y * 43 / 299) << 5 | (x * 31 / 399));
+    v = (ui_view_t){ .mode = UI_RESTING, .now = 15 * 60 + 12, .wday = 6, .month = 10, .mday = 10,
+                     .image = photo, .img_w = 400, .img_h = 300 };
+    ui_draw(c, &v); bmp("resting-photo");
+    CHECK(fb[240 * 480 + 240] == photo[150 * 400 + 200]);                 /* the photo, not the orb */
+    CHECK(fb[120 * 480 + 0] == photo[50 * 400 + 0]);                      /* edge to edge */
+    CHECK(fb[30 * 480 + 240] == 0);                                       /* letterboxed on black */
+    CHECK(fb[476 * 480 + 240] == 0 && fb[400 * 480 + 300] != photo[255 * 400 + 250]);  /* the dark band */
+    CHECK(count(text, 400, 440) > 50 && count(RGB(0x8A, 0x92, 0x9E), 430, 470) > 50);  /* time, day */
+    v.photo_from = "Reza";
+    ui_draw(c, &v); bmp("resting-photo-from");
+    int dim_right = 0;
+    for (int y = 400; y < 430; y++)
+        for (int x = 360; x < 480; x++) dim_right += fb[y * 480 + x] == RGB(0x8A, 0x92, 0x9E);
+    CHECK(dim_right > 20);                                                /* "from Reza" */
+    /* Amber wins over the photo: the orb, exactly as without one. */
+    v = (ui_view_t){ .mode = UI_RESTING, .now = 15 * 60 + 12, .amber = true };
+    ui_draw(c, &v);
+    uint16_t amber_core = fb[210 * 480 + 240];
+    v.image = photo; v.img_w = 400; v.img_h = 300; v.photo_from = "Reza";
+    ui_draw(c, &v); bmp("resting-photo-amber");
+    CHECK(fb[210 * 480 + 240] == amber_core && amber_core == RGB(0xF5, 0xA8, 0x2E));
+    CHECK(fb[240 * 480 + 400] == 0);                                      /* no photo behind it */
+
+    /* A photo card: the title on a dark band, the photo, a caption, OK. */
+    v = (ui_view_t){ .mode = UI_MESSAGE, .now = 15 * 60 + 14, .title = "A photo from Reza", .photo_from = "Reza",
+                     .image = photo, .img_w = 400, .img_h = 300, .text = "The kids at the lake on Sunday" };
+    ui_draw(c, &v); bmp("photo-card");
+    CHECK(fb[200 * 480 + 240] != C_BG_PLAIN && fb[200 * 480 + 240] != 0);
+    CHECK(count(RGB(0x3B, 0x6F, 0xD0), 400, 460) > 5000);               /* the OK */
+    CHECK(count(text, 0, 60) > 50 && count(text, 330, 390) > 50);        /* title, caption */
+    CHECK(ui_hit(&v, 240, 430, &val) == UI_HIT_CLOSE);
+    CHECK(ui_hit(&v, 240, 200, &val) == UI_HIT_NONE);
+    v.text = "The kids at the lake on Sunday, and Grandpa's old boat still floating after all these years";
+    ui_draw(c, &v); bmp("photo-card-long");
+    v.text = NULL;
+    ui_draw(c, &v); bmp("photo-card-bare");
+    v.contrast = true;
+    v.text = "The kids at the lake on Sunday";
+    ui_draw(c, &v); bmp("photo-card-contrast");
+    CHECK(count(yellow, 0, 60) > 50);
 }
 
 int main(void)
@@ -258,7 +319,7 @@ int main(void)
 
     care(&c, lv);
 
-    CHECK(ui_hit_talk(240, 250));
+    CHECK(ui_hit_talk(240, 250) && ui_hit_talk(240, 272));
     CHECK(!ui_hit_talk(20, 460));
 
     printf(fails ? "%d FAILED\n" : "sc_ui: all passed\n", fails);

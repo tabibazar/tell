@@ -29,9 +29,10 @@ static bool contrast;
 #define C_GREEN  RGB(0x2E, 0xA0, 0x4F)
 #define C_CLOCK  RGB(0x5A, 0x60, 0x6A)          /* the resting time and day */
 
+/* The talk button, low enough for the day and date above it. */
 #define TALK_X 240
-#define TALK_Y 250
-#define TALK_R 100
+#define TALK_Y 272
+#define TALK_R 90
 
 bool ui_hit_talk(int x, int y)
 {
@@ -171,6 +172,20 @@ static void talk_button(canvas_t *c, uint16_t col, const char *label, const char
     canvas_disc(c, TALK_X, TALK_Y, TALK_R, col);
     aafont_draw(c, &aafont_rooms_head, TALK_X, TALK_Y - aafont_rooms_head.cap / 2, label, C_TEXT, AAFONT_CENTRE);
     if (hint) aafont_draw(c, &aafont_rooms_small, W / 2, TALK_Y + TALK_R + 24, hint, C_DIM, AAFONT_CENTRE);
+}
+
+/* Home's day and date over the talk button, large, for when the days run
+   together: "Saturday afternoon", "October 10". An unknown date draws none. */
+#define DAY_Y  64
+#define DATE_Y 106
+
+static void home_day(canvas_t *c, const ui_view_t *v)
+{
+    if (v->now < 0) return;
+    char part[32], date[32];
+    ui_day_words(v->wday, v->month, v->mday, v->now, part, sizeof part, date, sizeof date);
+    aafont_draw(c, &aafont_rooms_head, W / 2, DAY_Y, part, C_TEXT, AAFONT_CENTRE);
+    aafont_draw(c, &aafont_inter_sub, W / 2, DATE_Y, date, C_DIM, AAFONT_CENTRE);
 }
 
 static uint16_t mix(uint16_t a, uint16_t b, float t);
@@ -657,6 +672,88 @@ static void speaking(canvas_t *c, const ui_view_t *v)
     big_button(c, STOP_X, STOP_Y, STOP_W, STOP_H, "Stop", NULL, C_BTN);
 }
 
+/* ---- family photos ---- */
+
+static bool has_photo(const ui_view_t *v)
+{
+    return v->image && v->img_w > 0 && v->img_h > 0 && v->img_w <= W && v->img_h <= H;
+}
+
+/* The photo as large as fits in the box, centred in it, each pixel the
+   nearest of the source's: larger or smaller as the box wants. */
+static void photo_fit(canvas_t *c, const ui_view_t *v, int bx, int by, int bw, int bh)
+{
+    int dw = bw, dh = v->img_h * bw / v->img_w;
+    if (dh > bh) {
+        dh = bh;
+        dw = v->img_w * bh / v->img_h;
+    }
+    int x0 = bx + (bw - dw) / 2, y0 = by + (bh - dh) / 2;
+    for (int y = 0; y < dh; y++) {
+        if (y0 + y < 0 || y0 + y >= c->h) continue;
+        const uint16_t *src = v->image + (size_t)(y * v->img_h / dh) * v->img_w;
+        uint16_t *dst = c->fb + (size_t)(y0 + y) * c->w + x0;
+        for (int x = 0; x < dw; x++) dst[x] = src[x * v->img_w / dw];
+    }
+}
+
+/* Rows y0..y1 at a quarter of their brightness: a dark band the photo still
+   shows through, for text to sit on. */
+static void shade(canvas_t *c, int y0, int y1)
+{
+    for (int i = y0 * c->w; i < y1 * c->w; i++) c->fb[i] = (uint16_t)((c->fb[i] >> 2) & 0x39E7);
+}
+
+/* At rest with a photo: the photo on black, and along the bottom a dark
+   band with the time, the day in words and who sent it. */
+#define PHOTO_BAND 92
+
+static void resting_photo(canvas_t *c, const ui_view_t *v)
+{
+    photo_fit(c, v, 0, 0, W, H);
+    int y = H - PHOTO_BAND;
+    shade(c, y, H);
+    if (v->now >= 0) {
+        char t[24];
+        snprintf(t, sizeof t, "%d:%02d", v->now / 60 % 24, v->now % 60);
+        aafont_draw(c, &aafont_rooms_head, 24, y + 18, t, C_TEXT, AAFONT_LEFT);
+        char part[32], date[32], day[72];
+        ui_day_words(v->wday, v->month, v->mday, v->now, part, sizeof part, date, sizeof date);
+        snprintf(day, sizeof day, "%s, %s", part, date);
+        if (!date[0] || aafont_width(&aafont_inter_sub, day) > W - 48) snprintf(day, sizeof day, "%s", part);
+        aafont_draw(c, &aafont_inter_sub, 24, y + 56, day, C_DIM, AAFONT_LEFT);
+    }
+    if (v->photo_from && v->photo_from[0]) {
+        char t[48];
+        snprintf(t, sizeof t, "from %s", v->photo_from);
+        while (t[0] && aafont_width(&aafont_rooms_small, t) > 180) t[strlen(t) - 1] = 0;
+        aafont_draw(c, &aafont_rooms_small, W - 24, y + 24, t, C_DIM, AAFONT_RIGHT);
+    }
+}
+
+/* A photo has come: as large as fits above the caption and the OK, the
+   title over a dark band at the top. */
+#define PHOTO_TOP  60
+#define CAPTION_PITCH 28
+
+static void photo_card(canvas_t *c, const ui_view_t *v)
+{
+    canvas_fill_rect(c, 0, 0, W, H, RGB(0, 0, 0));
+    const aafont_t *sf = &aafont_inter_sub, *hf = &aafont_rooms_head;
+    int lines = !v->text || !v->text[0] ? 0 : aafont_width(sf, v->text) <= W - 48 ? 1 : 2;
+    int bottom = OK_Y - 14;
+    if (lines) bottom -= (lines - 1) * CAPTION_PITCH + sf->cap + sf->descent + 12;
+    photo_fit(c, v, 0, 0, W, bottom);
+    shade(c, 0, PHOTO_TOP);
+    char t[64];
+    snprintf(t, sizeof t, "%s", v->title && v->title[0] ? v->title : "A photo");
+    while (t[0] && aafont_width(hf, t) > W - 48) t[strlen(t) - 1] = 0;
+    aafont_draw(c, hf, W / 2, (PHOTO_TOP - hf->cap) / 2, t, C_TEXT, AAFONT_CENTRE);
+    if (lines == 1) aafont_draw(c, sf, W / 2, bottom + 12, v->text, C_TEXT, AAFONT_CENTRE);
+    else if (lines == 2) para(c, sf, v->text, 24, bottom + 12, W - 48, CAPTION_PITCH, 2, C_TEXT);
+    big_button(c, OK_X, OK_Y, OK_W, OK_H, "OK", NULL, C_BLUE);
+}
+
 /* ---- cards: a message from family, a reminder ---- */
 
 static void envelope(canvas_t *c, int x, int y, uint16_t col, uint16_t bg)
@@ -736,6 +833,10 @@ void ui_day_words(int wday, int month, int mday, int minute, char *part, size_t 
 static void resting(canvas_t *c, const ui_view_t *v)
 {
     canvas_fill_rect(c, 0, 0, W, H, RGB(0, 0, 0));
+    if (!v->amber && has_photo(v)) {          /* an agent asking for attention wins over the photo */
+        resting_photo(c, v);
+        return;
+    }
     orb(c, W / 2, 196, v->amber);
     if (v->now >= 0) {
         char t[24];
@@ -765,6 +866,7 @@ void ui_draw(canvas_t *c, const ui_view_t *v)
     const aafont_t *sub = &aafont_inter_sub;
     switch (v->mode) {
     case UI_HOME:
+        home_day(c, v);
         talk_button(c, C_BLUE, "Talk", "tap, or press BOOT");
         note(c, v->note);
         gear(c, GEAR_X, GEAR_Y);
@@ -792,6 +894,9 @@ void ui_draw(canvas_t *c, const ui_view_t *v)
         speaking(c, v);
         break;
     case UI_MESSAGE:
+        if (has_photo(v)) photo_card(c, v);
+        else card_page(c, v);
+        break;
     case UI_REMINDER:
         card_page(c, v);
         break;
