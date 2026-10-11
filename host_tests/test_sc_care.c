@@ -129,5 +129,30 @@ int main(void)
     CHECK(!care_list_load("{\"nope\":1}", &b));
 
     printf(fails ? "%d FAILED\n" : "sc_care: all passed\n", fails);
+        /* round 2: photos, media, check-in, a message's photo */
+    {
+        care_list_t pl = { .n = 0 };
+        CHECK(care_parse_photos("{\"photos\":[{\"id\":\"a1\",\"from\":\"Reza\",\"caption\":\"Lake\",\"at\":5}]}", &pl) == 1);
+        CHECK(strcmp(pl.item[0].text, "Lake") == 0 && strcmp(pl.item[0].from, "Reza") == 0 && !pl.item[0].done);
+        pl.item[0].done = true;
+        CHECK(care_parse_photos("{\"photos\":[{\"id\":\"a1\",\"from\":\"Reza\",\"caption\":\"Lake\",\"at\":5},"
+                                "{\"id\":\"b2\",\"from\":\"Reza\",\"caption\":\"\",\"at\":6}]}", &pl) == 2);
+        CHECK(pl.item[0].done && !pl.item[1].done);
+        CHECK(care_parse_photos("junk", &pl) == -1 && pl.n == 2);
+        unsigned char buf[16];
+        CHECK(care_media_bytes("{\"kind\":\"jpeg\",\"b64\":\"/9j/4A==\"}", buf, sizeof buf) == 4
+              && buf[0] == 0xFF && buf[1] == 0xD8 && buf[2] == 0xFF && buf[3] == 0xE0);
+        CHECK(care_media_bytes("{\"b64\":\"\"}", buf, sizeof buf) == -1);
+        CHECK(care_media_bytes("{\"b64\":\"AAAAAAAAAAAAAAAAAAAAAAAA\"}", buf, 4) == -1);
+        CHECK(care_parse_checkin("{\"reminders\":[],\"checkin\":true}") == 1);
+        CHECK(care_parse_checkin("{\"reminders\":[]}") == -1);
+        care_list_t ml = { .n = 0 };
+        CHECK(care_parse_messages("{\"messages\":[{\"id\":\"m\",\"from\":\"Reza\",\"text\":\"Lake\",\"at\":1,\"photo\":\"a1\"}]}", &ml) == 1);
+        CHECK(strcmp(ml.item[0].photo, "a1") == 0);
+        char *js = care_list_json(&ml);
+        care_list_t back;
+        CHECK(care_list_load(js, &back) && strcmp(back.item[0].photo, "a1") == 0);
+        free(js);
+    }
     return fails != 0;
 }

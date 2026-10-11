@@ -143,3 +143,40 @@ void memory_write(const char *name, const char *text)
     snprintf(path, sizeof path, BASE "/%s", name);
     put(path, text);
 }
+
+int memory_read_bin(const char *name, unsigned char **out, size_t max)
+{
+    char path[48];
+    snprintf(path, sizeof path, BASE "/%s", name);
+    *out = NULL;
+    FILE *f = s_ok ? fopen(path, "rb") : NULL;
+    if (!f) return -1;
+    unsigned char *buf = heap_caps_malloc(max, MALLOC_CAP_SPIRAM);
+    size_t n = buf ? fread(buf, 1, max, f) : 0;
+    fclose(f);
+    if (!buf) return -1;
+    *out = buf;
+    return (int)n;
+}
+
+bool memory_write_bin(const char *name, const void *data, size_t len)
+{
+    if (!s_ok) return false;
+    char path[48];
+    snprintf(path, sizeof path, BASE "/%s", name);
+    const char *tmp = BASE "/tmp.new";
+    FILE *f = fopen(tmp, "wb");
+    if (!f) return false;
+    bool ok = fwrite(data, 1, len, f) == len;
+    ok = fclose(f) == 0 && ok;
+    if (!ok) { remove(tmp); return false; }
+    remove(path);
+    return rename(tmp, path) == 0;
+}
+
+void memory_remove(const char *name)
+{
+    char path[48];
+    snprintf(path, sizeof path, BASE "/%s", name);
+    if (s_ok) remove(path);
+}

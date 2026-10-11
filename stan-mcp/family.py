@@ -170,7 +170,7 @@ def ticket(prefix, *parts):
 # Activity, for the weekly summary
 # --------------------------------------------------------------------------
 QUIET = {"family_inbox", "reminders", "send_family_summary", "family_summary_consent", "family_contacts",
-         "pending_approvals"}
+         "pending_approvals", "family_photos", "family_media", "checkin_missed", "daily_checkin_consent"}
 
 
 def describe(tool, a, result):
@@ -390,7 +390,7 @@ def t_reminders(c, e, a):
             add(f"booking-{r['amenity']}-{rd}", at_local(rd - dt.timedelta(days=1), 16),
                 f"Tomorrow you have the {r['amenity']} booked: {r['when']}.")
     out.sort(key=lambda x: x["at"])
-    return json.dumps({"reminders": out})
+    return json.dumps({"reminders": out, "checkin": checkin_on(c, e)})
 
 
 def t_family_inbox(c, e, a):
@@ -399,10 +399,77 @@ def t_family_inbox(c, e, a):
     out = []
     for sk, m in state.query(hw_key(c, e), "msg#"):
         if not m["delivered"]:
-            out.append({k: m[k] for k in ("id", "from", "text", "at")})
+            out.append({**{k: m[k] for k in ("id", "from", "text", "at")}, **({"photo": m["photo"]} if m.get("photo") else {})})
             if take:
                 state.put(hw_key(c, e), sk, {**m, "delivered": True}, keep_days=30)
     return json.dumps({"messages": out})
+
+
+PHOTO_MAX = 150 * 1024          # bytes of JPEG, after the page shrinks it to 480 x 480 (the board's flash is small)
+PHOTOS_KEPT = 10
+
+
+def add_photo(c, e, sender, jpeg, caption):
+    t = now()
+    pid = secrets.token_hex(4)
+    state.put(hw_key(c, e), f"photo#{t:.3f}#{pid}", {"id": pid, "from": sender[:30], "caption": caption[:120],
+                                                      "at": int(t)}, keep_days=120, blob=jpeg)
+    for sk, _ in state.query(hw_key(c, e), "photo#")[:-PHOTOS_KEPT]:        # the frame keeps the newest ten
+        state.delete(hw_key(c, e), sk)
+    state.put(hw_key(c, e), f"msg#{t:.3f}#{pid}", {"id": pid, "from": sender[:30], "text": caption[:300],
+                                                   "at": int(t), "photo": pid, "delivered": False}, keep_days=30)
+    return pid
+
+
+def jpeg_ok(b):
+    """A baseline JPEG the board can decode: the JPEG start bytes, no progressive frame (SOF2)."""
+    return len(b) <= PHOTO_MAX and b[:3] == b"\xff\xd8\xff" and b"\xff\xc2" not in b
+
+
+def t_family_photos(c, e, a):
+    """For the board: the photo frame's pictures, newest last."""
+    return json.dumps({"photos": [{"id": d["id"], "from": d["from"], "caption": d["caption"], "at": d["at"]}
+                                  for _, d in state.query(hw_key(c, e), "photo#")]})
+
+
+def t_family_media(c, e, a):
+    """For the board: one photo, as base64."""
+    import base64
+    for sk, d in state.query(hw_key(c, e), "photo#"):
+        if d["id"] == a.get("id"):
+            b = state.get_blob(hw_key(c, e), sk)
+            return json.dumps({"id": d["id"], "kind": "jpeg", "b64": base64.b64encode(b).decode() if b else ""})
+    return json.dumps({"id": a.get("id"), "kind": "", "b64": ""})
+
+
+def checkin_on(c, e):
+    d = state.get(hw_key(c, e), "checkin")
+    return bool(d and d["on"])
+
+
+def t_daily_checkin_consent(c, e, a):
+    on = a.get("on")
+    on = on if isinstance(on, bool) else str(on).lower() in ("true", "yes", "on", "1")
+    state.put(hw_key(c, e), "checkin", {"on": on, "at": int(now())})
+    return ("Done: on weekday mornings stan-claw will say good morning around 11, and if it hears nothing back "
+            "it will let their family know by email." if on else "Done: no morning check-in.")
+
+
+def t_checkin_missed(c, e, a):
+    """For the board: nobody answered the morning check-in. Emails the helpers, once a day."""
+    day = str(local(now()).date())
+    if state.get(hw_key(c, e), f"checkin-sent#{day}"):
+        return "Already sent today."
+    if not helpers(c, e):
+        return "No family contact to tell."
+    p = person(c, e)
+    sent = email_helpers(
+        c, e, f"stan-claw hasn't heard from {p['name']} this morning",
+        f"stan-claw said good morning to {p['name']} at {p['address']} today ({a.get('asked', 'this morning')}) and "
+        f"again a little later, and heard nothing back, and nobody has touched the screen since early morning.\n\n"
+        f"This may well be nothing -- they may simply be out, or in another room. You may want to give them a call.")
+    state.put(hw_key(c, e), f"checkin-sent#{day}", {"at": int(now())}, keep_days=7)
+    return f"Told {names_of([{'name': n} for n in sent])}." if sent else "The email could not be sent just now."
 
 
 def ask_approval(c, e, amount):
@@ -452,6 +519,29 @@ button.no{{background:#8a929e}} .small{{color:#8a929e;font-size:14px}}
 </style></head><body><main>{body}</main></body></html>"""
 
 
+# Shrinks the chosen photo to fit 480 x 480 (the screen) as a baseline JPEG, in the browser, before it is sent.
+PHOTO_JS = """<script>
+document.getElementById('ph').addEventListener('submit', function (ev) {
+  var f = document.getElementById('pf').files[0];
+  if (document.getElementById('pd').value) return;
+  ev.preventDefault();
+  if (!f) { alert('Choose a photo first'); return; }
+  var img = new Image();
+  img.onload = function () {
+    var k = Math.min(480 / img.width, 480 / img.height, 1), c = document.createElement('canvas');
+    c.width = Math.round(img.width * k); c.height = Math.round(img.height * k);
+    c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+    var q = 0.85, d = c.toDataURL('image/jpeg', q);
+    while (d.length > 190000 && q > 0.3) { q -= 0.1; d = c.toDataURL('image/jpeg', q); }
+    document.getElementById('pd').value = d;
+    document.getElementById('pb').textContent = 'Sending...';
+    document.getElementById('ph').submit();
+  };
+  img.src = URL.createObjectURL(f);
+});
+</script>"""
+
+
 def page(status, body):
     return {"statusCode": status, "headers": {"Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store"},
             "body": PAGE.format(body=body)}
@@ -470,6 +560,19 @@ def handle_page(path, method, q):
         p = person(c, e)
         me = next((x for x in helpers(c, e) if x["email"] == f), {"name": "Family"})
         hidden = "".join(f"<input type='hidden' name='{k}' value='{esc(q.get(k, ''))}'>" for k in ("h", "f", "s"))
+        if method == "POST" and q.get("photo"):
+            import base64
+            try:
+                jpeg = base64.b64decode(q["photo"].split(",", 1)[-1], validate=False)
+            except ValueError:
+                jpeg = b""
+            if not jpeg_ok(jpeg):
+                return page(400, "<h1>That photo didn't work</h1><p>Please try another picture (a JPEG or a phone "
+                                 "photo; the page shrinks it for the screen).</p>")
+            add_photo(c, e, (q.get("from") or me["name"]).strip() or me["name"], jpeg, (q.get("caption") or "").strip())
+            return page(200, f"<h1>Photo sent</h1><p>{esc(p['name'])} will see it on the stan-claw screen within a few "
+                             f"minutes of it next being awake, and it joins the pictures shown while the screen "
+                             f"rests.</p>")
         if method == "POST":
             text = (q.get("text") or "").strip()
             if not text:
@@ -486,7 +589,14 @@ def handle_page(path, method, q):
                          f"<form method='post'>{hidden}<label>From</label><input name='from' maxlength='30' "
                          f"value='{esc(me['name'])}'><label>Message</label><textarea name='text' rows='4' "
                          f"maxlength='300' placeholder='Hi! I will call you tonight at 7.'></textarea>"
-                         f"<button type='submit'>Send to the screen</button></form>")
+                         f"<button type='submit'>Send to the screen</button></form>"
+                         f"<h1 style='margin-top:34px'>A photo for {esc(p['name'])}</h1><p>It shows on the screen, and "
+                         f"then while the screen rests, with the other recent photos.</p>"
+                         f"<form method='post' id='ph'>{hidden}<input type='hidden' name='photo' id='pd'>"
+                         f"<input type='hidden' name='from' value='{esc(me['name'])}'>"
+                         f"<input type='file' id='pf' accept='image/*'><label>Caption (optional)</label>"
+                         f"<input name='caption' maxlength='120' placeholder='The kids at the lake'>"
+                         f"<button type='submit' id='pb'>Send the photo</button></form>{PHOTO_JS}")
     if path == "/approve":
         aid = q.get("id", "")
         if not hmac.compare_digest(q.get("s", ""), sig("approve", aid)):

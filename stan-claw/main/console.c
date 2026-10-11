@@ -17,6 +17,7 @@
 #include "memory.h"
 #include "agent.h"
 #include "care_net.h"
+#include "phrases.h"
 #include <time.h>
 #include "voices.h"
 #include <strings.h>
@@ -116,6 +117,7 @@ static void run(const char *line)
         yes_no("mcp token", CFG_MCP_TOKEN);
         yes_no("serve token", CFG_SERVE_TOKEN);
         yes_no("homeowner token", CFG_HW_TOKEN);
+        printf("recorded phrases: %s\n", phrases_stale() ? "not all yet (recorded while online and idle)" : "ready");
         cfg_get(CFG_CLARITY, v, sizeof v);
         printf("clarity: %s\n", v[0] == '0' ? "off" : "on");
         cfg_get(CFG_TEXTSIZE, v, sizeof v);
@@ -156,8 +158,10 @@ static void run(const char *line)
     if (strcmp(w[0], "care") == 0) {
         if (n >= 2 && strcmp(w[1], "check") == 0) { care_kick(); printf("ok: checking reminders and messages\n"); return; }
         if (n >= 3 && strcmp(w[1], "test") == 0) {
-            care_demo(strcmp(w[2], "message") == 0 ? 1 : 0);
-            printf("ok: a pretend %s goes up in a few seconds\n", strcmp(w[2], "message") == 0 ? "message" : "reminder");
+            int kind = strcmp(w[2], "message") == 0 ? 1 : strcmp(w[2], "checkin") == 0 ? 2 : 0;
+            care_demo(kind);
+            printf("ok: %s in a few seconds\n", kind == 2 ? "the check-in (again 60 s later if unanswered, then family is told)"
+                                              : kind == 1 ? "a pretend message" : "a pretend reminder");
             return;
         }
         care_net_print((long)time(NULL));

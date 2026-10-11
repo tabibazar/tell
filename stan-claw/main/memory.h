@@ -30,4 +30,10 @@ void memory_forget(void);                 /* wipe the conversation and the facts
 char *memory_read(const char *name, size_t max);
 void memory_write(const char *name, const char *text);
 
+/* The same for bytes (photos, recorded phrases): read returns the length, -1 if none,
+   into a malloc'd PSRAM buffer; remove deletes one. */
+int memory_read_bin(const char *name, unsigned char **out, size_t max);
+bool memory_write_bin(const char *name, const void *data, size_t len);
+void memory_remove(const char *name);
+
 #endif /* MEMORY_H */

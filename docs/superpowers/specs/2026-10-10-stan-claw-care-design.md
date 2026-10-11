@@ -43,3 +43,11 @@ Date: 2026-10-10. Status: requested in full by Reza ("build them all"); decision
 ## Not included
 
 SMS; replies by email; approvals by voice; reminders outside 9-7; family access to transcripts (the summary is built from stan-mcp's own activity log, not the board's conversations).
+
+## Round 2 (2026-10-10, Reza: "do what you recommend")
+
+14. **"One moment..."** If Claude takes over 2.5 s, a recorded phrase fills the silence ("One moment, let me check that for you.", three in turn). The answer waits for it to finish. (`phrases.c`, the filler task in `stanclaw.c`.)
+15. **Day and date on the home screen**, large: "Saturday afternoon" / "October 10", above the Talk button.
+16. **Trouble in plain, spoken words.** No WiFi: "I can't reach the internet right now. Your WiFi may be down..." A service failing: "I'm having trouble reaching my helpers right now..." Nothing heard: "Sorry, I didn't hear anything. Just tap the screen when you're ready to talk." These are recorded ahead (ElevenLabs, while online and idle, again whenever the voice or speed changes) into `/mem/ph*.pcm`, so they play with no network.
+17. **Family photos.** The family message page gains "A photo for ...": the browser shrinks the photo to fit 480 x 480 as a baseline JPEG (at most 150 KB; the server checks the JPEG start bytes and refuses progressive files). A new photo arrives as a card ("A photo from Reza", the caption, read aloud), and the newest six are kept on the board (`/mem/p*.jpg`) and shown in turn, one a minute, instead of the breathing orb, at a steady 35 % light. Night and screen-off rules are unchanged. Hidden tools `family_photos` and `family_media`; the JPEGs live in the state table as binary (`state.put(..., blob=)`), so no new AWS resource is needed.
+18. **Morning check-in, opt-in** (`daily_checkin_consent`, off until the homeowner agrees). On a weekday from 11:00 (until 15:00), if nobody has touched, knocked or talked since 05:00, stan-claw says "Good morning! I'm just checking in. How are you today?" and listens for 20 s; an answer becomes an ordinary conversation. No answer: once more 20 minutes later, then stan-mcp emails family "stan-claw hasn't heard from ... this morning" (once a day, `checkin_missed`). It only runs while the board is up (Mon-Fri 08:00-16:00). Console: `care test checkin` asks now and again 60 s later.

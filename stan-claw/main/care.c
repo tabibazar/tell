@@ -96,10 +96,84 @@ int care_parse_messages(const char *text, care_list_t *l)
         it->at = (long)at->valuedouble;
         snprintf(it->from, sizeof it->from, "%s", from->valuestring);
         snprintf(it->text, sizeof it->text, "%s", txt->valuestring);
+        const cJSON *photo = cJSON_GetObjectItemCaseSensitive(m, "photo");
+        if (cJSON_IsString(photo)) snprintf(it->photo, sizeof it->photo, "%s", photo->valuestring);
         added++;
     }
     cJSON_Delete(j);
     return added;
+}
+
+int care_parse_checkin(const char *text)
+{
+    cJSON *j = cJSON_Parse(text);
+    if (!j) return -1;
+    const cJSON *c = cJSON_GetObjectItemCaseSensitive(j, "checkin");
+    int r = cJSON_IsBool(c) ? cJSON_IsTrue(c) : -1;
+    cJSON_Delete(j);
+    return r;
+}
+
+int care_parse_photos(const char *text, care_list_t *l)
+{
+    cJSON *j = cJSON_Parse(text);
+    if (!j) return -1;
+    cJSON *arr = cJSON_GetObjectItemCaseSensitive(j, "photos");
+    if (!cJSON_IsArray(arr)) { cJSON_Delete(j); return -1; }
+    care_list_t old = *l;
+    l->n = 0;
+    int total = cJSON_GetArraySize(arr), k = 0;
+    const cJSON *p;
+    cJSON_ArrayForEach(p, arr) {
+        if (total - k++ > CARE_MAX) continue;          /* the newest CARE_MAX */
+        const cJSON *id = cJSON_GetObjectItemCaseSensitive(p, "id");
+        const cJSON *from = cJSON_GetObjectItemCaseSensitive(p, "from");
+        const cJSON *cap = cJSON_GetObjectItemCaseSensitive(p, "caption");
+        const cJSON *at = cJSON_GetObjectItemCaseSensitive(p, "at");
+        if (!cJSON_IsString(id) || !cJSON_IsNumber(at)) continue;
+        care_item_t *it = &l->item[l->n++];
+        memset(it, 0, sizeof *it);
+        snprintf(it->id, sizeof it->id, "%s", id->valuestring);
+        it->at = (long)at->valuedouble;
+        if (cJSON_IsString(from)) snprintf(it->from, sizeof it->from, "%s", from->valuestring);
+        if (cJSON_IsString(cap)) snprintf(it->text, sizeof it->text, "%s", cap->valuestring);
+        for (int i = 0; i < old.n; i++)
+            if (strcmp(old.item[i].id, it->id) == 0) { it->done = old.item[i].done; break; }
+    }
+    cJSON_Delete(j);
+    return l->n;
+}
+
+static int b64v(int c)
+{
+    return c >= 'A' && c <= 'Z' ? c - 'A' : c >= 'a' && c <= 'z' ? c - 'a' + 26 : c >= '0' && c <= '9' ? c - '0' + 52
+         : c == '+' ? 62 : c == '/' ? 63 : -1;
+}
+
+int care_media_bytes(const char *text, unsigned char *out, int max)
+{
+    cJSON *j = cJSON_Parse(text);
+    if (!j) return -1;
+    const cJSON *b = cJSON_GetObjectItemCaseSensitive(j, "b64");
+    int n = -1;
+    if (cJSON_IsString(b) && b->valuestring[0]) {
+        unsigned acc = 0;
+        int bits = 0;
+        n = 0;
+        for (const char *c = b->valuestring; *c && *c != '='; c++) {
+            int v = b64v((unsigned char)*c);
+            if (v < 0) continue;                         /* line breaks and the like */
+            acc = acc << 6 | (unsigned)v;
+            bits += 6;
+            if (bits >= 8) {
+                bits -= 8;
+                if (n == max) { n = -1; break; }
+                out[n++] = (unsigned char)(acc >> bits);
+            }
+        }
+    }
+    cJSON_Delete(j);
+    return n;
 }
 
 bool care_may_speak(int minute) { return minute >= 9 * 60 && minute < 19 * 60; }
@@ -139,6 +213,7 @@ char *care_list_json(const care_list_t *l)
         cJSON_AddStringToObject(e, "from", it->from);
         cJSON_AddStringToObject(e, "text", it->text);
         cJSON_AddBoolToObject(e, "done", it->done);
+        if (it->photo[0]) cJSON_AddStringToObject(e, "photo", it->photo);
         cJSON_AddItemToArray(arr, e);
     }
     char *s = cJSON_PrintUnformatted(o);
@@ -170,6 +245,8 @@ bool care_list_load(const char *json, care_list_t *l)
         if (cJSON_IsString(from)) snprintf(it->from, sizeof it->from, "%s", from->valuestring);
         snprintf(it->text, sizeof it->text, "%s", text->valuestring);
         it->done = cJSON_IsTrue(done);
+        const cJSON *photo = cJSON_GetObjectItemCaseSensitive(e, "photo");
+        if (cJSON_IsString(photo)) snprintf(it->photo, sizeof it->photo, "%s", photo->valuestring);
     }
     cJSON_Delete(o);
     *l = tmp;

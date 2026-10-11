@@ -42,6 +42,7 @@
 
 #include "agent.h"
 #include "care_net.h"
+#include "phrases.h"
 #include "https.h"
 #include "audio.h"
 #include "config.h"
@@ -88,6 +89,10 @@ static char s_confirm[160];            /* the Yes/No card's summary while it lis
 static volatile bool s_captions;
 static volatile float s_cap_rate;      /* characters a second at the speed in use */
 static volatile bool s_care_wake;      /* woke from deep sleep for a reminder */
+/* When the person last did something themselves (a touch, BOOT, a knock, a
+   conversation), wall clock; kept through deep sleep for the morning check-in. */
+static RTC_DATA_ATTR time_t s_person_at;
+static uint16_t *s_card_img, *s_rest_img;   /* PSRAM 480x480: a photo card, the resting photo */
 
 /* Rest (rest.h): untouched for 45 s the screen breathes, then sleeps. Anything
    holding s_busy counts as use; a touch, BOOT, a knock or an agent's call
@@ -299,6 +304,8 @@ static void set_view(ui_mode_t mode, const char *heard, const char *text, const 
     snprintf(s_note, sizeof s_note, "%s", note ? note : "");
     s_view.heard = s_heard; s_view.text = s_text; s_view.title = s_title; s_view.note = s_note;
     s_view.spoken = -1;                    /* all bright, until captions move it */
+    s_view.image = NULL;                   /* a photo card sets its own after */
+    s_view.photo_from = NULL;
     s_dirty = true;
     xSemaphoreGive(s_ui_lock);
 }
@@ -357,20 +364,62 @@ static int say(const char *text, float speed)
     return code;
 }
 
+/* "One moment...": if Claude takes longer than FILL_MS, a recorded phrase
+   fills the silence. The answer waits for the phrase to finish (one speaker). */
+#define FILL_MS 2500
+static SemaphoreHandle_t s_fill_go, s_fill_done;
+static volatile bool s_fill_cancel;
+
+static void filler_task(void *arg)
+{
+    static int next;
+    for (;;) {
+        xSemaphoreTake(s_fill_go, portMAX_DELAY);
+        for (int t = 0; t < FILL_MS && !s_fill_cancel; t += 50) vTaskDelay(pdMS_TO_TICKS(50));
+        if (!s_fill_cancel && !s_stop) {
+            phrase_play((phrase_t)(PH_MOMENT1 + next));
+            next = (next + 1) % 3;
+        }
+        xSemaphoreGive(s_fill_done);
+    }
+}
+
+/* Says a recorded phrase with its words on screen: speech that needs no network. */
+static void plain_words(ui_mode_t mode, phrase_t p, const char *title, const char *note)
+{
+    set_view(mode, NULL, phrase_text(p), title, note);
+    phrase_play(p);
+}
+
+/* The "how are you today?" check-in opens a conversation itself: true if anyone answered. */
+static const char *volatile s_opening;
+static volatile bool s_answered;
+
 static void conversation(void)
 {
     char err[64];
-    if (!net_up()) { set_view(UI_HOME, NULL, NULL, NULL, "no WiFi"); return; }
+    const char *opening = s_opening;
+    s_opening = NULL;
+    s_answered = false;
+    if (!net_up()) {
+        if (!opening) plain_words(UI_HOME, PH_OFFLINE, NULL, "no WiFi");
+        return;
+    }
     static char heard[600], last[1500], last_heard[600], last_note[96];
     static claude_reply_t reply;
     bool checked_in = false;
     last[0] = s_confirm[0] = 0;
     s_action = ACT_NONE;
+    if (opening) {
+        set_view(UI_SPEAKING, NULL, opening, NULL, NULL);
+        say(opening, 0);
+    }
     for (int round = 0; !s_stop; round++) {
-        set_view(UI_LISTENING, NULL, NULL, round ? "Your turn" : NULL, NULL);
+        set_view(UI_LISTENING, NULL, NULL, round ? "Your turn" : opening ? "How are you today?" : NULL, NULL);
         vad_result_t why;
         int n = audio_record_wait(s_pcm, AUDIO_FS * REC_MAX_S, REC_MAX_S * 1000,
-                                  round ? CONVO_WAIT_MS : REC_MAX_S * 1000, &why);
+                                  round ? CONVO_WAIT_MS : opening ? 20000 : REC_MAX_S * 1000, &why);
+        if (why != VAD_SILENT || s_action != ACT_NONE) s_answered = true;
         if (s_stop) break;
         int act = s_action;
         s_action = ACT_NONE;
@@ -388,7 +437,12 @@ static void conversation(void)
             snprintf(heard, sizeof heard, "%s", act == ACT_YES ? "Yes." : "No.");
         } else {
             if (why == VAD_SILENT) {
-                if (round == 0) { set_view(UI_HOME, NULL, NULL, NULL, "didn't catch that"); s_confirm[0] = 0; return; }
+                if (round == 0) {
+                    s_confirm[0] = 0;
+                    if (opening) { set_view(UI_HOME, NULL, NULL, NULL, NULL); return; }   /* the check-in tries later */
+                    plain_words(UI_HOME, PH_MISSED, NULL, "didn't catch that");
+                    return;
+                }
                 /* No reply: check in once, kindly, before letting them go. */
                 if (!checked_in) {
                     checked_in = true;
@@ -403,7 +457,12 @@ static void conversation(void)
             }
             set_view(UI_THINKING, "...", NULL, NULL, NULL);
             int code = stt_transcribe(s_pcm, n, heard, sizeof heard);
-            if (code != 200) { s_confirm[0] = 0; set_view(UI_ERROR, NULL, "Check the key with: tools/stan-claw.py status", service_error("Deepgram", code, err, sizeof err), NULL); return; }
+            if (code != 200) {
+                s_confirm[0] = 0;
+                set_view(UI_ERROR, NULL, phrase_text(PH_TROUBLE), service_error("Deepgram", code, err, sizeof err), NULL);
+                phrase_play(PH_TROUBLE);
+                return;
+            }
             if (!heard[0]) continue;
             if (s_stop) break;
         }
@@ -411,9 +470,14 @@ static void conversation(void)
         s_confirm[0] = 0;
 
         set_view(UI_THINKING, heard, NULL, NULL, NULL);
+        s_fill_cancel = false;
+        xSemaphoreGive(s_fill_go);
         int code = agent_ask(heard, &reply);
+        s_fill_cancel = true;
+        xSemaphoreTake(s_fill_done, portMAX_DELAY);     /* "one moment" finishes before the answer starts */
         if (code != 200) {
-            set_view(UI_ERROR, heard, reply.error[0] ? reply.error : "", service_error("Claude", code, err, sizeof err), NULL);
+            set_view(UI_ERROR, heard, phrase_text(PH_TROUBLE), service_error("Claude", code, err, sizeof err), NULL);
+            phrase_play(PH_TROUBLE);
             return;
         }
         if (s_stop) break;
@@ -430,6 +494,7 @@ static void conversation(void)
         if (code != 200 && !s_stop) {
             s_answer_at = esp_timer_get_time();
             set_view(UI_ANSWER, heard, reply.text, NULL, service_error("ElevenLabs", code, err, sizeof err));
+            phrase_play(PH_TROUBLE);              /* recorded: it needs no ElevenLabs */
             return;
         }
         if (end) break;                                     /* "that's all": the goodbye was the last word */
@@ -451,6 +516,7 @@ static void convo_task(void *arg)
         s_convo = true;
         conversation();
         s_convo = false;
+        if (s_answered) s_person_at = time(NULL);
         s_in_use = false;
         activity();
         ESP_LOGI(TAG, "convo stack: %u bytes never used", (unsigned)uxTaskGetStackHighWaterMark(NULL));
@@ -476,13 +542,40 @@ static int minute_now(void)
 }
 
 /* Puts a card up and says it, holding s_busy; only when nobody is using it. */
-static bool present(ui_mode_t mode, const char *title, const char *text, const char *spoken)
+static bool decode_jpeg(const uint8_t *jpeg, size_t len, uint16_t *out, int *w, int *h)
+{
+    esp_jpeg_image_cfg_t jc = {
+        .indata = (uint8_t *)jpeg, .indata_size = len,
+        .outbuf = (uint8_t *)out, .outbuf_size = 480 * 480 * 2,
+        .out_format = JPEG_IMAGE_FORMAT_RGB565, .out_scale = JPEG_IMAGE_SCALE_0,
+    };
+    esp_jpeg_image_output_t jo;
+    if (esp_jpeg_decode(&jc, &jo) != ESP_OK || jo.width > 480 || jo.height > 480) return false;
+    *w = jo.width;
+    *h = jo.height;
+    return true;
+}
+
+/* photo: a photo id to show on the card ("" for none). */
+static bool present_photo(ui_mode_t mode, const char *title, const char *text, const char *spoken, const char *photo)
 {
     if (xSemaphoreTake(s_busy, 0) != pdTRUE) return false;
     s_in_use = true;
     activity();
     vTaskDelay(pdMS_TO_TICKS(250));            /* the main loop brings the light up */
     set_view(mode, NULL, text, title, NULL);
+    unsigned char *jpeg = NULL;
+    int len = photo && photo[0] && s_card_img ? care_photo_load(photo, &jpeg) : -1;
+    int w, h;
+    if (len > 0 && decode_jpeg(jpeg, (size_t)len, s_card_img, &w, &h)) {
+        xSemaphoreTake(s_ui_lock, portMAX_DELAY);
+        s_view.image = s_card_img;
+        s_view.img_w = w;
+        s_view.img_h = h;
+        s_dirty = true;
+        xSemaphoreGive(s_ui_lock);
+    }
+    free(jpeg);
     chime();
     tts_speak(spoken);
     s_card_at = esp_timer_get_time();
@@ -492,10 +585,68 @@ static bool present(ui_mode_t mode, const char *title, const char *text, const c
     return true;
 }
 
+static bool present(ui_mode_t mode, const char *title, const char *text, const char *spoken)
+{
+    return present_photo(mode, title, text, spoken, NULL);
+}
+
+/* The morning check-in (if the homeowner agreed): on a weekday from 11:00, if
+   nobody has touched it or talked to it since 05:00, it says good morning and
+   listens; nothing back, it asks once more 20 minutes later, and then lets
+   family know (stan-mcp emails them, once a day). It only happens while the
+   board is up: Monday to Friday, 08:00-16:00. */
+static RTC_DATA_ATTR int s_ck_day, s_ck_state;       /* 0 not yet, 1 asked once, 3 settled for the day */
+static RTC_DATA_ATTR time_t s_ck_asked;
+static bool s_ck_test;                               /* `care test checkin`: now, and 60 s apart */
+
+static bool checkin_ask(bool test)
+{
+    if (test) { s_ck_test = true; s_ck_state = 0; }
+    int m = minute_now();
+    s_opening = m < 12 * 60 ? "Good morning! I'm just checking in. How are you today?"
+                            : "Hello! I'm just checking in. How are you today?";
+    s_answered = false;
+    xSemaphoreGive(s_go);
+    int64_t t0 = esp_timer_get_time();
+    while (!s_convo && esp_timer_get_time() - t0 < 3000000) vTaskDelay(pdMS_TO_TICKS(50));
+    while (s_convo) vTaskDelay(pdMS_TO_TICKS(200));
+    if (!s_answered && s_ck_state == 0) { s_ck_state = 1; s_ck_asked = time(NULL); }
+    else if (s_answered) s_ck_state = 3;
+    ESP_LOGI(TAG, "check-in: %s", s_answered ? "answered" : "no answer");
+    return s_answered;
+}
+
+static void checkin_tick(void)
+{
+    time_t now = time(NULL);
+    struct tm lt;
+    localtime_r(&now, &lt);
+    int today = (lt.tm_year + 1900) * 10000 + (lt.tm_mon + 1) * 100 + lt.tm_mday;
+    if (s_ck_day != today) { s_ck_day = today; s_ck_state = 0; }
+    if (s_ck_state >= 3 || (!s_ck_test && !care_checkin_on())) return;
+    struct tm five = lt;
+    five.tm_hour = 5; five.tm_min = five.tm_sec = 0;
+    if (s_person_at >= mktime(&five) && (s_ck_state > 0 || !s_ck_test)) { s_ck_state = 3; return; }   /* they're about */
+    int m = lt.tm_hour * 60 + lt.tm_min;
+    if (s_ck_state == 0 && !s_ck_test && (lt.tm_wday == 0 || lt.tm_wday == 6 || m < 11 * 60 || m >= 15 * 60)) return;
+    if (s_ck_state == 1 && now - s_ck_asked < (s_ck_test ? 60 : 20 * 60)) return;
+    bool second = s_ck_state == 1;
+    if (checkin_ask(false)) { s_ck_test = false; return; }
+    if (second) {
+        char asked[48];
+        struct tm a;
+        localtime_r(&s_ck_asked, &a);
+        snprintf(asked, sizeof asked, "at %d:%02d and %d:%02d", a.tm_hour, a.tm_min, lt.tm_hour, lt.tm_min);
+        care_net_checkin_missed(asked);
+        s_ck_state = 3;
+        s_ck_test = false;
+    }
+}
+
 static void care_task(void *arg)
 {
     const int64_t INBOX_US = 120LL * 1000000, REMIND_US = 3LL * 3600 * 1000000;
-    int64_t inbox_at = -INBOX_US, remind_at = -REMIND_US;
+    int64_t inbox_at = -INBOX_US, remind_at = -REMIND_US, photos_at = -REMIND_US, phrase_at = -60LL * 1000000;
     char spoken[CARE_TEXT + 48], title[48];
     for (;;) {
         vTaskDelay(pdMS_TO_TICKS(3000));
@@ -505,11 +656,19 @@ static void care_task(void *arg)
                 /* A failure tries again in 10 minutes. */
                 remind_at = care_net_refresh_reminders() ? now_us : now_us - REMIND_US + 600LL * 1000000;
             }
+            bool photos_due = s_care_kick || now_us - photos_at >= REMIND_US;
             if (s_care_kick || now_us - inbox_at >= INBOX_US) {
                 care_net_check_inbox();
                 inbox_at = now_us;
+                int mi = care_next_message();               /* a photo announced: fetch it before showing */
+                if (mi >= 0 && care_messages()->item[mi].photo[0]) photos_due = true;
             }
+            if (photos_due) photos_at = care_net_sync_photos() >= 0 ? now_us : now_us - REMIND_US + 600LL * 1000000;
             s_care_kick = false;
+        }
+        /* The recorded phrases, one at a time, whenever the voice or speed changed. */
+        if (net_up() && !s_in_use && !s_convo && !s_job && phrases_stale() && now_us - phrase_at > 20LL * 1000000) {
+            if (!phrases_refresh_one()) phrase_at = now_us;            /* failed: wait a little */
         }
         bool idle = !s_in_use && !s_mic && !s_convo && !s_job && s_view.mode != UI_SETTINGS
                     && s_view.mode != UI_VOICES && s_view.mode != UI_EASY;
@@ -520,19 +679,27 @@ static void care_task(void *arg)
         if (s_care_demo >= 0) {
             int kind = s_care_demo;
             s_care_demo = -1;
+            if (kind == 2) { s_ck_test = true; s_ck_state = 0; s_ck_day = 0; continue; }
             if (kind == 1) present(UI_MESSAGE, "Message from Reza", "Hi! I'll call you tonight at seven. Love you.",
                                    "Message from Reza. Hi! I'll call you tonight at seven. Love you.");
             else present(UI_REMINDER, "Reminder", "Tonight is trash night. The bins can go out to the curb now.",
                          "Tonight is trash night. The bins can go out to the curb now.");
             continue;
         }
-        if (!net_time_ok() || !care_may_speak(minute_now())) continue;
+        if (!net_time_ok()) continue;
+        if (net_up()) checkin_tick();
+        if (!care_may_speak(minute_now())) continue;
         int mi = care_next_message();
         if (mi >= 0) {
             care_item_t *m = &care_messages()->item[mi];
-            snprintf(title, sizeof title, "Message from %s", m->from[0] ? m->from : "family");
-            snprintf(spoken, sizeof spoken, "%s. %s", title, m->text);
-            if (present(UI_MESSAGE, title, m->text, spoken)) { m->done = true; care_net_save(); }
+            if (m->photo[0]) {
+                snprintf(title, sizeof title, "A photo from %s", m->from[0] ? m->from : "family");
+                snprintf(spoken, sizeof spoken, "%s sent you a photo. %s", m->from[0] ? m->from : "Your family", m->text);
+            } else {
+                snprintf(title, sizeof title, "Message from %s", m->from[0] ? m->from : "family");
+                snprintf(spoken, sizeof spoken, "%s. %s", title, m->text);
+            }
+            if (present_photo(UI_MESSAGE, title, m->text, spoken, m->photo)) { m->done = true; care_net_save(); }
             continue;
         }
         int ri = care_due(care_reminders(), (long)time(NULL), minute_now());
@@ -734,6 +901,11 @@ void app_main(void)
     s_go = xSemaphoreCreateBinary();
     s_pcm = heap_caps_malloc(AUDIO_FS * 30 * sizeof(int16_t), MALLOC_CAP_SPIRAM);
     s_image = heap_caps_malloc(480 * 480 * 2, MALLOC_CAP_SPIRAM);
+    s_card_img = heap_caps_malloc(480 * 480 * 2, MALLOC_CAP_SPIRAM);
+    s_rest_img = heap_caps_malloc(480 * 480 * 2, MALLOC_CAP_SPIRAM);
+    s_fill_go = xSemaphoreCreateBinary();
+    s_fill_done = xSemaphoreCreateBinary();
+    phrases_load();
 
     ESP_ERROR_CHECK(lcd_init());
     bool touch = touch_init() == ESP_OK;
@@ -754,6 +926,7 @@ void app_main(void)
     mcpd_start(&TOOLS);
     xTaskCreatePinnedToCore(convo_task, "convo", 16384, NULL, 5, NULL, 1);      /* TLS x3 */
     xTaskCreatePinnedToCore(care_task, "care", 12288, NULL, 4, NULL, 1);        /* TLS, and speech */
+    xTaskCreatePinnedToCore(filler_task, "filler", 4096, NULL, 5, NULL, 1);
     if (s_care_wake) ESP_LOGI(TAG, "awake for a reminder");
 
     bool down = false, boot_was = true;
@@ -773,6 +946,7 @@ void app_main(void)
         if (now_down) { lx = x; ly = y; }
         if (now_down && !down) {                                    /* a press */
             activity();
+            s_person_at = time(NULL);
             ignore = !awake;                                        /* on a resting screen it only wakes */
             moved = false;
             px = prevx = x; py = y;
@@ -880,6 +1054,7 @@ void app_main(void)
             }
         }
         if (!boot_now && boot_was) {
+            s_person_at = time(NULL);
             if (s_convo) {                                          /* BOOT ends a conversation, whatever the screen */
                 s_stop = true;
                 audio_abort();
@@ -897,6 +1072,7 @@ void app_main(void)
             float ax, ay, az;
             if (motion_read(&ax, &ay, &az) && knock_feed(&knock, ax, ay, az, ms)) {
                 activity();
+                s_person_at = time(NULL);
                 if (knock_double(&knock, ms) && !s_convo && !s_in_use
                     && (s_view.mode == UI_HOME || s_view.mode == UI_ANSWER || !awake))
                     xSemaphoreGive(s_go);
@@ -969,7 +1145,30 @@ void app_main(void)
         if (want == REST_BREATHING && shown != REST_BREATHING) rest_t0 = now_us;
         shown = amber ? REST_BREATHING : want;
         shown_amber = amber;
-        light(amber ? 60 : want == REST_AWAKE ? 100 : want == REST_ASLEEP ? 0
+        /* While it breathes, a family photo instead of the orb, a new one each
+           minute, at a steady light (a photo at a breath's 3-14 % is black). */
+        static int photo_i = -1, photo_w, photo_h;
+        static int64_t photo_at;
+        static const char *photo_from;
+        bool photo = want == REST_BREATHING && !amber && s_rest_img;
+        if (photo && (photo_i < 0 || now_us - photo_at > 60LL * 1000000)) {
+            care_list_t *pl = care_photos();
+            photo_at = now_us;
+            int tries = pl ? pl->n : 0;
+            int was = photo_i;
+            photo_i = -1;
+            for (int k = 1; k <= tries; k++) {
+                int i = ((was < 0 ? -1 : was) + k) % pl->n;
+                if (!pl->item[i].done) continue;
+                unsigned char *jpeg = NULL;
+                int len = care_photo_load(pl->item[i].id, &jpeg);
+                bool ok = len > 0 && decode_jpeg(jpeg, (size_t)len, s_rest_img, &photo_w, &photo_h);
+                free(jpeg);
+                if (ok) { photo_i = i; photo_from = pl->item[i].from; s_dirty = true; break; }
+            }
+        }
+        if (!photo && photo_i >= 0) { photo_i = -1; s_dirty = true; }
+        light(amber ? 60 : want == REST_AWAKE ? 100 : want == REST_ASLEEP ? 0 : photo_i >= 0 ? 35
               : rest_breath_light((long)((now_us - rest_t0) / 1000)));
 
         if (s_dirty) {
@@ -983,6 +1182,12 @@ void app_main(void)
             if (resting_screen) {
                 ui_view_t rv = { .mode = UI_RESTING, .now = s_view.now, .amber = amber, .mic_open = s_mic,
                                  .wday = s_view.wday, .month = s_view.month, .mday = s_view.mday, .spoken = -1 };
+                if (photo_i >= 0) {
+                    rv.image = s_rest_img;
+                    rv.img_w = photo_w;
+                    rv.img_h = photo_h;
+                    rv.photo_from = photo_from;
+                }
                 ui_draw(lcd_canvas(), &rv);
             } else {
                 ui_draw(lcd_canvas(), &s_view);

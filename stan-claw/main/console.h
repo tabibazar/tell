@@ -9,7 +9,7 @@
  *   status
  *   clarity on|off | text large|xl | contrast normal|high
  *   hoa token TOKEN | hoa forget        (the homeowner's stan-mcp token, for reminders and family messages)
- *   care | care check | care test reminder|message
+ *   care | care check | care test reminder|message|checkin
  * Quote a word with spaces: wifi add "Office WiFi" secret.
  */
 void console_start(void);

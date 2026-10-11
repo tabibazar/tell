@@ -395,11 +395,17 @@ TOOLS = [
      schema({**TOK, "on": {"type": "boolean"}}, ["homeowner_token", "on"]), private(fam(family.t_family_summary_consent))),
     ("pending_approvals", "Payments waiting for a family member's OK, and whether they were approved.",
      schema(TOK, ["homeowner_token"]), private(fam(family.t_pending_approvals))),
+    ("daily_checkin_consent", "Turn the weekday morning check-in on or off: around 11 am stan-claw says good morning, "
+     "and if nobody answers it emails the family. Only with the homeowner's agreement.",
+     schema({**TOK, "on": {"type": "boolean"}}, ["homeowner_token", "on"]), private(fam(family.t_daily_checkin_consent))),
 ]
 # Called by the stan-claw board itself, not offered to Claude.
 HIDDEN = [
     ("reminders", private(fam(family.t_reminders))),
     ("family_inbox", private(fam(family.t_family_inbox))),
+    ("family_photos", private(fam(family.t_family_photos))),
+    ("family_media", private(fam(family.t_family_media))),
+    ("checkin_missed", private(fam(family.t_checkin_missed))),
 ]
 for _n, _f in [(n, f) for n, _, _, f in TOOLS] + HIDDEN:
     if hasattr(_f, "tool"):
@@ -437,7 +443,8 @@ def rpc(msg):
                                    "before making it. Homeowners can have family contacts: notify_family emails them "
                                    "a message, payments over $100 wait for a family member's OK (say so kindly; it "
                                    "protects against scams), and family can send messages to the homeowner's screen. "
-                                   "Never pay anyone the service does not list."})
+                                   "Never pay anyone the service does not list. A weekday morning check-in (daily_checkin_consent) "
+                                   "only with the homeowner's clear agreement."})
     if method == "ping":
         return ok({})
     if method == "tools/list":

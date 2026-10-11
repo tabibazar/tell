@@ -21,6 +21,11 @@ int care_net_check_inbox(void);            /* network: new messages, -1 on failu
 care_list_t *care_reminders(void);
 care_list_t *care_messages(void);
 int care_next_message(void);               /* the oldest message not shown yet, or -1 */
+bool care_checkin_on(void);                /* the homeowner agreed to the morning check-in (from the reminders call) */
+bool care_net_checkin_missed(const char *asked);   /* network: tell family nobody answered */
+int care_net_sync_photos(void);            /* network: the photo frame's list, fetching new JPEGs into /mem; -1 failure */
+care_list_t *care_photos(void);            /* done = on flash */
+int care_photo_load(const char *id, unsigned char **jpeg);   /* a photo from /mem (malloc'd), its length or -1 */
 void care_net_print(long now);             /* the console's `care` */
 
 #endif /* CARE_NET_H */

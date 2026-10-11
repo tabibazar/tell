@@ -45,6 +45,57 @@ static bool play_sink(const uint8_t *d, int len, void *vctx)
 
 static int speak(const char *voice, fx_kind_t fxk, const char *text, float speed);
 
+/* Collecting speech instead of playing it: a recorded phrase for later. */
+typedef struct { int16_t *buf; int max, n; uint8_t odd; bool have_odd; } cap_ctx_t;
+
+static bool cap_sink(const uint8_t *d, int len, void *vctx)
+{
+    cap_ctx_t *c = vctx;
+    for (int i = 0; i < len; i++) {
+        if (!c->have_odd) { c->odd = d[i]; c->have_odd = true; continue; }
+        c->have_odd = false;
+        if (c->n == c->max) return false;
+        c->buf[c->n++] = (int16_t)(c->odd | d[i] << 8);
+    }
+    return true;
+}
+
+int tts_capture(const char *text, int16_t *out, int max, int *n)
+{
+    char key[CFG_VAL], voice[CFG_VAL], url[CFG_VAL + 100];
+    cfg_get(CFG_ELEVEN_KEY, key, sizeof key);
+    cfg_get(CFG_VOICE, voice, sizeof voice);
+    *n = 0;
+    if (!key[0]) return 0;
+    if (!voice[0]) return TTS_NO_VOICE;
+    snprintf(url, sizeof url, "https://api.elevenlabs.io/v1/text-to-speech/%s/stream?output_format=pcm_16000", voice);
+    char *body = elevenlabs_body(text, tts_speed());
+    if (!body) return -1;
+    https_hdr_t h[] = { { "xi-api-key", key } };
+    cap_ctx_t c = { .buf = out, .max = max };
+    int code = https_post(url, h, 1, "application/json", body, strlen(body), 20000, NULL, 0, cap_sink, &c);
+    free(body);
+    *n = c.n;
+    return code;
+}
+
+void tts_play_pcm(const int16_t *pcm, int n)
+{
+    static play_ctx_t p;
+    char fx[16], cl[4];
+    cfg_get(CFG_VOICE_FX, fx, sizeof fx);
+    cfg_get(CFG_CLARITY, cl, sizeof cl);
+    memset(&p, 0, sizeof p);
+    p.ok = true;
+    fx_init(&p.fx, fx_from_name(fx));
+    clarity_init(&p.clar, cl[0] != '0');
+    s_stop = false;
+    s_played = 0;
+    audio_play_begin();
+    play_sink((const uint8_t *)pcm, n * 2, &p);          /* little-endian, as ElevenLabs sends it */
+    audio_play_end();
+}
+
 int tts_speak(const char *text) { return tts_speak_slow(text, 0); }
 
 int tts_speak_slow(const char *text, float speed)

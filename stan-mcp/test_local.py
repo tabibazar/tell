@@ -34,7 +34,7 @@ r = post({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protoco
 check(r["statusCode"] == 200 and "Mcp-Session-Id" in r["headers"], "initialize")
 check(post({"jsonrpc": "2.0", "method": "notifications/initialized"})["statusCode"] == 202, "notification 202")
 tools = json.loads(post({"jsonrpc": "2.0", "id": 2, "method": "tools/list"})["body"])["result"]["tools"]
-check(len(tools) == 29 and all(t["inputSchema"]["type"] == "object" for t in tools), f"tools/list ({len(tools)})")
+check(len(tools) == 30 and all(t["inputSchema"]["type"] == "object" for t in tools), f"tools/list ({len(tools)})")
 check(call("fly", {}).get("error", {}).get("code") == -32602, "unknown tool")
 
 # Public tools, across all four communities and as speech might name them
@@ -174,6 +174,32 @@ check(any(x["id"] == "booking-guest suite-2026-11-26" for x in rem), f"booking r
 family.now = lambda: NOW
 check(f.handler({"rawPath": "/family", "requestContext": {"http": {"method": "DELETE"}}, "headers": {}}, None)["statusCode"] == 401,
       "other methods still need the token")
+
+# Photos from family, and the morning check-in
+import base64
+jpeg = b"\xff\xd8\xff\xe0" + b"\x00" * 2000 + b"\xff\xd9"
+r = page(fam_link, "POST", {"photo": "data:image/jpeg;base64," + base64.b64encode(jpeg).decode(), "caption": "At the lake"})
+check(r["statusCode"] == 200 and "Photo sent" in r["body"], "photo upload")
+check(page(fam_link, "POST", {"photo": base64.b64encode(b"\x89PNG" + b"0" * 100).decode()})["statusCode"] == 400, "not a JPEG refused")
+check(page(fam_link, "POST", {"photo": base64.b64encode(b"\xff\xd8\xff" + b"\xff\xc2" + b"0" * 10).decode()})["statusCode"] == 400,
+      "progressive JPEG refused")
+check("Send the photo" in page(fam_link)["body"], "photo form on the page")
+ph = json.loads(call("family_photos", {"homeowner_token": tok}))["photos"]
+check(len(ph) == 1 and ph[0]["caption"] == "At the lake" and ph[0]["from"] == "Reza", "photo listed")
+m = json.loads(call("family_media", {"homeowner_token": tok, "id": ph[0]["id"]}))
+check(m["kind"] == "jpeg" and base64.b64decode(m["b64"]) == jpeg, "photo fetched intact")
+inbox = json.loads(call("family_inbox", {"homeowner_token": tok}))["messages"]
+check(any(x.get("photo") == ph[0]["id"] and x["text"] == "At the lake" for x in inbox), "photo announced in the inbox")
+for i in range(12):
+    family.add_photo("sheppard center", "info@avriz.io", "Reza", jpeg, f"p{i}")
+check(len(json.loads(call("family_photos", {"homeowner_token": tok}))["photos"]) == 10, "the frame keeps ten")
+check(json.loads(call("reminders", {"homeowner_token": tok}))["checkin"] is False, "check-in off until asked")
+check("good morning" in call("daily_checkin_consent", {"homeowner_token": tok, "on": True}), "check-in on")
+check(json.loads(call("reminders", {"homeowner_token": tok}))["checkin"] is True, "board sees check-in on")
+mail.outbox.clear()
+check(call("checkin_missed", {"homeowner_token": tok, "asked": "11:00 and 11:20"}).startswith("Told"), "missed check-in tells family")
+check("hasn't heard from Reza" in mail.outbox[-1]["subject"], "check-in mail")
+check(call("checkin_missed", {"homeowner_token": tok}) == "Already sent today.", "once a day")
 
 print("stan-mcp local: all passed" if not fails else f"{fails} FAILED")
 sys.exit(1 if fails else 0)

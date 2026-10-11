@@ -19,7 +19,8 @@ typedef struct {
     long at;                 /* unix seconds UTC: when to say it (reminders) or when it was sent (messages) */
     char from[32];           /* messages: the family member's name; reminders: "" */
     char text[CARE_TEXT];
-    bool done;               /* reminders: already said; messages: already shown */
+    bool done;               /* reminders: already said; messages: already shown; photos: kept on flash */
+    char photo[16];          /* messages: the id of the photo it brings, "" for words alone */
 } care_item_t;
 
 typedef struct { care_item_t item[CARE_MAX]; int n; } care_list_t;
@@ -42,6 +43,18 @@ int care_parse_reminders(const char *text, care_list_t *l);
    APPENDS messages whose id is not already in `l` (dropping the oldest when
    full). Returns how many were new, -1 on junk. */
 int care_parse_messages(const char *text, care_list_t *l);
+
+/* The reminders tool's "checkin": 1 on, 0 off, -1 junk or missing. */
+int care_parse_checkin(const char *text);
+
+/* Parses the family_photos tool's text: {"photos":[{"id":"..","from":"Reza","caption":"..","at":1760300000}, ...]}
+   (newest last). Replaces `l`'s items (text = the caption), keeping done=true for ids already done.
+   Returns count, -1 on junk. */
+int care_parse_photos(const char *text, care_list_t *l);
+
+/* The family_media tool's text, {"id":"..","kind":"jpeg","b64":"..."}: the decoded bytes into out
+   (at most max). Returns the byte count, -1 on junk, an empty b64 or too big. */
+int care_media_bytes(const char *text, unsigned char *out, int max);
 
 /* Allowed to speak on its own now? Local minute of day within 09:00 <= m < 19:00. */
 bool care_may_speak(int minute);
