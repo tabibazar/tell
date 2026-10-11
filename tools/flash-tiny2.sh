@@ -3,6 +3,7 @@
 #
 #   tools/flash-tiny2.sh            app only, finds the CP2102 port
 #   tools/flash-tiny2.sh --full     bootloader + partition table + app
+#   tools/flash-tiny2.sh --voice    the voice app (tiny2-voice/) instead of the camera
 #
 # Use the board's CP2102 USB-C port (/dev/cu.usbserial-*), not the S3's own
 # USB port: the factory MicroPython's USB port cannot be reset into the
@@ -12,17 +13,19 @@ cd "$(dirname "$0")/.."
 
 FULL=
 ANY=
+APP=tiny2
 while : ; do
     case "$1" in
         --full) FULL=1; shift ;;
         --any)  ANY=--any; shift ;;
+        --voice) APP=tiny2-voice; shift ;;
         *) break ;;
     esac
 done
 
-BIN=tiny2/build/tiny2.bin
-[ -f "$BIN" ] || { echo "no $BIN; build first (cd tiny2 && idf.py build)"; exit 1; }
-for src in tiny2/main/*.c tiny2/sdkconfig.defaults; do
+BIN=$APP/build/$APP.bin
+[ -f "$BIN" ] || { echo "no $BIN; build first (cd $APP && idf.py build)"; exit 1; }
+for src in $APP/main/*.c $APP/sdkconfig.defaults; do
     if [ "$src" -nt "$BIN" ]; then
         echo "$BIN is older than $src; the last build did not finish. Build first."
         exit 1
@@ -38,8 +41,8 @@ PORT="${1:-$(ls /dev/cu.usbserial-* 2>/dev/null | grep -v usbserial-0001 | head 
 board_guard tiny2 "$PORT" "$ANY"
 
 if [ -n "$FULL" ]; then
-    ARGS="0x0 tiny2/build/bootloader/bootloader.bin
-          0x8000 tiny2/build/partition_table/partition-table.bin
+    ARGS="0x0 $APP/build/bootloader/bootloader.bin
+          0x8000 $APP/build/partition_table/partition-table.bin
           0x10000 $BIN"
 else
     ARGS="0x10000 $BIN"
