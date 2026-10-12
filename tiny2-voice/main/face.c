@@ -1,5 +1,7 @@
 #include "face.h"
 
+/* #define FACE_FIND    -- cycles the possible wirings, numbered on screen, to find one */
+
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
@@ -22,11 +24,10 @@ static const char *TAG = "face";
 
 #define W 240
 #define H 240
-#define PIN_SCL 39
-#define PIN_SDA 40
-#define PIN_CS  41
-#define PIN_DC  42
-#define PIN_RST 38
+/* The wiring, found by face_find(): which GPIO each of the display's pins is on. */
+typedef struct { int scl, sda, cs, dc, rst; } pins_t;
+static pins_t s_pins = { .scl = 38, .sda = 39, .cs = 41, .dc = 40, .rst = 42 };   /* found: order 6 */
+static esp_lcd_panel_io_handle_t s_io;
 #define STRIP   40                       /* rows sent at a time */
 #define RGB(r, g, b) ((uint16_t)((((r) & 0xF8) << 8) | (((g) & 0xFC) << 3) | ((b) >> 3)))
 
@@ -150,6 +151,13 @@ static void face_task(void *arg)
 {
     canvas_t c;
     canvas_init(&c, s_fb, W, H, 1);
+    /* A colour test at start: the whole screen red, green, then blue. */
+    static const uint16_t test[3] = { RGB(255, 0, 0), RGB(0, 255, 0), RGB(0, 0, 255) };
+    for (int k = 0; k < 3; k++) {
+        canvas_fill_rect(&c, 0, 0, W, H, test[k]);
+        push();
+        vTaskDelay(pdMS_TO_TICKS(700));
+    }
     face_state_t st = { 0 };
     for (;;) {
         int64_t now = esp_timer_get_time();
@@ -160,27 +168,80 @@ static void face_task(void *arg)
     }
 }
 
-esp_err_t face_init(float (*level_fn)(void))
+static esp_err_t panel_up(const pins_t *p)
 {
-    s_level = level_fn;
-    spi_bus_config_t bus = { .sclk_io_num = PIN_SCL, .mosi_io_num = PIN_SDA, .miso_io_num = -1,
+    spi_bus_config_t bus = { .sclk_io_num = p->scl, .mosi_io_num = p->sda, .miso_io_num = -1,
                              .quadwp_io_num = -1, .quadhd_io_num = -1, .max_transfer_sz = W * STRIP * 2 };
     esp_err_t e = spi_bus_initialize(SPI2_HOST, &bus, SPI_DMA_CH_AUTO);
     if (e != ESP_OK) return e;
-    esp_lcd_panel_io_handle_t io;
-    esp_lcd_panel_io_spi_config_t ioc = { .dc_gpio_num = PIN_DC, .cs_gpio_num = PIN_CS, .pclk_hz = 40 * 1000 * 1000,
+    esp_lcd_panel_io_spi_config_t ioc = { .dc_gpio_num = p->dc, .cs_gpio_num = p->cs, .pclk_hz = 20 * 1000 * 1000,
                                           .lcd_cmd_bits = 8, .lcd_param_bits = 8, .spi_mode = 0, .trans_queue_depth = 4 };
-    if ((e = esp_lcd_new_panel_io_spi((esp_lcd_spi_bus_handle_t)SPI2_HOST, &ioc, &io)) != ESP_OK) return e;
-    esp_lcd_panel_dev_config_t pc = { .reset_gpio_num = PIN_RST, .rgb_ele_order = LCD_RGB_ELEMENT_ORDER_BGR, .bits_per_pixel = 16 };
-    if ((e = esp_lcd_new_panel_gc9a01(io, &pc, &s_panel)) != ESP_OK) return e;
+    if ((e = esp_lcd_new_panel_io_spi((esp_lcd_spi_bus_handle_t)SPI2_HOST, &ioc, &s_io)) != ESP_OK) return e;
+    esp_lcd_panel_dev_config_t pc = { .reset_gpio_num = p->rst, .rgb_ele_order = LCD_RGB_ELEMENT_ORDER_BGR, .bits_per_pixel = 16 };
+    if ((e = esp_lcd_new_panel_gc9a01(s_io, &pc, &s_panel)) != ESP_OK) return e;
     esp_lcd_panel_reset(s_panel);
     esp_lcd_panel_init(s_panel);
     esp_lcd_panel_invert_color(s_panel, true);
     esp_lcd_panel_mirror(s_panel, true, false);
     esp_lcd_panel_disp_on_off(s_panel, true);
+    return ESP_OK;
+}
+
+#ifdef FACE_FIND
+static void panel_down(void)
+{
+    esp_lcd_panel_del(s_panel);
+    esp_lcd_panel_io_del(s_io);
+    spi_bus_free(SPI2_HOST);
+}
+#endif
+
+/* Finding the wiring: CS is on 41 and DC on 40 (the orange and white wires);
+   RST, SDA and SCL are on 38, 39 and 42 in some order. Each of the six orders
+   is tried in turn, round and round, filling the screen with a colour and its
+   number in big figures -- the one that shows is the wiring. */
+#ifdef FACE_FIND
+static void face_find(void)
+{
+    static const int order[6][3] = { {38, 39, 42}, {38, 42, 39}, {39, 38, 42}, {39, 42, 38}, {42, 38, 39}, {42, 39, 38} };
+    static const uint16_t col[6] = { RGB(220, 40, 40), RGB(40, 180, 60), RGB(40, 90, 230), RGB(230, 160, 20),
+                                     RGB(160, 50, 200), RGB(20, 180, 190) };
+    canvas_t c;
+    canvas_init(&c, s_fb, W, H, 1);
+    for (int round = 0;; round++) {
+        for (int k = 0; k < 6; k++) {
+            pins_t p = { .rst = order[k][0], .sda = order[k][1], .scl = order[k][2], .cs = 41, .dc = 40 };
+            ESP_LOGW(TAG, "trying %d: RST %d SDA %d SCL %d CS 41 DC 40", k + 1, p.rst, p.sda, p.scl);
+            if (panel_up(&p) != ESP_OK) continue;
+            char n[4];
+            snprintf(n, sizeof n, "%d", k + 1);
+            canvas_fill_rect(&c, 0, 0, W, H, col[k]);
+            aafont_draw(&c, &aafont_inter_reading, W / 2, 80, n, RGB(255, 255, 255), AAFONT_CENTRE);
+            push();
+            vTaskDelay(pdMS_TO_TICKS(3000));
+            panel_down();
+        }
+    }
+}
+
+#endif
+
+#ifdef FACE_FIND
+static void find_task(void *arg) { face_find(); }
+#endif
+
+esp_err_t face_init(float (*level_fn)(void))
+{
+    s_level = level_fn;
     s_fb = heap_caps_malloc(W * H * 2, MALLOC_CAP_SPIRAM);
     for (int i = 0; i < 2; i++) s_dma[i] = heap_caps_malloc(W * STRIP * 2, MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
     if (!s_fb || !s_dma[0] || !s_dma[1]) return ESP_ERR_NO_MEM;
+#ifdef FACE_FIND
+    xTaskCreatePinnedToCore(find_task, "find", 4096, NULL, 3, NULL, 0);
+    return ESP_OK;
+#endif
+    esp_err_t e = panel_up(&s_pins);
+    if (e != ESP_OK) return e;
     xTaskCreatePinnedToCore(face_task, "face", 4096, NULL, 3, NULL, 0);
     ESP_LOGI(TAG, "GC9A01 up");
     return ESP_OK;

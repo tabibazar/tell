@@ -6,7 +6,8 @@
  * and glance about, and a mouth that opens with the loudness of the speech as
  * it plays (level_fn), smiling when quiet. Under it, while it speaks, the
  * voice's waveform scrolls by; when quiet, the time sits there instead.
- *   SCL 39, SDA 40, CS 41, DC 42, RST 38; the backlight is tied to VCC.
+ *   SCL 38, SDA 39, CS 41, DC 40, RST 42 (as wired; found with FACE_FIND in face.c);
+ *   the backlight is tied to VCC.
  */
 #include "esp_err.h"
 
