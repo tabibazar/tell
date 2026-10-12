@@ -2,7 +2,7 @@
  * tiny2-voice: tiny2 (an ESP32-S3 DevKitC clone) speaks. Text in -- from the
  * USB console (`say ...`) or the network (POST http://tiny2.local/say with
  * `Authorization: Bearer <token>`) -- goes to ElevenLabs, and the speech
- * streams out of GPIO14 as PDM into the amplifier wired there. One thing is
+ * streams out of GPIO14 as PWM into the amplifier wired there. One thing is
  * said at a time; the rest wait in a short queue.
  */
 #include <stdio.h>
@@ -21,7 +21,7 @@
 #include "mdns.h"
 #include "nvs_flash.h"
 
-#include "pdm.h"
+#include "amp.h"
 #include "settings.h"
 #include "speak.h"
 
@@ -166,11 +166,11 @@ static void run(char *line)
         printf(enqueue("\x01tone") ? "ok: chime\n" : "no: busy\n");
     } else if (strncmp(line, "volume ", 7) == 0) {
         int v = atoi(line + 7);
-        pdm_volume(v);
+        amp_volume(v);
         char b[8];
-        snprintf(b, sizeof b, "%d", pdm_get_volume());
+        snprintf(b, sizeof b, "%d", amp_get_volume());
         set_put(SET_VOLUME, b);
-        printf("ok: volume %d\n", pdm_get_volume());
+        printf("ok: volume %d\n", amp_get_volume());
     } else if (strncmp(line, "speed ", 6) == 0) {
         const char *v = strcmp(line + 6, "slower") == 0 ? "0.85" : strcmp(line + 6, "faster") == 0 ? "1.15" : "1.0";
         set_put(SET_SPEED, v);
@@ -193,7 +193,7 @@ static void run(char *line)
         set_get(SET_SPEED, sp, sizeof sp);
         printf("wifi: %s\nelevenlabs key: %s\nvoice: %s\ntoken: %s\nvolume: %d\nspeed: %s\n",
                s_up ? s_ssid : "not joined", set_has(SET_ELEVEN_KEY) ? "set" : "not set",
-               set_has(SET_VOICE) ? "set" : "not set", set_has(SET_TOKEN) ? "set" : "not set", pdm_get_volume(), sp);
+               set_has(SET_VOICE) ? "set" : "not set", set_has(SET_TOKEN) ? "set" : "not set", amp_get_volume(), sp);
     } else if (line[0]) {
         printf("commands: say TEXT | tone | volume 0-100 | speed slower|normal|faster | voice ID | key K | "
                "token T | wifi add SSID PASS | status\n");
@@ -225,8 +225,8 @@ void app_main(void)
     set_load();
     char v[SET_VAL];
     set_get(SET_VOLUME, v, sizeof v);
-    pdm_volume(v[0] ? atoi(v) : 60);
-    if (pdm_init(AMP_GPIO) != ESP_OK) ESP_LOGE(TAG, "no audio");
+    amp_volume(v[0] ? atoi(v) : 60);
+    if (amp_init(AMP_GPIO) != ESP_OK) ESP_LOGE(TAG, "no audio");
 
     s_q = xQueueCreate(4, sizeof(char *));
     esp_netif_init();
