@@ -9,6 +9,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "driver/gpio.h"
 #include "driver/uart.h"
 #include "esp_event.h"
 #include "esp_http_server.h"
@@ -220,6 +221,10 @@ static void console_task(void *arg)
 
 void app_main(void)
 {
+    /* First of all: the amplifier's input low, not floating (a floating input hisses). */
+    gpio_reset_pin(AMP_GPIO);
+    gpio_set_direction(AMP_GPIO, GPIO_MODE_OUTPUT);
+    gpio_set_level(AMP_GPIO, 0);
     esp_err_t e = nvs_flash_init();
     if (e == ESP_ERR_NVS_NO_FREE_PAGES || e == ESP_ERR_NVS_NEW_VERSION_FOUND) { nvs_flash_erase(); nvs_flash_init(); }
     set_load();
