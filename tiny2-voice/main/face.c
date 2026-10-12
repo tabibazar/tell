@@ -46,7 +46,32 @@ static void ellipse(canvas_t *c, int cx, int cy, int rx, int ry, uint16_t col)
     }
 }
 
-typedef struct { float lx, ly, tx, ty; int64_t next_look, next_blink, blink_t0; float mouth; } face_state_t;
+#define BARS 26
+typedef struct {
+    float lx, ly, tx, ty;
+    int64_t next_look, next_blink, blink_t0;
+    float mouth;
+    float wave[BARS];                    /* the voice's loudness, newest last */
+    int64_t quiet_since;                 /* when it last spoke: the waveform lingers a moment */
+} face_state_t;
+
+/* The waveform under the mouth: rounded bars, newest at the right, older ones
+   fading, each mirrored about the centre line. */
+static void waveform(canvas_t *c, const face_state_t *st)
+{
+    const int bw = 4, gap = 2, x0 = (W - (BARS * (bw + gap) - gap)) / 2, cy = 214;
+    for (int i = 0; i < BARS; i++) {
+        float age = (float)(BARS - 1 - i) / (BARS - 1);                 /* 0 newest .. 1 oldest */
+        int half = 2 + (int)(st->wave[i] * 16);
+        float dim = 1 - age * 0.6f;
+        int r = (int)((90 + 160 * (1 - age)) * dim), g = (int)((160 + 70 * (1 - age)) * dim), b = (int)(255 * dim);
+        uint16_t col = RGB(r, g, b);
+        int x = x0 + i * (bw + gap);
+        canvas_fill_rect(c, x, cy - half + 1, bw, 2 * half - 2, col);
+        canvas_fill_rect(c, x + 1, cy - half, bw - 2, 1, col);
+        canvas_fill_rect(c, x + 1, cy + half - 1, bw - 2, 1, col);
+    }
+}
 
 static void draw(canvas_t *c, face_state_t *st, int64_t now)
 {
@@ -79,6 +104,9 @@ static void draw(canvas_t *c, face_state_t *st, int64_t now)
 
     /* The mouth: open with the voice, a smile when quiet. */
     float lv = s_level ? s_level() : -1.0f;
+    memmove(st->wave, st->wave + 1, sizeof st->wave[0] * (BARS - 1));
+    st->wave[BARS - 1] = lv < 0 ? 0 : lv;
+    if (lv >= 0) st->quiet_since = now;
     float want = lv < 0 ? 0 : lv;
     st->mouth += (want - st->mouth) * (want > st->mouth ? 0.7f : 0.35f);
     if (lv < 0 && st->mouth < 0.05f) {
@@ -94,6 +122,10 @@ static void draw(canvas_t *c, face_state_t *st, int64_t now)
         if (h > 12) ellipse(c, 120, 168 + h / 2, 18, h / 3, RGB(220, 90, 110));    /* the tongue */
     }
 
+    if (now - st->quiet_since < 1200000) {            /* speaking, and a moment after: the waveform */
+        waveform(c, st);
+        return;
+    }
     time_t t = time(NULL);
     if (t > 1767225600) {                             /* the clock is set */
         struct tm lt;
