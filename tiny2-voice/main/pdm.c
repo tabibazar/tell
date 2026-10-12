@@ -17,8 +17,11 @@ esp_err_t pdm_init(int gpio)
     esp_err_t e = i2s_new_channel(&chan, &s_tx, NULL);
     if (e != ESP_OK) return e;
     i2s_pdm_tx_config_t cfg = {
-        .clk_cfg = I2S_PDM_TX_CLK_DEFAULT_CONFIG(PDM_FS),
-        .slot_cfg = I2S_PDM_TX_SLOT_DEFAULT_CONFIG(I2S_DATA_BIT_WIDTH_16BIT, I2S_SLOT_MODE_MONO),
+        /* DAC line mode: a plain sigma-delta stream for an amplifier. The default
+           (codec) mode interleaves samples on both edges of a clock meant for a
+           PDM chip; without that clock it comes out as static. */
+        .clk_cfg = I2S_PDM_TX_CLK_DAC_DEFAULT_CONFIG(PDM_FS),
+        .slot_cfg = I2S_PDM_TX_SLOT_DAC_DEFAULT_CONFIG(I2S_DATA_BIT_WIDTH_16BIT, I2S_SLOT_MODE_MONO),
         .gpio_cfg = { .clk = I2S_GPIO_UNUSED, .dout = gpio },
     };
     e = i2s_channel_init_pdm_tx_mode(s_tx, &cfg);
