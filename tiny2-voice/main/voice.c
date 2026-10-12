@@ -15,6 +15,7 @@
 #include "esp_http_server.h"
 #include "esp_log.h"
 #include "esp_netif.h"
+#include "esp_sntp.h"
 #include "esp_wifi.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
@@ -23,6 +24,7 @@
 #include "nvs_flash.h"
 
 #include "amp.h"
+#include "face.h"
 #include "settings.h"
 #include "speak.h"
 
@@ -232,6 +234,7 @@ void app_main(void)
     set_get(SET_VOLUME, v, sizeof v);
     amp_volume(v[0] ? atoi(v) : 60);
     if (amp_init(AMP_GPIO) != ESP_OK) ESP_LOGE(TAG, "no audio");
+    if (face_init(speak_level) != ESP_OK) ESP_LOGE(TAG, "no face (the round display)");
 
     s_q = xQueueCreate(4, sizeof(char *));
     esp_netif_init();
@@ -244,6 +247,11 @@ void app_main(void)
     esp_wifi_set_mode(WIFI_MODE_STA);
     esp_wifi_start();
     http_start();
+    setenv("TZ", "EST5EDT,M3.2.0,M11.1.0", 1);
+    tzset();
+    esp_sntp_setoperatingmode(SNTP_OPMODE_POLL);
+    esp_sntp_setservername(0, "pool.ntp.org");
+    esp_sntp_init();
 
     xTaskCreatePinnedToCore(say_task, "say", 12288, NULL, 5, NULL, 1);     /* TLS */
     xTaskCreate(net_task, "net", 4096, NULL, 4, NULL);

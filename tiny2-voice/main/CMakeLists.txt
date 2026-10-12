@@ -1,9 +1,10 @@
 idf_component_register(
-    SRCS "voice.c" "amp.c" "speak.c" "settings.c"
+    SRCS "voice.c" "amp.c" "speak.c" "settings.c" "face.c"
          "../../stan-claw/main/https.c" "../../stan-claw/main/speechfmt.c"
-    INCLUDE_DIRS "." "../../stan-claw/main" "${CMAKE_CURRENT_BINARY_DIR}"
+         "../../main/aafont.c" "../../main/vector.c" "../../main/canvas.c" "../../main/textwrap.c"
+    INCLUDE_DIRS "." "../../main" "../../stan-claw/main" "${CMAKE_CURRENT_BINARY_DIR}"
     REQUIRES esp_wifi esp_netif esp_event esp_http_client esp_http_server esp-tls mbedtls nvs_flash json
-             esp_driver_ledc esp_driver_gptimer esp_driver_gpio esp_driver_uart esp_timer mdns)
+             esp_driver_ledc esp_driver_gptimer esp_driver_gpio esp_driver_uart esp_timer esp_lcd esp_driver_spi mdns)
 
 # The WiFi networks, the ElevenLabs key and voice, and the token the /say
 # endpoint wants, from gitignored secrets into a header in the BUILD

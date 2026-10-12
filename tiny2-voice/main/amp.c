@@ -108,3 +108,6 @@ void amp_end(void)
 
 void amp_volume(int level) { s_volume = level < 0 ? 0 : level > 100 ? 100 : level; }
 int amp_get_volume(void) { return s_volume; }
+
+uint32_t amp_position(void) { return s_tail; }
+bool amp_playing(void) { return s_on; }

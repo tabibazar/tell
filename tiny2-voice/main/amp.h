@@ -23,5 +23,7 @@ bool amp_write(const int16_t *mono, int samples);   /* blocks while the queue is
 void amp_end(void);                                  /* after the queue has played out */
 void amp_volume(int level);                          /* 0-100 */
 int amp_get_volume(void);
+uint32_t amp_position(void);                      /* samples played since amp_begin (ramp included) */
+bool amp_playing(void);
 
 #endif /* AMP_H */

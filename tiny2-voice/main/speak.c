@@ -14,6 +14,23 @@
 #include "settings.h"
 #include "speechfmt.h"
 
+static const int16_t *volatile s_pcm;
+static volatile int s_n;
+static volatile bool s_live;
+
+float speak_level(void)
+{
+    if (!s_live || !amp_playing()) return -1.0f;
+    int at = (int)amp_position() - AMP_FS * 3 / 100;       /* past the fade-in */
+    if (at < 0 || at >= s_n) return 0.0f;
+    int end = at + 320 < s_n ? at + 320 : s_n;               /* the 20 ms playing now */
+    double sq = 0;
+    for (int i = at; i < end; i++) sq += (double)s_pcm[i] * s_pcm[i];
+    float rms = (float)sqrt(sq / (end - at > 0 ? end - at : 1));
+    float v = rms / 14000.0f;
+    return v > 1.0f ? 1.0f : v;
+}
+
 /* The whole sentence is collected first and then played in one go: speech
    streamed straight to the pin crackled wherever the network paused. */
 #define MAX_S 30
@@ -69,9 +86,13 @@ int speak(const char *text)
     float g = rms > 0 ? 10000.0f / rms : 1.0f;
     if (g > 8.0f) g = 8.0f;
     for (int i = 0; i < c.n; i++) pcm[i] = (int16_t)(31000.0f * tanhf(pcm[i] * g / 31000.0f));
+    s_pcm = pcm;
+    s_n = c.n;
     amp_begin();
+    s_live = true;
     amp_write(pcm, c.n);
     amp_end();
+    s_live = false;
     return code;
 }
 
