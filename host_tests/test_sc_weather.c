@@ -31,6 +31,19 @@ int main(void)
     weather_url(43.77, -79.41, url, sizeof url);
     CHECK(strstr(url, "latitude=43.77&longitude=-79.41") && strstr(url, "forecast_days=2"));
 
+    /* Where the home is, from either service; refused on errors. */
+    double la, lo;
+    char city[40];
+    CHECK(weather_geo_parse("{\"ip\":\"x\",\"city\":\"Willowdale\",\"region\":\"Ontario\",\"loc\":\"43.7667,-79.3991\","
+                            "\"timezone\":\"America/Toronto\"}", &la, &lo, city, sizeof city));
+    CHECK(la > 43.76 && la < 43.77 && lo < -79.39 && lo > -79.40 && strcmp(city, "Willowdale") == 0);
+    CHECK(weather_geo_parse("{\"city\":\"Toronto\",\"latitude\":43.65,\"longitude\":-79.38}", &la, &lo, city, sizeof city));
+    CHECK(la > 43.6 && lo < -79.3 && strcmp(city, "Toronto") == 0);
+    CHECK(!weather_geo_parse("{\"error\":true,\"reason\":\"RateLimited\"}", &la, &lo, city, sizeof city) && city[0] == 0);
+    CHECK(!weather_geo_parse("{\"loc\":\"0,0\"}", &la, &lo, city, sizeof city));
+    CHECK(!weather_geo_parse("{\"bogon\":true}", &la, &lo, city, sizeof city));
+    CHECK(!weather_geo_parse("<html>", &la, &lo, city, sizeof city));
+
     printf(fails ? "%d FAILED\n" : "sc_weather: all passed\n", fails);
     return fails != 0;
 }

@@ -97,7 +97,21 @@ static volatile bool s_care_wake;      /* woke from deep sleep for a reminder */
 static RTC_DATA_ATTR time_t s_person_at;
 static uint16_t *s_card_img, *s_rest_img;   /* PSRAM 480x480: a photo card, the resting photo */
 static weather_t s_weather;                  /* for the resting screen, from Open-Meteo every 15 minutes */
-#define WEATHER_HOME "43.65,-79.38"          /* Toronto, unless `weather at LAT,LON` says otherwise */
+#define WEATHER_HOME "43.65,-79.38"          /* Toronto: until the internet connection says where home is */
+/* Where the home is, from its internet connection (ipinfo.io, else ipapi.co),
+   looked up at start and once a day; `weather at LAT,LON` overrides it. */
+static volatile bool s_geo_ok;
+static double s_geo_lat, s_geo_lon;
+static char s_geo_city[40];
+
+void weather_where(char *out, size_t n)
+{
+    char at[CFG_VAL];
+    cfg_get(CFG_WEATHER_AT, at, sizeof at);
+    if (at[0]) snprintf(out, n, "%s (set with weather at; weather at auto goes back to the internet's guess)", at);
+    else if (s_geo_ok) snprintf(out, n, "%s, %.2f,%.2f (from the internet connection)", s_geo_city[0] ? s_geo_city : "?", s_geo_lat, s_geo_lon);
+    else snprintf(out, n, "Toronto (the default, until the internet connection is asked)");
+}
 
 /* Rest (rest.h): untouched for 45 s the screen breathes, then sleeps. Anything
    holding s_busy counts as use; a touch, BOOT, a knock or an agent's call
@@ -653,7 +667,7 @@ static void care_task(void *arg)
 {
     const int64_t INBOX_US = 120LL * 1000000, REMIND_US = 3LL * 3600 * 1000000;
     int64_t inbox_at = -INBOX_US, remind_at = -REMIND_US, photos_at = -REMIND_US, phrase_at = -60LL * 1000000;
-    int64_t weather_at = -3600LL * 1000000;
+    int64_t weather_at = -3600LL * 1000000, geo_at = -48LL * 3600 * 1000000;
     char spoken[CARE_TEXT + 48], title[48];
     for (;;) {
         vTaskDelay(pdMS_TO_TICKS(3000));
@@ -673,13 +687,41 @@ static void care_task(void *arg)
             if (photos_due) photos_at = care_net_sync_photos() >= 0 ? now_us : now_us - REMIND_US + 600LL * 1000000;
             s_care_kick = false;
         }
+        /* Where home is: at start, then once a day (in 10 minutes after a failure). */
+        char at[CFG_VAL];
+        cfg_get(CFG_WEATHER_AT, at, sizeof at);
+        if (!at[0] && net_up() && !s_in_use && !s_convo
+            && now_us - geo_at >= (s_geo_ok ? 24LL * 3600 : 600LL) * 1000000) {
+            geo_at = now_us;
+            static const char *const geo[2] = { WEATHER_GEO_1, WEATHER_GEO_2 };
+            for (int i = 0; i < 2; i++) {
+                char *resp = NULL;
+                double la, lo;
+                char city[40];
+                bool ok = https_get(geo[i], NULL, 0, 10000, &resp, 4096) == 200 && resp
+                          && weather_geo_parse(resp, &la, &lo, city, sizeof city);
+                free(resp);
+                if (!ok) continue;
+                bool moved = !s_geo_ok || fabs(la - s_geo_lat) > 0.05 || fabs(lo - s_geo_lon) > 0.05;
+                s_geo_lat = la; s_geo_lon = lo;
+                snprintf(s_geo_city, sizeof s_geo_city, "%s", city);
+                s_geo_ok = true;
+                if (moved) weather_at = -3600LL * 1000000;        /* the weather for the new place, now */
+                ESP_LOGI(TAG, "home is %s (%.2f, %.2f)", city, la, lo);
+                break;
+            }
+        }
         /* The weather for the resting screen: every 15 minutes, again in 2 after a failure. */
         if (net_up() && !s_in_use && !s_convo && now_us - weather_at >= (s_weather.ok ? 900LL : 120LL) * 1000000) {
             weather_at = now_us;
-            char at[CFG_VAL], url[400];
-            cfg_get(CFG_WEATHER_AT, at, sizeof at);
+            char url[400];
             double lat = 0, lon = 0;
-            if (sscanf(at[0] ? at : WEATHER_HOME, "%lf,%lf", &lat, &lon) != 2) sscanf(WEATHER_HOME, "%lf,%lf", &lat, &lon);
+            if (at[0] && sscanf(at, "%lf,%lf", &lat, &lon) == 2) {
+            } else if (s_geo_ok) {
+                lat = s_geo_lat; lon = s_geo_lon;
+            } else {
+                sscanf(WEATHER_HOME, "%lf,%lf", &lat, &lon);
+            }
             weather_url(lat, lon, url, sizeof url);
             char *resp = NULL;
             weather_t w;

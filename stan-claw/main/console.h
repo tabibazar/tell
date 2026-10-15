@@ -1,6 +1,8 @@
 #ifndef CONSOLE_H
 #define CONSOLE_H
 
+#include <stddef.h>
+
 /*
  * stan-claw's settings over its USB serial (115200), a line at a time:
  *   wifi add NAME PASSWORD | wifi forget NAME | wifi list
@@ -10,7 +12,8 @@
  *   clarity on|off | text large|xl | contrast normal|high
  *   hoa token TOKEN | hoa forget        (the homeowner's stan-mcp token, for reminders and family messages)
  *   care | care check | care test reminder|message|checkin
- *   weather | weather at LAT,LON        (the resting screen's weather; Toronto by default)
+ *   weather | weather at LAT,LON | weather at auto   (the resting screen's place: by default where the
+ *                                      internet connection says home is, Toronto until then)
  * Quote a word with spaces: wifi add "Office WiFi" secret.
  */
 void console_start(void);
@@ -22,5 +25,8 @@ void settings_reload(void);
    pretend reminder (kind 0) or family message (kind 1) up now, for a demo. */
 void care_kick(void);
 void care_demo(int kind);
+
+/* stanclaw.c: where the resting screen's weather is for, and how it was found. */
+void weather_where(char *out, size_t n);
 
 #endif /* CONSOLE_H */

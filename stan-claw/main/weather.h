@@ -26,7 +26,14 @@ typedef struct {
 /* "https://api.open-meteo.com/v1/forecast?latitude=..&longitude=..&..." into out. */
 void weather_url(double lat, double lon, char *out, size_t n);
 bool weather_parse(const char *json, weather_t *w);
-const char *weather_words(int code);   /* "Partly cloudy", "Light rain" ... */
+const char *weather_words(int code);
+
+/* Where the home is, from its internet connection: ipinfo.io's reply
+   ("loc": "43.77,-79.40") or ipapi.co's ("latitude", "longitude"), with the
+   city's name. False for an error reply (a rate limit) or junk. */
+#define WEATHER_GEO_1 "https://ipinfo.io/json"
+#define WEATHER_GEO_2 "https://ipapi.co/json/"
+bool weather_geo_parse(const char *json, double *lat, double *lon, char *city, size_t n);   /* "Partly cloudy", "Light rain" ... */
 wx_icon_t weather_icon(int code);
 
 #endif /* WEATHER_H */

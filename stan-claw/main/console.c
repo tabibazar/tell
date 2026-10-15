@@ -157,13 +157,14 @@ static void run(const char *line)
     }
     if (strcmp(w[0], "weather") == 0) {
         if (n >= 3 && strcmp(w[1], "at") == 0) {
-            cfg_set(CFG_WEATHER_AT, w[2]);
-            printf("ok: weather for %s (shown within 2 minutes)\n", w[2]);
+            bool autom = strcmp(w[2], "auto") == 0;
+            cfg_set(CFG_WEATHER_AT, autom ? "" : w[2]);
+            printf("ok: weather for %s (shown within 2 minutes)\n", autom ? "where the internet connection says" : w[2]);
             return;
         }
-        char at[CFG_VAL];
-        cfg_get(CFG_WEATHER_AT, at, sizeof at);
-        printf("weather for: %s\n", at[0] ? at : "Toronto (default); change with: weather at LAT,LON");
+        char where[200];
+        weather_where(where, sizeof where);
+        printf("weather for: %s\n", where);
         return;
     }
     if (strcmp(w[0], "care") == 0) {

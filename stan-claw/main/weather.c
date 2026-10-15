@@ -85,3 +85,20 @@ wx_icon_t weather_icon(int c)
     if (c >= 95) return WX_THUNDER;
     return WX_CLOUD;
 }
+
+bool weather_geo_parse(const char *json, double *lat, double *lon, char *city, size_t n)
+{
+    cJSON *j = cJSON_Parse(json);
+    if (!j) return false;
+    bool ok = false;
+    const cJSON *loc = cJSON_GetObjectItemCaseSensitive(j, "loc");
+    const cJSON *la = cJSON_GetObjectItemCaseSensitive(j, "latitude");
+    const cJSON *lo = cJSON_GetObjectItemCaseSensitive(j, "longitude");
+    if (cJSON_IsString(loc) && sscanf(loc->valuestring, "%lf,%lf", lat, lon) == 2) ok = true;
+    else if (cJSON_IsNumber(la) && cJSON_IsNumber(lo)) { *lat = la->valuedouble; *lon = lo->valuedouble; ok = true; }
+    if (ok && (*lat < -90 || *lat > 90 || *lon < -180 || *lon > 180 || (*lat == 0 && *lon == 0))) ok = false;
+    const cJSON *c = cJSON_GetObjectItemCaseSensitive(j, "city");
+    if (n) snprintf(city, n, "%s", ok && cJSON_IsString(c) ? c->valuestring : "");
+    cJSON_Delete(j);
+    return ok;
+}
