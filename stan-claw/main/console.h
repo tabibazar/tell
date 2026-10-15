@@ -5,7 +5,7 @@
 
 /*
  * stan-claw's settings over its USB serial (115200), a line at a time:
- *   wifi add NAME PASSWORD | wifi forget NAME | wifi list
+ *   wifi add NAME PASSWORD | wifi forget NAME | wifi list | wifi setup (from a phone, by the screen's QR code)
  *   key claude|deepgram|elevenlabs KEY      (never echoed back)
  *   voice NAME (from the wheel) or ID | model ID | mcp url URL | mcp token TOKEN | serve token TOKEN
  *   status
@@ -25,6 +25,10 @@ void settings_reload(void);
    pretend reminder (kind 0) or family message (kind 1) up now, for a demo. */
 void care_kick(void);
 void care_demo(int kind);
+
+/* stanclaw.c: start WiFi setup from a phone (the QR code on the screen). */
+void wifi_setup(void);
+void wifi_setup_stop(void);
 
 /* stanclaw.c: where the resting screen's weather is for, and how it was found. */
 void weather_where(char *out, size_t n);

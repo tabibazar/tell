@@ -84,6 +84,9 @@ static esp_err_t delete_mcp(httpd_req_t *r)
     return httpd_resp_send(r, NULL, 0);
 }
 
+static httpd_handle_t s_srv;
+httpd_handle_t mcpd_server(void) { return s_srv; }
+
 void mcpd_start(const mcp_tools_t *tools)
 {
     s_tools = tools;
@@ -92,19 +95,20 @@ void mcpd_start(const mcp_tools_t *tools)
     httpd_config_t cfg = HTTPD_DEFAULT_CONFIG();
     cfg.stack_size = 16384;      /* TLS (ElevenLabs, Deepgram) runs on this task in speak/listen/ask */
     cfg.recv_wait_timeout = 10;
+    cfg.uri_match_fn = httpd_uri_match_wildcard;   /* portal.c's catch-all, for phones checking for a sign-in page */
+    cfg.max_uri_handlers = 16;
     cfg.send_wait_timeout = 10;
     /* esp_http_server runs every URI handler on its single server task.
        mcp_rpc's call_tool keeps a static output buffer and relies on that
        (Task 4 ruling): keep this one task -- no async handlers or
        httpd_queue_work hand-offs that would run a handler elsewhere. */
-    httpd_handle_t srv = NULL;
-    if (httpd_start(&srv, &cfg) != ESP_OK) { ESP_LOGE(TAG, "HTTP server failed"); return; }
+    if (httpd_start(&s_srv, &cfg) != ESP_OK) { ESP_LOGE(TAG, "HTTP server failed"); return; }
     httpd_uri_t post = { .uri = "/mcp", .method = HTTP_POST, .handler = post_mcp };
     httpd_uri_t get = { .uri = "/mcp", .method = HTTP_GET, .handler = get_mcp };
     httpd_uri_t del = { .uri = "/mcp", .method = HTTP_DELETE, .handler = delete_mcp };
-    httpd_register_uri_handler(srv, &post);
-    httpd_register_uri_handler(srv, &get);
-    httpd_register_uri_handler(srv, &del);
+    httpd_register_uri_handler(s_srv, &post);
+    httpd_register_uri_handler(s_srv, &get);
+    httpd_register_uri_handler(s_srv, &del);
 
     if (mdns_init() == ESP_OK) {
         mdns_hostname_set("stan-claw");

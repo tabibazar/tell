@@ -175,6 +175,37 @@ static void care(canvas_t *c, const uint8_t *lv)
     ui_day_words(6, 0, 10, 15 * 60, part, sizeof part, date, sizeof date);
     CHECK(part[0] == 0 && date[0] == 0);
 
+    /* WiFi set up from a phone: the QR page, joining, joined, a wrong password. */
+    {
+        static uint8_t qr[29 * 29];
+        for (int i = 0; i < 29 * 29; i++) qr[i] = (uint8_t)((i * 7 + i / 29 * 3) % 5 < 2);
+        for (int k = 0; k < 3; k++)                                       /* the three finder squares */
+            for (int y = 0; y < 7; y++)
+                for (int x = 0; x < 7; x++) {
+                    int ox = k == 1 ? 22 : 0, oy = k == 2 ? 22 : 0;
+                    qr[(oy + y) * 29 + ox + x] = (uint8_t)(x == 0 || y == 0 || x == 6 || y == 6 || (x > 1 && x < 5 && y > 1 && y < 5));
+                }
+        v = (ui_view_t){ .mode = UI_SETUP, .now = 21 * 60 + 7, .qr = qr, .qr_n = 29, .setup_net = "stan-claw-setup",
+                         .setup_pass = "48213907" };
+        ui_draw(c, &v); bmp("setup-qr");
+        CHECK(fb[100 * 480 + 30] == RGB(0xFF, 0xFF, 0xFF) && count(RGB(0, 0, 0), 100, 290) > 2000);   /* the code */
+        CHECK(ui_hit(&v, 40, 30, &val) == UI_HIT_BACK);
+        v.setup_state = 1; v.text = "Tabriz";
+        ui_draw(c, &v); bmp("setup-joining");
+        CHECK(ui_hit(&v, 240, 430, &val) == UI_HIT_NONE);
+        v.setup_state = 2;
+        ui_draw(c, &v); bmp("setup-joined");
+        CHECK(ui_hit(&v, 240, 430, &val) == UI_HIT_CLOSE);
+        v.setup_state = 3;
+        ui_draw(c, &v); bmp("setup-failed");
+        CHECK(count(RGB(0xD9, 0x3A, 0x3A), 330, 370) > 50);
+        v = (ui_view_t){ .mode = UI_HOME, .now = 9 * 60, .ssid = "Tabriz" };
+        CHECK(ui_hit(&v, 240, 24, &val) == UI_HIT_WIFI && ui_hit(&v, 240, 272, &val) == UI_HIT_TALK);
+        v = (ui_view_t){ .mode = UI_SETTINGS, .voice_name = "Matilda" };
+        ui_draw(c, &v); bmp("settings-wifi");
+        CHECK(ui_hit(&v, 410, 33, &val) == UI_HIT_WIFI && ui_hit(&v, 40, 30, &val) == UI_HIT_BACK);
+    }
+
     /* At rest with the weather: one render per kind of sky, day and night. */
     {
         static const struct { const char *name; int code; bool day; float t; } sky[] = {

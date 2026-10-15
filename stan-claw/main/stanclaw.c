@@ -44,6 +44,9 @@
 #include "agent.h"
 #include "care_net.h"
 #include "phrases.h"
+#include "portal.h"
+#include "qrcode.h"
+#include "setup_web.h"
 #include "weather.h"
 #include "tz.h"
 #include "https.h"
@@ -83,6 +86,7 @@ static int16_t *s_pcm;                 /* PSRAM, REC_MAX_S (or 30 s for listen) 
 
 static void set_view(ui_mode_t mode, const char *heard, const char *text, const char *title, const char *note);
 static volatile bool s_stop, s_convo;
+static volatile bool s_setup_ask;             /* the console asked for WiFi setup: the main loop starts it */
 
 /* Conversation buttons and the Yes/No card: the touch handler sets s_action
    and cuts the recording short; conversation() acts on it. */
@@ -97,6 +101,15 @@ static volatile bool s_care_wake;      /* woke from deep sleep for a reminder */
    conversation), wall clock; kept through deep sleep for the morning check-in. */
 static RTC_DATA_ATTR time_t s_person_at;
 static uint16_t *s_card_img, *s_rest_img;   /* PSRAM 480x480: a photo card, the resting photo */
+#define SETUP_NET "stan-claw-setup"
+static struct {
+    volatile bool on;
+    volatile int state;            /* as ui_view_t's setup_state */
+    char pass[9], trying[33];
+    uint8_t qr[64 * 64];
+    int qr_n;
+    int64_t since, tried_at, joined_at;
+} s_setup;
 static weather_t s_weather;                  /* for the resting screen, from Open-Meteo every 15 minutes */
 #define WEATHER_HOME "43.65,-79.38"          /* Toronto: until the internet connection says where home is */
 /* Where the home is, from its internet connection (ipinfo.io, else ipapi.co),
@@ -300,6 +313,12 @@ static void sync_view(void)
     s_view.clarity = s_clarity;
     s_view.convo = s_convo;
     s_view.confirm = s_confirm;
+    s_view.qr = s_setup.qr;
+    s_view.qr_n = s_setup.qr_n;
+    s_view.setup_net = SETUP_NET;
+    s_view.setup_pass = s_setup.pass;
+    s_view.setup_state = s_setup.state;
+    if (s_view.mode == UI_SETUP) s_view.text = s_setup.trying;
     xSemaphoreGive(s_ui_lock);
 }
 
@@ -546,6 +565,71 @@ static void convo_task(void *arg)
         xSemaphoreGive(s_busy);
     }
 }
+
+/* ---- WiFi set up from a phone ---- */
+
+/* panel1 runs a network of its own (a fresh 8-digit password each time,
+   shown and in the QR code), a phone joins it and opens the setup page, and
+   the network chosen there is saved and joined. From Settings, a tap on the
+   network's name on home, `wifi setup`, or by itself when no known network
+   is in sight a minute after start. It closes when joined, on Back, or after
+   10 minutes. */
+
+static void qr_copy(esp_qrcode_handle_t q)
+{
+    int n = esp_qrcode_get_size(q);
+    if (n > 64) n = 0;
+    for (int y = 0; y < n; y++)
+        for (int x = 0; x < n; x++) s_setup.qr[y * n + x] = esp_qrcode_get_module(q, x, y);
+    s_setup.qr_n = n;
+}
+
+static void setup_saved(const char *ssid, const char *pass)    /* on the HTTP task */
+{
+    cfg_net_add(ssid, pass);
+    snprintf(s_setup.trying, sizeof s_setup.trying, "%s", ssid);
+    s_setup.tried_at = esp_timer_get_time();
+    s_setup.state = 1;
+    s_dirty = true;
+    net_prefer(ssid);
+    net_rejoin();
+    ESP_LOGI(TAG, "setup: joining %s", ssid);
+}
+
+static void setup_begin(void)
+{
+    if (s_setup.on) return;
+    for (int i = 0; i < 8; i++) s_setup.pass[i] = (char)('0' + esp_random() % 10);
+    s_setup.pass[8] = 0;
+    char text[120];
+    setup_qr_text(SETUP_NET, s_setup.pass, text, sizeof text);
+    esp_qrcode_config_t qc = ESP_QRCODE_CONFIG_DEFAULT();
+    qc.display_func = qr_copy;
+    qc.max_qrcode_version = 10;
+    s_setup.qr_n = 0;
+    esp_qrcode_generate(&qc, text);
+    net_setup_start(SETUP_NET, s_setup.pass);
+    portal_start(setup_saved);
+    s_setup.state = 0;
+    s_setup.trying[0] = 0;
+    s_setup.since = esp_timer_get_time();
+    s_setup.on = true;
+    activity();
+    set_view(UI_SETUP, NULL, NULL, NULL, NULL);
+}
+
+static void setup_end(void)
+{
+    if (!s_setup.on) return;
+    s_setup.on = false;
+    portal_stop();
+    net_setup_stop();
+    set_view(UI_HOME, NULL, NULL, NULL, NULL);
+}
+
+void wifi_setup(void) { s_setup_ask = true; }
+static volatile bool s_setup_quit;
+void wifi_setup_stop(void) { s_setup_quit = true; }
 
 /* ---- care: reminders and family messages ---- */
 
@@ -1043,6 +1127,7 @@ void app_main(void)
             } else if (m == UI_HOME) {
                 if (phit == UI_HIT_TALK) xSemaphoreGive(s_go);
                 else if (phit == UI_HIT_GEAR) set_view(UI_SETTINGS, NULL, NULL, NULL, NULL);
+                else if (phit == UI_HIT_WIFI) setup_begin();
             } else if (s_convo) {
                 /* The conversation's buttons; elsewhere a tap does nothing, so no one ends it by accident. */
                 if (phit == UI_HIT_DONE) {
@@ -1057,6 +1142,8 @@ void app_main(void)
             } else if (m == UI_MESSAGE || m == UI_REMINDER) {
                 tts_abort();                                        /* OK, or anywhere: put it away */
                 set_view(UI_HOME, NULL, NULL, NULL, NULL);
+            } else if (m == UI_SETUP) {
+                if (phit == UI_HIT_BACK || phit == UI_HIT_CLOSE) setup_end();
             } else if (m != UI_SETTINGS && m != UI_EASY && m != UI_VOICES && m != UI_LISTENING && m != UI_THINKING && m != UI_SPEAKING) {
                 set_view(UI_HOME, NULL, NULL, NULL, NULL);          /* a tap clears answers and agent screens */
             }
@@ -1097,6 +1184,8 @@ void app_main(void)
                     s_model = pval;
                     cfg_set(CFG_MODEL, MODELS[pval]);
                     s_dirty = true;
+                } else if (!moved && phit == UI_HIT_WIFI) {
+                    setup_begin();
                 } else if (!moved && phit == UI_HIT_EASY) {
                     set_view(UI_EASY, NULL, NULL, NULL, NULL);
                 }
@@ -1214,6 +1303,32 @@ void app_main(void)
         }
         /* A fresh time from the network goes into the clock chip. */
         if (sntp_get_sync_status() == SNTP_SYNC_STATUS_COMPLETED) clockchip_set(time(NULL));
+
+        /* WiFi setup: how it is going, and when to offer it by itself. */
+        if (s_setup_ask) { s_setup_ask = false; setup_begin(); }
+        if (s_setup_quit) { s_setup_quit = false; setup_end(); }
+        if (s_setup.on) {
+            int64_t t = esp_timer_get_time();
+            if (s_setup.state == 1 && net_up() && strcmp(net_ssid(), s_setup.trying) == 0) {
+                s_setup.state = 2;
+                s_setup.joined_at = t;
+                s_dirty = true;
+                ESP_LOGI(TAG, "setup: on %s", s_setup.trying);
+            } else if (s_setup.state == 1 && t - s_setup.tried_at > 40LL * 1000000) {
+                s_setup.state = 3;                       /* most likely the password */
+                s_dirty = true;
+            }
+            if ((s_setup.state == 2 && t - s_setup.joined_at > 20LL * 1000000)
+                || (s_setup.state != 1 && t - s_setup.since > 600LL * 1000000)) setup_end();
+            else activity();                             /* the screen stays up while it is being set up */
+        } else {
+            static bool offered;
+            if (!offered && !net_up() && net_none_known() && esp_timer_get_time() > 60LL * 1000000
+                && (s_view.mode == UI_HOME || s_light != 100) && !s_in_use) {
+                offered = true;                          /* once a start: Back means not now */
+                setup_begin();
+            }
+        }
 
         /* How awake to be, and the light for it. */
         int64_t now_us = esp_timer_get_time();

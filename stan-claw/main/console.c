@@ -52,6 +52,16 @@ static void run(const char *line)
             if (strcmp(w[2], net_ssid()) == 0) net_rejoin();
             return;
         }
+        if (strcmp(w[1], "setup") == 0 && n >= 3 && strcmp(w[2], "stop") == 0) {
+            wifi_setup_stop();
+            printf("ok: WiFi setup closed\n");
+            return;
+        }
+        if (strcmp(w[1], "setup") == 0) {
+            wifi_setup();
+            printf("ok: WiFi setup on the screen: scan its code with a phone\n");
+            return;
+        }
         if (strcmp(w[1], "list") == 0) {
             static cfg_net_t nets[CFG_NETS];
             int k = cfg_nets(nets);

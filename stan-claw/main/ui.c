@@ -301,9 +301,18 @@ static void chevron(canvas_t *c, int x, int y, uint16_t col)
     }
 }
 
+/* Settings' WiFi button, at the right of its top bar. */
+#define WIFI_BX 360
+#define WIFI_BY 14
+#define WIFI_BW 100
+#define WIFI_BH 38
+
 static void settings(canvas_t *c, const ui_view_t *v)
 {
     topbar(c, "Settings");
+    plate(c, WIFI_BX, WIFI_BY, WIFI_BW, WIFI_BH, 8, C_BTN);
+    wifi_mark(c, WIFI_BX + 24, WIFI_BY + 27, C_TEXT);
+    aafont_draw(c, &aafont_rooms_title, WIFI_BX + 42, WIFI_BY + (WIFI_BH - aafont_rooms_title.cap) / 2, "WiFi", C_TEXT, AAFONT_LEFT);
     /* Voice: name, a hint, a chevron to the list. */
     label(c, ROW_VOICE_Y + 16, "VOICE");
     aafont_draw(c, &aafont_inter_sub, 40, ROW_VOICE_Y + 40, v->voice_name && v->voice_name[0] ? v->voice_name : "not chosen",
@@ -503,6 +512,12 @@ int ui_slider_value(int x)
 ui_hit_t ui_hit(const ui_view_t *v, int x, int y, int *value)
 {
     *value = 0;
+    if (v->mode == UI_HOME && y < 48 && x > 100 && x < 380) return UI_HIT_WIFI;   /* the network's name: set up WiFi */
+    if (v->mode == UI_SETTINGS && in_rect(x, y, WIFI_BX, WIFI_BY, WIFI_BW, WIFI_BH, 8)) return UI_HIT_WIFI;
+    if (v->mode == UI_SETUP) {
+        if (y < TOP_H && x < 160) return UI_HIT_BACK;
+        return v->setup_state == 2 && in_rect(x, y, OK_X, OK_Y, OK_W, OK_H, 12) ? UI_HIT_CLOSE : UI_HIT_NONE;
+    }
     if (v->mode == UI_HOME) {
         int dx = x - GEAR_X, dy = y - GEAR_Y;
         if (dx * dx + dy * dy <= 36 * 36) return UI_HIT_GEAR;
@@ -840,6 +855,66 @@ void ui_day_words(int wday, int month, int mday, int minute, char *part, size_t 
 }
 
 
+/* ---- WiFi set up from a phone ---- */
+
+/* A numbered step: the number in a blue disc, the words wrapped beside it. */
+static int step(canvas_t *c, int n, int x, int y, int w, const char *words)
+{
+    char d[2] = { (char)('0' + n), 0 };
+    canvas_disc(c, x + 14, y + 10, 14, C_BLUE);
+    aafont_draw(c, &aafont_rooms_title, x + 14, y + 10 - aafont_rooms_title.cap / 2, d, C_TEXT, AAFONT_CENTRE);
+    return para(c, &aafont_rooms_title, words, x + 38, y, w - 38, 23, 4, C_TEXT) + 10;
+}
+
+static void setup_screen(canvas_t *c, const ui_view_t *v)
+{
+    topbar(c, "Set up WiFi");
+    const char *net = v->text && v->text[0] ? v->text : "your WiFi";
+    char t[96];
+    if (v->setup_state == 1 || v->setup_state == 2) {      /* joining, or joined */
+        bool ok = v->setup_state == 2;
+        int cx = W / 2, cy = 170;
+        canvas_disc(c, cx, cy, 52, ok ? C_GREEN : C_BLUE);
+        if (ok) check(c, cx - 12, cy - 4, C_TEXT);
+        else wifi_mark(c, cx, cy + 14, C_TEXT);
+        snprintf(t, sizeof t, ok ? "Connected to %s" : "Connecting to %s...", net);
+        para(c, &aafont_rooms_head, t, 24, 252, W - 48, 38, 2, C_TEXT);
+        aafont_draw(c, &aafont_inter_sub, W / 2, 340, ok ? "You can put the phone away." : "This takes about half a minute.",
+                    C_DIM, AAFONT_CENTRE);
+        if (ok) big_button(c, OK_X, OK_Y, OK_W, OK_H, "Done", NULL, C_BLUE);
+        return;
+    }
+    /* The QR code, white with its quiet margin, at the left. */
+    const int qx = 24, qy = 84, qs = 212;
+    canvas_fill_rect(c, qx, qy, qs, qs, RGB(0xFF, 0xFF, 0xFF));
+    if (v->qr && v->qr_n > 0) {
+        int m = (qs - 16) / v->qr_n, off = (qs - m * v->qr_n) / 2;
+        for (int yy = 0; yy < v->qr_n; yy++)
+            for (int xx = 0; xx < v->qr_n; xx++)
+                if (v->qr[yy * v->qr_n + xx]) canvas_fill_rect(c, qx + off + xx * m, qy + off + yy * m, m, m, RGB(0, 0, 0));
+    }
+    /* The steps, at the right. */
+    int y = 90;
+    y = step(c, 1, 252, y, 204, "Point your phone's camera at the code");
+    snprintf(t, sizeof t, "Tap to join %s", v->setup_net ? v->setup_net : "the setup network");
+    y = step(c, 2, 252, y, 204, t);
+    step(c, 3, 252, y, 204, "On the page that opens, pick your WiFi and type its password");
+    /* Without a camera, the same in words; or why the last try failed. */
+    canvas_fill_rect(c, 24, 318, W - 48, 1, C_LINE);
+    if (v->setup_state == 3) {
+        snprintf(t, sizeof t, "Couldn't join %s.", net);
+        aafont_draw(c, &aafont_rooms_head, W / 2, 338, t, C_RED, AAFONT_CENTRE);
+        aafont_draw(c, &aafont_inter_sub, W / 2, 384, "Check the password, and send it again", C_TEXT, AAFONT_CENTRE);
+        aafont_draw(c, &aafont_inter_sub, W / 2, 416, "from the page on the phone.", C_TEXT, AAFONT_CENTRE);
+        return;
+    }
+    aafont_draw(c, &aafont_rooms_small, W / 2, 334, "No camera? In the phone's WiFi settings join", C_DIM, AAFONT_CENTRE);
+    aafont_draw(c, &aafont_rooms_head, W / 2, 360, v->setup_net ? v->setup_net : "", C_TEXT, AAFONT_CENTRE);
+    snprintf(t, sizeof t, "password %s", v->setup_pass ? v->setup_pass : "");
+    aafont_draw(c, &aafont_rooms_head, W / 2, 402, t, C_TEXT, AAFONT_CENTRE);
+    aafont_draw(c, &aafont_rooms_small, W / 2, 446, "then open 192.168.4.1", C_DIM, AAFONT_CENTRE);
+}
+
 /* ---- the weather, at rest ---- */
 
 #define C_SUN   RGB(0xF5, 0xC5, 0x42)
@@ -1110,6 +1185,9 @@ void ui_draw(canvas_t *c, const ui_view_t *v)
         break;
     case UI_EASY:
         easy(c, v);
+        break;
+    case UI_SETUP:
+        setup_screen(c, v);
         break;
     case UI_LISTENING:
         if (v->confirm && v->confirm[0]) confirm_card(c, v);

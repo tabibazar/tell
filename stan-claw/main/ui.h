@@ -26,7 +26,7 @@
 #include "weather.h"
 
 typedef enum { UI_HOME, UI_LISTENING, UI_THINKING, UI_SPEAKING, UI_ANSWER, UI_ERROR, UI_AGENT_TEXT, UI_AGENT_IMAGE,
-               UI_RESTING, UI_SETTINGS, UI_VOICES, UI_EASY, UI_MESSAGE, UI_REMINDER } ui_mode_t;
+               UI_RESTING, UI_SETTINGS, UI_VOICES, UI_EASY, UI_MESSAGE, UI_REMINDER, UI_SETUP } ui_mode_t;
 
 typedef struct {
     ui_mode_t mode;
@@ -62,6 +62,12 @@ typedef struct {
     const char *photo_from;  /* UI_RESTING / UI_MESSAGE: who sent v->image, e.g. "Reza" */
     const weather_t *weather;  /* UI_RESTING: now, today and tomorrow (NULL or !ok: none yet) */
     const char *place;       /* UI_RESTING: the neighbourhood the weather is for, "Willowdale" (NULL: none) */
+    /* UI_SETUP: WiFi set up from a phone. The QR code joins the phone to the
+       board's own setup network; v->text is the network being tried. */
+    const uint8_t *qr;       /* qr_n x qr_n modules, 1 = dark */
+    int qr_n;
+    const char *setup_net, *setup_pass;   /* the setup network and its password, also shown in words */
+    int setup_state;         /* 0 waiting for the phone, 1 joining v->text, 2 joined, 3 that failed */
 } ui_view_t;
 
 /* What a touch at (x, y) lands on, on the page v shows; *value carries the
@@ -71,7 +77,7 @@ typedef struct {
 typedef enum { UI_HIT_NONE, UI_HIT_TALK, UI_HIT_GEAR, UI_HIT_BACK, UI_HIT_VOICE, UI_HIT_VOLUME,
                UI_HIT_SPEED, UI_HIT_MODEL, UI_HIT_CARD, UI_HIT_USE,
                UI_HIT_AGAIN, UI_HIT_SLOWER, UI_HIT_DONE, UI_HIT_YES, UI_HIT_NO, UI_HIT_EASY, UI_HIT_TEXTSIZE,
-               UI_HIT_CONTRAST, UI_HIT_CLARITY, UI_HIT_CLOSE } ui_hit_t;
+               UI_HIT_CONTRAST, UI_HIT_CLARITY, UI_HIT_CLOSE, UI_HIT_WIFI } ui_hit_t;
 ui_hit_t ui_hit(const ui_view_t *v, int x, int y, int *value);
 
 

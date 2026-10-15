@@ -113,4 +113,5 @@ host_tests/test_sc_voices
 host_tests/test_sc_spin
 host_tests/test_sc_care
 host_tests/test_sc_weather
+host_tests/test_sc_setup
 stan-mcp/__pycache__/
