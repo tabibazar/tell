@@ -1271,6 +1271,9 @@ void app_main(void)
                 ui_view_t rv = { .mode = UI_RESTING, .now = s_view.now, .amber = amber, .mic_open = s_mic,
                                  .wday = s_view.wday, .month = s_view.month, .mday = s_view.mday, .spoken = -1 };
                 rv.weather = &s_weather;
+                char at[8];
+                cfg_get(CFG_WEATHER_AT, at, sizeof at);
+                rv.place = s_geo_ok && !at[0] ? s_geo_city : NULL;     /* a place set by hand has no name */
                 if (photo_i >= 0) {
                     rv.image = s_rest_img;
                     rv.img_w = photo_w;

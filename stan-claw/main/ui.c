@@ -876,11 +876,6 @@ static int deg_text(canvas_t *c, const aafont_t *f, int x, int y, const char *s,
     return w;
 }
 
-static void deg_centre(canvas_t *c, const aafont_t *f, int cx, int y, const char *s, uint16_t col)
-{
-    deg_text(c, f, cx - deg_text(c, f, 0, 0, s, col, false) / 2, y, s, col, true);
-}
-
 static void cloud(canvas_t *c, int cx, int cy, int s, uint16_t col)
 {
     canvas_disc(c, cx - s * 9 / 10, cy + s / 5, s * 5 / 10, col);
@@ -898,10 +893,12 @@ static void sun(canvas_t *c, int cx, int cy, int r)
     canvas_disc(c, cx, cy, r, C_SUN);
 }
 
+static uint16_t s_icon_bg;                  /* what the moon's crescent is cut with: the colour behind it */
+
 static void moon(canvas_t *c, int cx, int cy, int r)
 {
-    canvas_disc(c, cx, cy, r, RGB(0xE8, 0xE4, 0xD0));
-    canvas_disc(c, cx + r * 5 / 10, cy - r * 3 / 10, r * 85 / 100, RGB(0, 0, 0));
+    canvas_disc(c, cx, cy, r, RGB(0xF2, 0xEC, 0xC8));
+    canvas_disc(c, cx + r * 5 / 10, cy - r * 3 / 10, r * 85 / 100, s_icon_bg);
 }
 
 /* The weather as a picture, about 2 s wide, centred on (cx, cy). */
@@ -940,40 +937,124 @@ static void wx_icon(canvas_t *c, wx_icon_t k, bool day, int cx, int cy, int s)
         }
 }
 
-/* The resting screen with the weather: the time large, the day, the weather
-   now, today and tomorrow. The screen stays lit, so it is a clock to read
-   from across the room. */
+/* The temperature as a colour: ice blue at -15, sky blue at 0, teal at 10,
+   gold at 20, orange at 28, red from 35. */
+static uint16_t temp_colour(float t)
+{
+    static const struct { float t; uint16_t c; } k[] = {
+        { -15, RGB(0xB8, 0xE4, 0xFF) }, { 0, RGB(0x6C, 0xC4, 0xFF) }, { 10, RGB(0x4C, 0xE0, 0xB8) },
+        { 20, RGB(0xFF, 0xD8, 0x4A) }, { 28, RGB(0xFF, 0x9A, 0x3C) }, { 35, RGB(0xFF, 0x5A, 0x4A) },
+    };
+    if (t <= k[0].t) return k[0].c;
+    for (int i = 1; i < 6; i++)
+        if (t <= k[i].t) return mix(k[i - 1].c, k[i].c, (t - k[i - 1].t) / (k[i].t - k[i - 1].t));
+    return k[5].c;
+}
+
+/* The sky behind it all, top and bottom, by the weather and the time of day. */
+static void sky_colours(const weather_t *w, uint16_t *top, uint16_t *bottom)
+{
+    wx_icon_t k = weather_icon(w->code);
+    *top = RGB(0x3A, 0x48, 0x60); *bottom = RGB(0x6A, 0x78, 0x90);
+    if (!w->day) { *top = RGB(0x06, 0x0A, 0x24); *bottom = RGB(0x1C, 0x16, 0x46); return; }
+    switch (k) {
+    case WX_SUN:     *top = RGB(0x1A, 0x6F, 0xD8); *bottom = RGB(0x3C, 0xC8, 0xD8); break;
+    case WX_PARTLY:  *top = RGB(0x2A, 0x5C, 0xB0); *bottom = RGB(0x6A, 0x9C, 0xC8); break;
+    case WX_CLOUD:   *top = RGB(0x3A, 0x48, 0x60); *bottom = RGB(0x6A, 0x78, 0x90); break;
+    case WX_FOG:     *top = RGB(0x5A, 0x64, 0x74); *bottom = RGB(0x8A, 0x94, 0xA0); break;
+    case WX_DRIZZLE:
+    case WX_RAIN:    *top = RGB(0x24, 0x2C, 0x58); *bottom = RGB(0x3E, 0x5A, 0x86); break;
+    case WX_SNOW:    *top = RGB(0x5A, 0x7C, 0xA8); *bottom = RGB(0xA8, 0xC4, 0xDC); break;
+    case WX_THUNDER: *top = RGB(0x1E, 0x10, 0x34); *bottom = RGB(0x4A, 0x2A, 0x5C); break;
+    }
+}
+
+/* A map pin: a disc with a point beneath and a hole in it. */
+static void pin(canvas_t *c, int cx, int y0, uint16_t col, uint16_t hole)
+{
+    canvas_disc(c, cx, y0 + 7, 7, col);
+    for (int i = 0; i < 9; i++) canvas_fill_rect(c, cx - (8 - i) * 6 / 8, y0 + 9 + i, (8 - i) * 12 / 8 + 1, 1, col);
+    canvas_disc(c, cx, y0 + 7, 3, hole);
+}
+
+/* A raindrop: a disc with a point on top. */
+static void drop(canvas_t *c, int cx, int cy, uint16_t col)
+{
+    canvas_disc(c, cx, cy + 3, 5, col);
+    for (int i = 0; i < 7; i++) canvas_fill_rect(c, cx - i * 5 / 7, cy - 6 + i, i * 10 / 7 + 1, 1, col);
+}
+
+/* A day's small card: its name, its sky, high and low, the chance of rain. */
+static void day_card(canvas_t *c, int x, int y, int w, int h, uint16_t card, const char *name, int code, bool day,
+                     float hi, float lo, int rain)
+{
+    rrect(c, x, y, w, h, 14, card);
+    aafont_draw(c, &aafont_rooms_small, x + 16, y + 14, name, RGB(0xE6, 0xEA, 0xF2), AAFONT_LEFT);
+    s_icon_bg = card;
+    wx_icon(c, weather_icon(code), day, x + 44, y + 68, 26);
+    char t[24];
+    snprintf(t, sizeof t, "%ld^", lroundf(hi));
+    deg_text(c, &aafont_rooms_head, x + 92, y + 46, t, temp_colour(hi), true);
+    snprintf(t, sizeof t, "%ld^", lroundf(lo));
+    deg_text(c, &aafont_inter_sub, x + 92 + deg_text(c, &aafont_rooms_head, 0, 0, "88^", 0, false) + 6, y + 52, t,
+             temp_colour(lo), true);
+    if (rain >= 10) {
+        drop(c, x + 98, y + 88, RGB(0x7C, 0xC4, 0xFF));
+        snprintf(t, sizeof t, "%d%%", rain);
+        aafont_draw(c, &aafont_rooms_small, x + 112, y + 82, t, RGB(0xC8, 0xE4, 0xFF), AAFONT_LEFT);
+    }
+}
+
+/* The resting screen with the weather, lit steady to read from across the
+   room: a sky that changes with the weather and the hour, where it is, the
+   time large, the weather now on a card (the temperature in its colour), and
+   today and tomorrow on two small cards. */
 static void resting_weather(canvas_t *c, const ui_view_t *v)
 {
-    const uint16_t bright = RGB(0xEC, 0xEF, 0xF4), soft = RGB(0x9A, 0xA2, 0xAE);
     const weather_t *w = v->weather;
+    const uint16_t white = RGB(0xFF, 0xFF, 0xFF), soft = RGB(0xD8, 0xDE, 0xEA);
+    uint16_t top, bottom;
+    sky_colours(w, &top, &bottom);
+    for (int y = 0; y < H; y++) canvas_fill_rect(c, 0, y, W, 1, mix(top, bottom, (float)y / (H - 1)));
+    if (!w->day) {                                   /* a few stars, always the same */
+        static const short st[][2] = { {38, 40}, {92, 18}, {150, 58}, {402, 30}, {446, 74}, {360, 12}, {214, 14},
+                                       {300, 64}, {20, 120}, {462, 138}, {70, 150} };
+        for (size_t i = 0; i < sizeof st / sizeof st[0]; i++) canvas_disc(c, st[i][0], st[i][1], i % 3 ? 1 : 2, RGB(0xE8, 0xE8, 0xFF));
+    }
+    /* Where: a pin and the neighbourhood, centred together. */
+    if (v->place && v->place[0]) {
+        char p[40];
+        snprintf(p, sizeof p, "%s", v->place);
+        while (p[0] && aafont_width(&aafont_rooms_title, p) > W - 120) p[strlen(p) - 1] = 0;
+        int pw = 16 + 8 + aafont_width(&aafont_rooms_title, p), px = (W - pw) / 2;
+        pin(c, px + 7, 12, RGB(0xFF, 0x6B, 0x6B), mix(top, bottom, 0.04f));
+        aafont_draw(c, &aafont_rooms_title, px + 24, 14, p, white, AAFONT_LEFT);
+    }
     if (v->now >= 0) {
         char t[24];
         snprintf(t, sizeof t, "%d:%02d", v->now / 60 % 24, v->now % 60);
-        aafont_draw(c, &aafont_inter_number, W / 2, 34, t, bright, AAFONT_CENTRE | AAFONT_ADVANCE);
+        aafont_draw(c, &aafont_inter_number, W / 2, 44, t, white, AAFONT_CENTRE | AAFONT_ADVANCE);
         char part[32], date[32], day[72];
         ui_day_words(v->wday, v->month, v->mday, v->now, part, sizeof part, date, sizeof date);
         snprintf(day, sizeof day, "%s, %s", part, date);
         if (!date[0] || aafont_width(&aafont_inter_sub, day) > W - 48) snprintf(day, sizeof day, "%s", part);
-        aafont_draw(c, &aafont_inter_sub, W / 2, 112, day, soft, AAFONT_CENTRE);
+        aafont_draw(c, &aafont_inter_sub, W / 2, 120, day, soft, AAFONT_CENTRE);
     }
-    canvas_fill_rect(c, 60, 162, W - 120, 1, RGB(0x2A, 0x2E, 0x36));
-    /* Now: the picture at the left, the temperature and its words at the right. */
-    wx_icon(c, weather_icon(w->code), w->day, 140, 246, 64);
+    /* Now. */
+    uint16_t card = mix(mix(top, bottom, 0.5f), RGB(0, 0, 0), 0.38f);
+    rrect(c, 24, 160, W - 48, 168, 18, card);
+    s_icon_bg = card;
+    wx_icon(c, weather_icon(w->code), w->day, 118, 244, 56);
     char t[64];
     snprintf(t, sizeof t, "%ld^", lroundf(w->temp));
-    deg_text(c, &aafont_inter_number, 236, 196, t, bright, true);
-    aafont_draw(c, &aafont_rooms_head, 238, 272, weather_words(w->code), bright, AAFONT_LEFT);
+    deg_text(c, &aafont_inter_number, 206, 182, t, temp_colour(w->temp), true);
+    aafont_draw(c, &aafont_rooms_head, 208, 258, weather_words(w->code), white, AAFONT_LEFT);
     snprintf(t, sizeof t, "Feels like %ld^", lroundf(w->feels));
-    deg_text(c, &aafont_inter_sub, 238, 312, t, soft, true);
-    canvas_fill_rect(c, 60, 360, W - 120, 1, RGB(0x2A, 0x2E, 0x36));
-    /* Today, then tomorrow. */
-    if (w->rain >= 10) snprintf(t, sizeof t, "Today: high %ld^, low %ld^, %s %d%%", lroundf(w->hi), lroundf(w->lo),
-                                weather_icon(w->code) == WX_SNOW ? "snow" : "rain", w->rain);
-    else snprintf(t, sizeof t, "Today: high %ld^, low %ld^", lroundf(w->hi), lroundf(w->lo));
-    deg_centre(c, &aafont_inter_sub, W / 2, 380, t, bright);
-    snprintf(t, sizeof t, "Tomorrow: %s, high %ld^", weather_words(w->t_code), lroundf(w->t_hi));
-    deg_centre(c, &aafont_inter_sub, W / 2, 418, t, soft);
+    deg_text(c, &aafont_inter_sub, 208, 296, t, soft, true);
+    /* Today and tomorrow. */
+    uint16_t small = mix(bottom, RGB(0, 0, 0), 0.38f);
+    day_card(c, 24, 342, 210, 114, small, "TODAY", w->code, true, w->hi, w->lo, w->rain);
+    day_card(c, 246, 342, 210, 114, small, "TOMORROW", w->t_code, true, w->t_hi, w->t_lo, w->t_rain);
 }
 
 static void resting(canvas_t *c, const ui_view_t *v)

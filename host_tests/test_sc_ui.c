@@ -187,10 +187,12 @@ static void care(canvas_t *c, const uint8_t *lv)
         for (size_t i = 0; i < sizeof sky / sizeof sky[0]; i++) {
             weather_t w = { .ok = true, .temp = sky[i].t, .feels = sky[i].t - 3, .code = sky[i].code, .day = sky[i].day,
                             .hi = sky[i].t + 4, .lo = sky[i].t - 5, .rain = 40, .t_code = 61, .t_hi = 11.4f, .t_lo = 7.6f };
-            v = (ui_view_t){ .mode = UI_RESTING, .now = 21 * 60 + 7, .wday = 2, .month = 10, .mday = 14, .weather = &w };
+            v = (ui_view_t){ .mode = UI_RESTING, .now = 21 * 60 + 7, .wday = 2, .month = 10, .mday = 14, .weather = &w,
+                             .place = "Willowdale" };
             ui_draw(c, &v); bmp(sky[i].name);
-            CHECK(count(RGB(0xEC, 0xEF, 0xF4), 30, 100) > 300);            /* the time, large */
-            CHECK(count(RGB(0xEC, 0xEF, 0xF4), 190, 300) > 300);           /* the temperature and its words */
+            CHECK(count(RGB(0xFF, 0xFF, 0xFF), 44, 110) > 300);            /* the time, large */
+            CHECK(count(RGB(0xFF, 0xFF, 0xFF), 250, 290) > 100);           /* the weather in words */
+            CHECK(count(RGB(0xFF, 0xFF, 0xFF), 10, 36) > 40);              /* the neighbourhood */
         }
         weather_t w = { .ok = true, .temp = 12.3f, .feels = 9.4f, .code = 3, .hi = 18.4f, .lo = 11.6f, .rain = 5,
                         .t_code = 63, .t_hi = 11.4f, .t_lo = 7.6f };
