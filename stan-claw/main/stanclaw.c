@@ -45,6 +45,7 @@
 #include "care_net.h"
 #include "phrases.h"
 #include "weather.h"
+#include "tz.h"
 #include "https.h"
 #include "audio.h"
 #include "config.h"
@@ -102,14 +103,16 @@ static weather_t s_weather;                  /* for the resting screen, from Ope
    looked up at start and once a day; `weather at LAT,LON` overrides it. */
 static volatile bool s_geo_ok;
 static double s_geo_lat, s_geo_lon;
-static char s_geo_city[40];
+static char s_geo_city[40], s_geo_tz[48];
+#define TZ_DEFAULT "EST5EDT,M3.2.0,M11.1.0"  /* Eastern, until the home's own zone is known */
 
 void weather_where(char *out, size_t n)
 {
     char at[CFG_VAL];
     cfg_get(CFG_WEATHER_AT, at, sizeof at);
     if (at[0]) snprintf(out, n, "%s (set with weather at; weather at auto goes back to the internet's guess)", at);
-    else if (s_geo_ok) snprintf(out, n, "%s, %.2f,%.2f (from the internet connection)", s_geo_city[0] ? s_geo_city : "?", s_geo_lat, s_geo_lon);
+    else if (s_geo_ok) snprintf(out, n, "%s, %.2f,%.2f, time zone %s (from the internet connection)",
+                                s_geo_city[0] ? s_geo_city : "?", s_geo_lat, s_geo_lon, s_geo_tz[0] ? s_geo_tz : "?");
     else snprintf(out, n, "Toronto (the default, until the internet connection is asked)");
 }
 
@@ -697,9 +700,9 @@ static void care_task(void *arg)
             for (int i = 0; i < 2; i++) {
                 char *resp = NULL;
                 double la, lo;
-                char city[40];
+                char city[40], zone[48];
                 bool ok = https_get(geo[i], NULL, 0, 10000, &resp, 4096) == 200 && resp
-                          && weather_geo_parse(resp, &la, &lo, city, sizeof city);
+                          && weather_geo_parse(resp, &la, &lo, city, sizeof city, zone, sizeof zone);
                 free(resp);
                 if (!ok) continue;
                 bool moved = !s_geo_ok || fabs(la - s_geo_lat) > 0.05 || fabs(lo - s_geo_lon) > 0.05;
@@ -707,7 +710,19 @@ static void care_task(void *arg)
                 snprintf(s_geo_city, sizeof s_geo_city, "%s", city);
                 s_geo_ok = true;
                 if (moved) weather_at = -3600LL * 1000000;        /* the weather for the new place, now */
-                ESP_LOGI(TAG, "home is %s (%.2f, %.2f)", city, la, lo);
+                ESP_LOGI(TAG, "home is %s (%.2f, %.2f), %s", city, la, lo, zone);
+                /* Its time zone sets the clock (and is kept, for the next start before the network). */
+                const char *rule = tz_posix(zone);
+                char had[CFG_VAL];
+                cfg_get(CFG_TZ, had, sizeof had);
+                snprintf(s_geo_tz, sizeof s_geo_tz, "%s", zone);
+                if (rule && strcmp(rule, had[0] ? had : TZ_DEFAULT) != 0) {
+                    cfg_set(CFG_TZ, rule);
+                    setenv("TZ", rule, 1);
+                    tzset();
+                    s_dirty = true;
+                    ESP_LOGI(TAG, "clock now in %s (%s)", zone, rule);
+                }
                 break;
             }
         }
@@ -939,9 +954,11 @@ void app_main(void)
         nvs_flash_erase();
         nvs_flash_init();
     }
-    setenv("TZ", "EST5EDT,M3.2.0,M11.1.0", 1);
-    tzset();
     cfg_load();
+    char tzr[CFG_VAL];
+    cfg_get(CFG_TZ, tzr, sizeof tzr);                  /* the home's zone, as last found; Eastern before that */
+    setenv("TZ", tzr[0] ? tzr : TZ_DEFAULT, 1);
+    tzset();
     memory_init();
 
     /* The time from the clock chip, before anything else: a timer wake in

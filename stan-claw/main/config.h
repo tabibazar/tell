@@ -27,7 +27,8 @@ typedef enum {
     CFG_VOICE_FX,                               /* "", "hal" or "jarvis" (fx.h) */
     CFG_CLARITY, CFG_TEXTSIZE, CFG_CONTRAST,    /* "easier to see and hear": "0"/"1" ("" = default) */
     CFG_HW_TOKEN,                               /* the homeowner's stan-mcp token, for reminders and family messages */
-    CFG_WEATHER_AT,                             /* "lat,lon" for the resting screen's weather ("" = Toronto) */
+    CFG_WEATHER_AT,                             /* "lat,lon" for the resting screen's weather ("" = from the internet) */
+    CFG_TZ,                                     /* the POSIX TZ rule, from the home's time zone ("" = Eastern) */
     CFG_N
 } cfg_key_t;
 

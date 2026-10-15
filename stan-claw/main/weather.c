@@ -86,7 +86,7 @@ wx_icon_t weather_icon(int c)
     return WX_CLOUD;
 }
 
-bool weather_geo_parse(const char *json, double *lat, double *lon, char *city, size_t n)
+bool weather_geo_parse(const char *json, double *lat, double *lon, char *city, size_t n, char *tz, size_t ntz)
 {
     cJSON *j = cJSON_Parse(json);
     if (!j) return false;
@@ -99,6 +99,8 @@ bool weather_geo_parse(const char *json, double *lat, double *lon, char *city, s
     if (ok && (*lat < -90 || *lat > 90 || *lon < -180 || *lon > 180 || (*lat == 0 && *lon == 0))) ok = false;
     const cJSON *c = cJSON_GetObjectItemCaseSensitive(j, "city");
     if (n) snprintf(city, n, "%s", ok && cJSON_IsString(c) ? c->valuestring : "");
+    const cJSON *z = cJSON_GetObjectItemCaseSensitive(j, "timezone");
+    if (ntz) snprintf(tz, ntz, "%s", ok && cJSON_IsString(z) ? z->valuestring : "");
     cJSON_Delete(j);
     return ok;
 }

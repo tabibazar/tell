@@ -177,5 +177,5 @@ test_sc_spin: test_sc_spin.c $(SC)/spin.c $(SC)/spin.h
 test_sc_care: test_sc_care.c $(SC)/care.c $(SC)/care.h $(CJSON)/cJSON.c
 	$(CC) $(CFLAGS) -I$(SC) -I$(CJSON) -o $@ test_sc_care.c $(SC)/care.c $(CJSON)/cJSON.c
 
-test_sc_weather: test_sc_weather.c $(SC)/weather.c $(SC)/weather.h $(CJSON)/cJSON.c
-	$(CC) $(CFLAGS) -I$(SC) -I$(CJSON) -o $@ test_sc_weather.c $(SC)/weather.c $(CJSON)/cJSON.c
+test_sc_weather: test_sc_weather.c $(SC)/weather.c $(SC)/weather.h $(SC)/tz.c $(SC)/tzdb.h $(CJSON)/cJSON.c
+	$(CC) $(CFLAGS) -I$(SC) -I$(CJSON) -o $@ test_sc_weather.c $(SC)/weather.c $(SC)/tz.c $(CJSON)/cJSON.c

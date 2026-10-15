@@ -14,7 +14,7 @@ static const char *TAG = "config";
 
 static const char *const KEYS[CFG_N] = { "k_claude", "k_dg", "k_el", "voice", "model", "mcp_url", "mcp_tok", "srv_tok",
                                           "voice_nm", "volume", "speed", "voice_fx", "clarity", "textsize",
-                                          "contrast", "hw_tok", "wx_at" };
+                                          "contrast", "hw_tok", "wx_at", "tz" };
 static SemaphoreHandle_t s_lock;
 static cfg_net_t s_nets[CFG_NETS];
 static int s_n;
