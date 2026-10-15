@@ -10,8 +10,9 @@
  *
  * Untouched, the screen rests (rest.h): a breathing orb at 45 s, dark 5 min
  * later, and dark at 45 s from 19:00 to 08:00. A tap, BOOT, a knock on the
- * desk or an agent's call wakes it; the first tap only wakes. Outside office
- * hours (Mon-Fri 08:00-16:00) it deep-sleeps instead, BOOT or 08:00 waking it.
+ * desk or an agent's call wakes it; the first tap only wakes. It is a home
+ * device, up day and night (ALWAYS_ON); with ALWAYS_ON 0 it deep-sleeps
+ * outside office hours (Mon-Fri 08:00-16:00), as it did at the office.
  *
  * Care (docs/superpowers/specs/2026-10-10-stan-claw-care-design.md): in a
  * conversation big buttons repeat the answer, repeat it slowly, or end it, and
@@ -65,6 +66,7 @@
 static const char *TAG = "stanclaw";
 
 #define PIN_BOOT     0
+#define ALWAYS_ON    1           /* a home device: up day and night, the screen resting on its own */
 #define REC_MAX_S    25          /* long enough for a slow, careful question */
 #define ANSWER_US    (30LL * 1000000)
 #define BUSY_WAIT_MS 30000
@@ -590,11 +592,11 @@ static bool present(ui_mode_t mode, const char *title, const char *text, const c
     return present_photo(mode, title, text, spoken, NULL);
 }
 
-/* The morning check-in (if the homeowner agreed): on a weekday from 11:00, if
+/* The morning check-in (if the homeowner agreed): every day from 11:00, if
    nobody has touched it or talked to it since 05:00, it says good morning and
    listens; nothing back, it asks once more 20 minutes later, and then lets
-   family know (stan-mcp emails them, once a day). It only happens while the
-   board is up: Monday to Friday, 08:00-16:00. */
+   family know (stan-mcp emails them, once a day). Weekdays only when the
+   board sleeps outside office hours (ALWAYS_ON 0). */
 static RTC_DATA_ATTR int s_ck_day, s_ck_state;       /* 0 not yet, 1 asked once, 3 settled for the day */
 static RTC_DATA_ATTR time_t s_ck_asked;
 static bool s_ck_test;                               /* `care test checkin`: now, and 60 s apart */
@@ -628,7 +630,8 @@ static void checkin_tick(void)
     five.tm_hour = 5; five.tm_min = five.tm_sec = 0;
     if (s_person_at >= mktime(&five) && (s_ck_state > 0 || !s_ck_test)) { s_ck_state = 3; return; }   /* they're about */
     int m = lt.tm_hour * 60 + lt.tm_min;
-    if (s_ck_state == 0 && !s_ck_test && (lt.tm_wday == 0 || lt.tm_wday == 6 || m < 11 * 60 || m >= 15 * 60)) return;
+    bool weekend = lt.tm_wday == 0 || lt.tm_wday == 6;
+    if (s_ck_state == 0 && !s_ck_test && ((!ALWAYS_ON && weekend) || m < 11 * 60 || m >= 15 * 60)) return;
     if (s_ck_state == 1 && now - s_ck_asked < (s_ck_test ? 60 : 20 * 60)) return;
     bool second = s_ck_state == 1;
     if (checkin_ask(false)) { s_ck_test = false; return; }
@@ -888,7 +891,7 @@ void app_main(void)
         settimeofday(&tv, NULL);
     }
     care_net_load();
-    if (esp_sleep_get_wakeup_cause() == ESP_SLEEP_WAKEUP_TIMER && clock_from_rtc && !office_now()) {
+    if (!ALWAYS_ON && esp_sleep_get_wakeup_cause() == ESP_SLEEP_WAKEUP_TIMER && clock_from_rtc && !office_now()) {
         /* Woken for a reminder (due, or a moment away): stay up to say it. */
         time_t now = time(NULL);
         long next = care_next_wake(care_reminders(), (long)now);
@@ -1134,7 +1137,7 @@ void app_main(void)
         /* How awake to be, and the light for it. */
         int64_t now_us = esp_timer_get_time();
         int idle_s = s_in_use || s_mic ? 0 : (int)((now_us - s_active_at) / 1000000);
-        if (net_time_ok() && !office_now() && idle_s >= REST_BREATHE_S) deep_sleep_now(true);
+        if (!ALWAYS_ON && net_time_ok() && !office_now() && idle_s >= REST_BREATHE_S) deep_sleep_now(true);
         rest_level_t want = rest_level(idle_s, net_time_ok() ? s_view.now : -1);
         bool amber = now_us < s_amber_until;
         static rest_level_t shown = REST_AWAKE;
