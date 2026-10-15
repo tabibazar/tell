@@ -30,3 +30,9 @@ CONFIG_HTTPD_MAX_REQ_HDR_LEN=1024
 CONFIG_ESP_CONSOLE_UART_DEFAULT=y
 CONFIG_ESP_CONSOLE_UART_BAUDRATE=115200
 CONFIG_LOG_DEFAULT_LEVEL_INFO=y
+
+# The RGB panel is fed from PSRAM all the time: when WiFi and flash writes
+# compete for it, the picture slid up and stayed there. Its interrupt stays
+# in IRAM through flash writes, and 64-byte cache lines read PSRAM faster.
+CONFIG_LCD_RGB_ISR_IRAM_SAFE=y
+CONFIG_ESP32S3_DATA_CACHE_LINE_64B=y

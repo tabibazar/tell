@@ -175,6 +175,36 @@ static void care(canvas_t *c, const uint8_t *lv)
     ui_day_words(6, 0, 10, 15 * 60, part, sizeof part, date, sizeof date);
     CHECK(part[0] == 0 && date[0] == 0);
 
+    /* At rest with the weather: one render per kind of sky, day and night. */
+    {
+        static const struct { const char *name; int code; bool day; float t; } sky[] = {
+            { "resting-weather-sun", 0, true, 21.4f }, { "resting-weather-moon", 0, false, 8.0f },
+            { "resting-weather-partly", 2, true, 15.6f }, { "resting-weather-cloud", 3, false, 12.3f },
+            { "resting-weather-rain", 63, true, 9.2f }, { "resting-weather-drizzle", 53, true, 10.0f },
+            { "resting-weather-snow", 73, true, -4.6f }, { "resting-weather-storm", 95, true, 24.0f },
+            { "resting-weather-fog", 45, false, 6.0f },
+        };
+        for (size_t i = 0; i < sizeof sky / sizeof sky[0]; i++) {
+            weather_t w = { .ok = true, .temp = sky[i].t, .feels = sky[i].t - 3, .code = sky[i].code, .day = sky[i].day,
+                            .hi = sky[i].t + 4, .lo = sky[i].t - 5, .rain = 40, .t_code = 61, .t_hi = 11.4f, .t_lo = 7.6f };
+            v = (ui_view_t){ .mode = UI_RESTING, .now = 21 * 60 + 7, .wday = 2, .month = 10, .mday = 14, .weather = &w };
+            ui_draw(c, &v); bmp(sky[i].name);
+            CHECK(count(RGB(0xEC, 0xEF, 0xF4), 30, 100) > 300);            /* the time, large */
+            CHECK(count(RGB(0xEC, 0xEF, 0xF4), 190, 300) > 300);           /* the temperature and its words */
+        }
+        weather_t w = { .ok = true, .temp = 12.3f, .feels = 9.4f, .code = 3, .hi = 18.4f, .lo = 11.6f, .rain = 5,
+                        .t_code = 63, .t_hi = 11.4f, .t_lo = 7.6f };
+        static uint16_t ph[300 * 200];
+        for (int i = 0; i < 300 * 200; i++) ph[i] = (uint16_t)(i * 7);
+        v = (ui_view_t){ .mode = UI_RESTING, .now = 15 * 60 + 12, .wday = 6, .month = 10, .mday = 10, .weather = &w,
+                         .image = ph, .img_w = 300, .img_h = 200, .photo_from = "Reza" };
+        ui_draw(c, &v); bmp("resting-photo-weather");
+        weather_t none = { 0 };
+        v = (ui_view_t){ .mode = UI_RESTING, .now = 15 * 60 + 12, .wday = 6, .month = 10, .mday = 10, .weather = &none };
+        ui_draw(c, &v);
+        CHECK(fb[210 * 480 + 240] != 0);                                  /* no weather yet: the orb */
+    }
+
     /* Home with the day and the date over the Talk button; none when the date is unknown. */
     v = (ui_view_t){ .mode = UI_HOME, .now = 15 * 60 + 12, .ssid = "Office WiFi", .wday = 6, .month = 10, .mday = 10 };
     ui_draw(c, &v); bmp("home-day");

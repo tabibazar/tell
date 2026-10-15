@@ -44,6 +44,7 @@
 #include "agent.h"
 #include "care_net.h"
 #include "phrases.h"
+#include "weather.h"
 #include "https.h"
 #include "audio.h"
 #include "config.h"
@@ -95,6 +96,8 @@ static volatile bool s_care_wake;      /* woke from deep sleep for a reminder */
    conversation), wall clock; kept through deep sleep for the morning check-in. */
 static RTC_DATA_ATTR time_t s_person_at;
 static uint16_t *s_card_img, *s_rest_img;   /* PSRAM 480x480: a photo card, the resting photo */
+static weather_t s_weather;                  /* for the resting screen, from Open-Meteo every 15 minutes */
+#define WEATHER_HOME "43.65,-79.38"          /* Toronto, unless `weather at LAT,LON` says otherwise */
 
 /* Rest (rest.h): untouched for 45 s the screen breathes, then sleeps. Anything
    holding s_busy counts as use; a touch, BOOT, a knock or an agent's call
@@ -650,6 +653,7 @@ static void care_task(void *arg)
 {
     const int64_t INBOX_US = 120LL * 1000000, REMIND_US = 3LL * 3600 * 1000000;
     int64_t inbox_at = -INBOX_US, remind_at = -REMIND_US, photos_at = -REMIND_US, phrase_at = -60LL * 1000000;
+    int64_t weather_at = -3600LL * 1000000;
     char spoken[CARE_TEXT + 48], title[48];
     for (;;) {
         vTaskDelay(pdMS_TO_TICKS(3000));
@@ -668,6 +672,24 @@ static void care_task(void *arg)
             }
             if (photos_due) photos_at = care_net_sync_photos() >= 0 ? now_us : now_us - REMIND_US + 600LL * 1000000;
             s_care_kick = false;
+        }
+        /* The weather for the resting screen: every 15 minutes, again in 2 after a failure. */
+        if (net_up() && !s_in_use && !s_convo && now_us - weather_at >= (s_weather.ok ? 900LL : 120LL) * 1000000) {
+            weather_at = now_us;
+            char at[CFG_VAL], url[400];
+            cfg_get(CFG_WEATHER_AT, at, sizeof at);
+            double lat = 0, lon = 0;
+            if (sscanf(at[0] ? at : WEATHER_HOME, "%lf,%lf", &lat, &lon) != 2) sscanf(WEATHER_HOME, "%lf,%lf", &lat, &lon);
+            weather_url(lat, lon, url, sizeof url);
+            char *resp = NULL;
+            weather_t w;
+            if (https_get(url, NULL, 0, 15000, &resp, 8192) == 200 && resp && weather_parse(resp, &w)) {
+                xSemaphoreTake(s_ui_lock, portMAX_DELAY);
+                s_weather = w;
+                s_dirty = true;
+                xSemaphoreGive(s_ui_lock);
+            }
+            free(resp);
         }
         /* The recorded phrases, one at a time, whenever the voice or speed changed. */
         if (net_up() && !s_in_use && !s_convo && !s_job && phrases_stale() && now_us - phrase_at > 20LL * 1000000) {
@@ -1153,7 +1175,7 @@ void app_main(void)
         static int photo_i = -1, photo_w, photo_h;
         static int64_t photo_at;
         static const char *photo_from;
-        bool photo = want == REST_BREATHING && !amber && s_rest_img;
+        bool photo = want != REST_AWAKE && !amber && s_rest_img;
         if (photo && (photo_i < 0 || now_us - photo_at > 60LL * 1000000)) {
             care_list_t *pl = care_photos();
             photo_at = now_us;
@@ -1171,8 +1193,12 @@ void app_main(void)
             }
         }
         if (!photo && photo_i >= 0) { photo_i = -1; s_dirty = true; }
-        light(amber ? 60 : want == REST_AWAKE ? 100 : want == REST_ASLEEP ? 0 : photo_i >= 0 ? 35
-              : rest_breath_light((long)((now_us - rest_t0) / 1000)));
+        /* At rest it stays lit, steady, as a clock and the weather to read from across
+           the room: 70 % by day, 25 % from 22:00 to 07:00. */
+        int m = net_time_ok() ? s_view.now : 12 * 60;
+        int steady = m >= 22 * 60 || m < 7 * 60 ? 25 : 70;
+        (void)rest_t0;
+        light(amber ? 60 : want == REST_AWAKE ? 100 : steady);
 
         if (s_dirty) {
             xSemaphoreTake(s_ui_lock, portMAX_DELAY);
@@ -1185,6 +1211,7 @@ void app_main(void)
             if (resting_screen) {
                 ui_view_t rv = { .mode = UI_RESTING, .now = s_view.now, .amber = amber, .mic_open = s_mic,
                                  .wday = s_view.wday, .month = s_view.month, .mday = s_view.mday, .spoken = -1 };
+                rv.weather = &s_weather;
                 if (photo_i >= 0) {
                     rv.image = s_rest_img;
                     rv.img_w = photo_w;

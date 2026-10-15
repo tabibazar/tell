@@ -708,6 +708,8 @@ static void shade(canvas_t *c, int y0, int y1)
    band with the time, the day in words and who sent it. */
 #define PHOTO_BAND 92
 
+static int deg_text(canvas_t *c, const aafont_t *f, int x, int y, const char *s, uint16_t col, bool draw);
+
 static void resting_photo(canvas_t *c, const ui_view_t *v)
 {
     photo_fit(c, v, 0, 0, W, H);
@@ -720,7 +722,8 @@ static void resting_photo(canvas_t *c, const ui_view_t *v)
         char part[32], date[32], day[72];
         ui_day_words(v->wday, v->month, v->mday, v->now, part, sizeof part, date, sizeof date);
         snprintf(day, sizeof day, "%s, %s", part, date);
-        if (!date[0] || aafont_width(&aafont_inter_sub, day) > W - 48) snprintf(day, sizeof day, "%s", part);
+        bool wx = v->weather && v->weather->ok;          /* the weather shares this row: the day alone then */
+        if (!date[0] || wx || aafont_width(&aafont_inter_sub, day) > W - 48) snprintf(day, sizeof day, "%s", part);
         aafont_draw(c, &aafont_inter_sub, 24, y + 56, day, C_DIM, AAFONT_LEFT);
     }
     if (v->photo_from && v->photo_from[0]) {
@@ -728,6 +731,12 @@ static void resting_photo(canvas_t *c, const ui_view_t *v)
         snprintf(t, sizeof t, "from %s", v->photo_from);
         while (t[0] && aafont_width(&aafont_rooms_small, t) > 180) t[strlen(t) - 1] = 0;
         aafont_draw(c, &aafont_rooms_small, W - 24, y + 24, t, C_DIM, AAFONT_RIGHT);
+    }
+    if (v->weather && v->weather->ok) {                  /* and the weather, small, at the right */
+        char t[48];
+        snprintf(t, sizeof t, "%ld^ %s", lroundf(v->weather->temp), weather_words(v->weather->code));
+        int tw = deg_text(c, &aafont_inter_sub, 0, 0, t, C_TEXT, false);
+        deg_text(c, &aafont_inter_sub, W - 24 - tw, y + 56, t, C_TEXT, true);
     }
 }
 
@@ -830,11 +839,152 @@ void ui_day_words(int wday, int month, int mday, int minute, char *part, size_t 
     }
 }
 
+
+/* ---- the weather, at rest ---- */
+
+#define C_SUN   RGB(0xF5, 0xC5, 0x42)
+#define C_CLOUD RGB(0xC8, 0xCE, 0xD8)
+#define C_DROP  RGB(0x5A, 0xA8, 0xF0)
+
+/* Text with '^' for a degree sign (the faces are ASCII): a small ring drawn
+   at the cap height. Returns the width; draws only when draw is true. */
+static int deg_text(canvas_t *c, const aafont_t *f, int x, int y, const char *s, uint16_t col, bool draw)
+{
+    char piece[64];
+    int w = 0, r = f->cap / 7 + 1;
+    while (*s) {
+        const char *d = strchr(s, '^');
+        int n = d ? (int)(d - s) : (int)strlen(s);
+        if (n >= (int)sizeof piece) n = sizeof piece - 1;
+        memcpy(piece, s, n);
+        piece[n] = 0;
+        const char *p = piece;
+        while (*p == ' ') {                          /* a leading space is not advanced over when drawn alone */
+            w += aafont_width(f, "x x") - aafont_width(f, "xx");
+            p++;
+        }
+        if (*p) {
+            if (draw) aafont_draw(c, f, x + w, y, p, col, AAFONT_LEFT);
+            w += aafont_width(f, p);
+        }
+        if (!d) break;
+        if (draw)
+            for (int k = 0; k < (f->cap > 30 ? 3 : 2); k++) canvas_circle(c, x + w + r + 1, y + r, r - k, col);
+        w += 2 * r + 4;
+        s = d + 1;
+    }
+    return w;
+}
+
+static void deg_centre(canvas_t *c, const aafont_t *f, int cx, int y, const char *s, uint16_t col)
+{
+    deg_text(c, f, cx - deg_text(c, f, 0, 0, s, col, false) / 2, y, s, col, true);
+}
+
+static void cloud(canvas_t *c, int cx, int cy, int s, uint16_t col)
+{
+    canvas_disc(c, cx - s * 9 / 10, cy + s / 5, s * 5 / 10, col);
+    canvas_disc(c, cx - s / 10, cy - s / 5, s * 7 / 10, col);
+    canvas_disc(c, cx + s * 7 / 10, cy + s / 8, s * 6 / 10, col);
+    canvas_fill_rect(c, cx - s * 9 / 10, cy + s / 5, s * 16 / 10, s / 2, col);
+}
+
+static void sun(canvas_t *c, int cx, int cy, int r)
+{
+    for (int i = 0; i < 8; i++) {
+        static const int dx[8] = { 0, 7, 10, 7, 0, -7, -10, -7 }, dy[8] = { -10, -7, 0, 7, 10, 7, 0, -7 };
+        canvas_disc(c, cx + dx[i] * r * 15 / 100, cy + dy[i] * r * 15 / 100, r / 6 + 1, C_SUN);
+    }
+    canvas_disc(c, cx, cy, r, C_SUN);
+}
+
+static void moon(canvas_t *c, int cx, int cy, int r)
+{
+    canvas_disc(c, cx, cy, r, RGB(0xE8, 0xE4, 0xD0));
+    canvas_disc(c, cx + r * 5 / 10, cy - r * 3 / 10, r * 85 / 100, RGB(0, 0, 0));
+}
+
+/* The weather as a picture, about 2 s wide, centred on (cx, cy). */
+static void wx_icon(canvas_t *c, wx_icon_t k, bool day, int cx, int cy, int s)
+{
+    if (k == WX_SUN) { if (day) sun(c, cx, cy, s * 6 / 10); else moon(c, cx, cy, s * 6 / 10); return; }
+    if (k == WX_FOG) {
+        for (int i = 0; i < 3; i++) {
+            int y = cy - s / 2 + i * s / 2, w = s * (i == 1 ? 18 : 15) / 10;
+            canvas_fill_rect(c, cx - w / 2, y, w, s / 6 + 2, C_CLOUD);
+        }
+        return;
+    }
+    if (k == WX_PARTLY) {
+        if (day) sun(c, cx - s / 2, cy - s / 3, s * 4 / 10); else moon(c, cx - s / 2, cy - s / 3, s * 4 / 10);
+        cloud(c, cx + s / 6, cy + s / 6, s * 8 / 10, C_CLOUD);
+        return;
+    }
+    int ccy = k == WX_CLOUD ? cy : cy - s / 4;
+    cloud(c, cx, ccy, s, C_CLOUD);
+    int y0 = ccy + s * 8 / 10;
+    if (k == WX_RAIN || k == WX_DRIZZLE)
+        for (int i = -1; i <= 1; i++)
+            for (int j = 0; j < (k == WX_RAIN ? 3 : 2); j++) {
+                int x = cx + i * s * 6 / 10 - j * 3, y = y0 + j * s / 4;
+                if (k == WX_RAIN) canvas_fill_rect(c, x, y, 4, s / 6 + 2, C_DROP);
+                else canvas_disc(c, x, y + 2, 3, C_DROP);
+            }
+    if (k == WX_SNOW)
+        for (int i = -1; i <= 1; i++)
+            for (int j = 0; j < 2; j++) canvas_disc(c, cx + i * s * 6 / 10 + j * s / 4, y0 + j * s / 3, s / 10 + 1, RGB(0xFF, 0xFF, 0xFF));
+    if (k == WX_THUNDER)
+        for (int i = 0; i < s * 6 / 10; i++) {                     /* a bolt: down-left, a step, down-left */
+            int x = cx + s / 6 - i / 3 + (i > s * 3 / 10 ? s / 5 : 0), y = y0 - s / 10 + i;
+            canvas_fill_rect(c, x, y, 6, 1, C_SUN);
+        }
+}
+
+/* The resting screen with the weather: the time large, the day, the weather
+   now, today and tomorrow. The screen stays lit, so it is a clock to read
+   from across the room. */
+static void resting_weather(canvas_t *c, const ui_view_t *v)
+{
+    const uint16_t bright = RGB(0xEC, 0xEF, 0xF4), soft = RGB(0x9A, 0xA2, 0xAE);
+    const weather_t *w = v->weather;
+    if (v->now >= 0) {
+        char t[24];
+        snprintf(t, sizeof t, "%d:%02d", v->now / 60 % 24, v->now % 60);
+        aafont_draw(c, &aafont_inter_number, W / 2, 34, t, bright, AAFONT_CENTRE | AAFONT_ADVANCE);
+        char part[32], date[32], day[72];
+        ui_day_words(v->wday, v->month, v->mday, v->now, part, sizeof part, date, sizeof date);
+        snprintf(day, sizeof day, "%s, %s", part, date);
+        if (!date[0] || aafont_width(&aafont_inter_sub, day) > W - 48) snprintf(day, sizeof day, "%s", part);
+        aafont_draw(c, &aafont_inter_sub, W / 2, 112, day, soft, AAFONT_CENTRE);
+    }
+    canvas_fill_rect(c, 60, 162, W - 120, 1, RGB(0x2A, 0x2E, 0x36));
+    /* Now: the picture at the left, the temperature and its words at the right. */
+    wx_icon(c, weather_icon(w->code), w->day, 140, 246, 64);
+    char t[64];
+    snprintf(t, sizeof t, "%ld^", lroundf(w->temp));
+    deg_text(c, &aafont_inter_number, 236, 196, t, bright, true);
+    aafont_draw(c, &aafont_rooms_head, 238, 272, weather_words(w->code), bright, AAFONT_LEFT);
+    snprintf(t, sizeof t, "Feels like %ld^", lroundf(w->feels));
+    deg_text(c, &aafont_inter_sub, 238, 312, t, soft, true);
+    canvas_fill_rect(c, 60, 360, W - 120, 1, RGB(0x2A, 0x2E, 0x36));
+    /* Today, then tomorrow. */
+    if (w->rain >= 10) snprintf(t, sizeof t, "Today: high %ld^, low %ld^, %s %d%%", lroundf(w->hi), lroundf(w->lo),
+                                weather_icon(w->code) == WX_SNOW ? "snow" : "rain", w->rain);
+    else snprintf(t, sizeof t, "Today: high %ld^, low %ld^", lroundf(w->hi), lroundf(w->lo));
+    deg_centre(c, &aafont_inter_sub, W / 2, 380, t, bright);
+    snprintf(t, sizeof t, "Tomorrow: %s, high %ld^", weather_words(w->t_code), lroundf(w->t_hi));
+    deg_centre(c, &aafont_inter_sub, W / 2, 418, t, soft);
+}
+
 static void resting(canvas_t *c, const ui_view_t *v)
 {
     canvas_fill_rect(c, 0, 0, W, H, RGB(0, 0, 0));
     if (!v->amber && has_photo(v)) {          /* an agent asking for attention wins over the photo */
         resting_photo(c, v);
+        return;
+    }
+    if (!v->amber && v->weather && v->weather->ok) {
+        resting_weather(c, v);
         return;
     }
     orb(c, W / 2, 196, v->amber);

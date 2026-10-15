@@ -231,7 +231,7 @@ esp_err_t lcd_init(void)
         .disp_gpio_num = -1,
         .data_gpio_nums = { 40, 41, 42, 2, 1, 21, 8, 18, 45, 38, 39, 10, 11, 12, 13, 14 },
         .timings = {
-            .pclk_hz = 16 * 1000 * 1000,
+            .pclk_hz = 14 * 1000 * 1000,     /* 16 MHz slid under PSRAM load; 14 still gives ~52 frames a second */
             .h_res = W,
             .v_res = H,
             .hsync_pulse_width = 10,

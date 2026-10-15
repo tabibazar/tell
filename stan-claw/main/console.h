@@ -10,6 +10,7 @@
  *   clarity on|off | text large|xl | contrast normal|high
  *   hoa token TOKEN | hoa forget        (the homeowner's stan-mcp token, for reminders and family messages)
  *   care | care check | care test reminder|message|checkin
+ *   weather | weather at LAT,LON        (the resting screen's weather; Toronto by default)
  * Quote a word with spaces: wifi add "Office WiFi" secret.
  */
 void console_start(void);

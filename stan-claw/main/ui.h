@@ -23,6 +23,7 @@
 
 #include "canvas.h"
 #include "voices.h"
+#include "weather.h"
 
 typedef enum { UI_HOME, UI_LISTENING, UI_THINKING, UI_SPEAKING, UI_ANSWER, UI_ERROR, UI_AGENT_TEXT, UI_AGENT_IMAGE,
                UI_RESTING, UI_SETTINGS, UI_VOICES, UI_EASY, UI_MESSAGE, UI_REMINDER } ui_mode_t;
@@ -59,6 +60,7 @@ typedef struct {
     const char *confirm;     /* UI_LISTENING: non-empty = the Yes/No confirm card with this summary */
     int spoken;              /* UI_SPEAKING: captions -- chars of `text` already spoken; <0 = all bright */
     const char *photo_from;  /* UI_RESTING / UI_MESSAGE: who sent v->image, e.g. "Reza" */
+    const weather_t *weather;  /* UI_RESTING: now, today and tomorrow (NULL or !ok: none yet) */
 } ui_view_t;
 
 /* What a touch at (x, y) lands on, on the page v shows; *value carries the
