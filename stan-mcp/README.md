@@ -26,7 +26,7 @@ The URL and token live only in the gitignored `secrets/stan-mcp.env`.
     sh stan-mcp/setup-care.sh
 
     # update the code
-    (cd stan-mcp && zip -q /tmp/stanmcp.zip lambda_function.py hoa_data.py family.py state.py mail.py)
+    (cd stan-mcp && zip -qr /tmp/stanmcp.zip lambda_function.py hoa_data.py family.py state.py mail.py library.py library)
     aws lambda update-function-code --function-name stan-mcp-demo --region us-east-1 --zip-file fileb:///tmp/stanmcp.zip
 
     # point stan-claw at it (over USB)

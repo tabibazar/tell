@@ -24,6 +24,7 @@ import os
 import re
 
 import family
+import library
 from family import ticket
 from hoa_data import ALIASES, COMMUNITIES
 
@@ -123,7 +124,50 @@ def t_community_info(d, a):
               "amenities": list(d["amenities"]), "dues": d["dues"]})
 
 
+def key_of(d):
+    return next(k for k, v in COMMUNITIES.items() if v is d)
+
+
+def sources(d, query, k=2):
+    """The governing documents' own words on it, cited, for answers that can say where they come from."""
+    hits = library.lib().search(key_of(d), query, k=k)
+    return [{"cite": h["cite"], "text": h["text"][:900]} for h in hits]
+
+
+def t_search_documents(d, a):
+    q = a.get("query") or a.get("topic") or ""
+    k = max(1, min(int(a.get("k") or 4), 8))
+    hits = library.lib().search(key_of(d), q, k=k)
+    if not hits:
+        names = ", ".join(doc["title"] for doc in library.lib().docs.get(key_of(d), []))
+        return f"Nothing in {d['profile']['name']}'s documents matches that. The documents: {names or 'none on file'}."
+    return j([{"cite": h["cite"], "document": h["document"], "section": h["section"], "text": h["text"][:1500]}
+              for h in hits])
+
+
+def t_read_document(d, a):
+    L = library.lib()
+    doc = L.find_doc(key_of(d), a.get("document", ""))
+    if not doc:
+        names = ", ".join(f"{x['title']} ({x['slug']})" for x in L.docs.get(key_of(d), []))
+        return f"No document called that. {d['profile']['name']} has: {names or 'none on file'}."
+    if a.get("section"):
+        sec = L.section(doc, a["section"])
+        if not sec:
+            return f"No section {a['section']} in {doc['title']}. Sections: " + ", ".join(x["heading"] for x in doc["sections"])
+        return j({"cite": library.cite(doc, sec), "document": doc["title"], "section": sec["heading"], "text": sec["text"]})
+    return j({"document": doc["title"], "type": doc["type"], "adopted": doc.get("adopted", ""),
+              "amended": doc.get("amended", ""), "sections": [x["heading"] for x in doc["sections"]],
+              "how": "read_document again with a section number for its text"})
+
+
 def t_lookup_rule(d, a):
+    summary = lookup_rule_summary(d, a)
+    src = sources(d, a.get("topic") or "")
+    return summary + ("\nFrom the documents: " + j(src) if src else "")
+
+
+def lookup_rule_summary(d, a):
     words = re.findall(r"[a-z]+", (a.get("topic") or "").lower())
     rules = d["rules"]
     phrase = " ".join(words)
@@ -157,7 +201,9 @@ def t_events_and_notices(d, a):
 
 
 def t_documents(d, a):
-    return j({"documents": d["documents"], "finances": d["finances"], "insurance": d["insurance"],
+    lib_docs = [{"title": x["title"], "id": x["slug"], "type": x["type"], "adopted": x.get("adopted", ""),
+                 "amended": x.get("amended", "")} for x in library.lib().docs.get(key_of(d), [])]
+    return j({"documents": d["documents"], "library": lib_docs, "finances": d["finances"], "insurance": d["insurance"],
               "how_to_get_them": f"Copies from {d['management']['company']} ({d['management']['email']}) or the "
                                  f"portal; owners have a right to inspect the records within 10 business days."})
 
@@ -337,7 +383,18 @@ TOOLS = [
      schema({**COM, "amenity": {"type": "string"}}, ["community"]), public(t_amenities)),
     ("events_and_notices", "Upcoming events, current notices (water shut-offs, closures) and the trash, recycling, "
      "landscaping and snow schedule.", schema(COM, ["community"]), public(t_events_and_notices)),
-    ("documents", "The governing documents, budget, reserve fund and study, insurance, and how to get copies.",
+    ("search_documents", "Search the community's governing documents (CC&Rs, bylaws, rules, architectural guidelines "
+     "with approved colours, fine and collection policies, budget, minutes ...) and get the exact sections, cited. Use it "
+     "for any question about what the rules say, fees, deadlines, procedures or what the board decided.",
+     schema({**COM, **TOK, "query": {"type": "string", "description": "what to look for, in plain words"},
+             "k": {"type": "integer", "description": "how many sections, 1-8 (default 4)"}}, ["query"]),
+     public(t_search_documents)),
+    ("read_document", "Read a governing document: its list of sections, or one section's full text (give its number, "
+     "e.g. 7.4). `document` is its id or name from the documents tool, e.g. ccrs, bylaws, rules, minutes.",
+     schema({**COM, **TOK, "document": {"type": "string"}, "section": {"type": "string"}}, ["document"]),
+     public(t_read_document)),
+    ("documents", "The governing documents (with the library of full texts), budget, reserve fund and study, insurance, "
+     "and how to get copies.",
      schema(COM, ["community"]), public(t_documents)),
     ("board_and_meetings", "Board members, committees, the next meeting and agenda, how to speak, elections, voting.",
      schema(COM, ["community"]), public(t_board_and_meetings)),
@@ -443,7 +500,9 @@ def rpc(msg):
                                    "before making it. Homeowners can have family contacts: notify_family emails them "
                                    "a message, payments over $100 wait for a family member's OK (say so kindly; it "
                                    "protects against scams), and family can send messages to the homeowner's screen. "
-                                   "Never pay anyone the service does not list. A weekday morning check-in (daily_checkin_consent) "
+                                   "For what the rules, policies or minutes actually say, use search_documents and answer in plain "
+                                   "words, saying which document and section it comes from (for example \"the CC&Rs, "
+                                   "section 7.4, say ...\"). Never pay anyone the service does not list. A weekday morning check-in (daily_checkin_consent) "
                                    "only with the homeowner's clear agreement."})
     if method == "ping":
         return ok({})

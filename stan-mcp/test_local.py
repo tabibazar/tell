@@ -34,7 +34,7 @@ r = post({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protoco
 check(r["statusCode"] == 200 and "Mcp-Session-Id" in r["headers"], "initialize")
 check(post({"jsonrpc": "2.0", "method": "notifications/initialized"})["statusCode"] == 202, "notification 202")
 tools = json.loads(post({"jsonrpc": "2.0", "id": 2, "method": "tools/list"})["body"])["result"]["tools"]
-check(len(tools) == 30 and all(t["inputSchema"]["type"] == "object" for t in tools), f"tools/list ({len(tools)})")
+check(len(tools) == 32 and all(t["inputSchema"]["type"] == "object" for t in tools), f"tools/list ({len(tools)})")
 check(call("fly", {}).get("error", {}).get("code") == -32602, "unknown tool")
 
 # Public tools, across all four communities and as speech might name them
@@ -200,6 +200,41 @@ mail.outbox.clear()
 check(call("checkin_missed", {"homeowner_token": tok, "asked": "11:00 and 11:20"}).startswith("Told"), "missed check-in tells family")
 check("hasn't heard from Reza" in mail.outbox[-1]["subject"], "check-in mail")
 check(call("checkin_missed", {"homeowner_token": tok}) == "Already sent today.", "once a day")
+
+# The library: search and read, on a small library of its own (the real one is checked in check_library.py)
+import tempfile, library
+tmp = tempfile.mkdtemp()
+os.makedirs(os.path.join(tmp, "sheppard_center"))
+open(os.path.join(tmp, "sheppard_center", "ccrs.md"), "w").write(
+    "# Declaration of Covenants for Sheppard Center\n<!-- type: ccrs; adopted: 1998-03-12; amended: 2015-06-01 -->\n"
+    "Preamble.\n\n## Article 7 - Architectural Control\n### 7.4 Fences\nFences shall be no taller than 6 feet in rear "
+    "yards and must be approved by the Architectural Review Committee before construction.\n\n"
+    "### 7.6 Accessory Structures\nSheds and other accessory structures shall be painted in a color from the approved "
+    "palette, such as Sage or Driftwood Gray.\n\n## Article 9 - Use Restrictions\n### 9.2 Pets\nNo more than three "
+    "pets per Lot. Dogs shall be leashed in the Common Area.\n")
+open(os.path.join(tmp, "sheppard_center", "minutes-2026-09-24.md"), "w").write(
+    "# Minutes of the Board Meeting, September 24, 2026\n<!-- type: minutes; adopted: 2026-09-24 -->\nMinutes.\n\n"
+    "## Business\n### 4. Treasurer's report\nThe treasurer reported the reserve fund at $412,000 and proposed dues of $299.\n")
+library._LIB = library.Library(tmp)
+r = json.loads(call("search_documents", {"community": "Sheppard Center", "query": "how tall can my fence be"}))
+check(r[0]["cite"] == "CC&Rs, Article 7, Section 7.4" and "6 feet" in r[0]["text"], f"fence found and cited: {r[:1]}")
+r = json.loads(call("search_documents", {"community": "sheppard", "query": "what colour can I paint my shed"}))
+check("Sage" in r[0]["text"] and r[0]["cite"].endswith("Section 7.6"), "shed colour by synonyms")
+r = json.loads(call("search_documents", {"homeowner_token": tok, "query": "my dog"}))
+check(r[0]["cite"].endswith("Section 9.2"), "signed in: own community, dog -> pets")
+r = json.loads(call("search_documents", {"community": "sheppard", "query": "reserve fund dues"}))
+check(r[0]["cite"].startswith("Minutes of the Board Meeting, September 24, 2026, item 4"), "minutes cited by item")
+check(call("search_documents", {"community": "sheppard", "query": "helicopter landing"}).startswith("Nothing in"), "no match said")
+check("I don't know that community" in call("search_documents", {"community": "Nowhere", "query": "x"}), "unknown community")
+r = json.loads(call("read_document", {"community": "sheppard", "document": "ccrs"}))
+check(r["sections"] == ["7.4 Fences", "7.6 Accessory Structures", "9.2 Pets"] and r["amended"] == "2015-06-01", "outline")
+r = json.loads(call("read_document", {"community": "sheppard", "document": "the CC&Rs", "section": "9.2"}))
+check(r["cite"] == "CC&Rs, Article 9, Section 9.2" and "three" in r["text"], "a section read")
+check(call("read_document", {"community": "sheppard", "document": "budget"}).startswith("No document called that"), "missing doc")
+check("No section 12.1" in call("read_document", {"community": "sheppard", "document": "ccrs", "section": "12.1"}), "missing section")
+check("From the documents" in call("lookup_rule", {"community": "sheppard", "topic": "fence"}), "lookup_rule cites the documents")
+check('"library"' in call("documents", {"community": "sheppard"}), "documents lists the library")
+library._LIB = None
 
 print("stan-mcp local: all passed" if not fails else f"{fails} FAILED")
 sys.exit(1 if fails else 0)
