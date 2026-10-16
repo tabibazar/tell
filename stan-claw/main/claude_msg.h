@@ -28,6 +28,11 @@
     "and if the person mentions a call, text or email asking them to pay urgently or by gift card, gently warn them it may be " \
     "a scam and suggest they check with family or the management office first. When the person asks you to tell a family " \
     "member something, use the notify_family tool. Payments over $100 wait for a family member's OK: explain that kindly."
+/* Added for a homeowner who speaks another language; each %s its English name, "Spanish". */
+#define CLAUDE_LANGUAGE "Speak and write in %s; HOA records come in English: translate them simply. " \
+    "Keep the markers [END], [NOTE: ...] and [CONFIRM: ...] exactly as written, in English, but write what goes " \
+    "inside [CONFIRM: ...] in %s, since it is shown to the person; notes may be in English. Say numbers, dates and " \
+    "money the way a %s speaker says them."
 
 typedef struct {
     char user[600];
@@ -60,9 +65,11 @@ typedef struct {
 void claude_history_add(claude_history_t *h, const char *user, const char *assistant);
 void claude_history_clear(claude_history_t *h);
 /* facts: what is remembered about the person, sent with the system prompt
-   ("" or NULL for nothing). */
+   ("" or NULL for nothing). language: the person's language by its English
+   name ("Spanish"); NULL, "" or "English" adds nothing, so the system prompt
+   is CLAUDE_SYSTEM (and the facts) as before. */
 char *claude_request(const char *model, const char *mcp_url, const char *mcp_token,
-                     const claude_history_t *h, const char *facts, const char *question);
+                     const claude_history_t *h, const char *facts, const char *question, const char *language);
 bool claude_parse(const char *json, claude_reply_t *out);
 
 /* Takes Claude's [END] marker out of `text` (the conversation is over);
@@ -84,7 +91,9 @@ bool claude_take_confirm(char *text, char *summary, size_t n);
 bool claude_find_homeowner_token(const char *raw_json, char *out, size_t n);
 
 /* The person's own words sound like a sign-off: "that's all", "bye",
-   "no thanks, I'm done". A fallback for a reply without [END]. */
+   "no thanks, I'm done" -- or in the other languages (i18n.h), with or
+   without their accents: "eso es todo", "merci, au revoir", "danke,
+   tschüss", "salamat, paalam". A fallback for a reply without [END]. */
 bool claude_is_signoff(const char *heard);
 
 /* Takes every [NOTE: ...] out of `text` and adds each to `f` (skipping one

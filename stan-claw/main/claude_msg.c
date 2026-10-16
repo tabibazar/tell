@@ -29,16 +29,23 @@ static void add_msg(cJSON *msgs, const char *role, const char *text)
 }
 
 char *claude_request(const char *model, const char *mcp_url, const char *mcp_token,
-                     const claude_history_t *h, const char *facts, const char *question)
+                     const claude_history_t *h, const char *facts, const char *question, const char *language)
 {
     cJSON *o = cJSON_CreateObject();
     cJSON_AddStringToObject(o, "model", model);
     cJSON_AddNumberToObject(o, "max_tokens", 1024);
-    if (facts && facts[0]) {
-        size_t n = strlen(CLAUDE_SYSTEM) + strlen(facts) + 64;
+    /* The prompt, what is known about the person, and the language to answer in. */
+    bool other = language && language[0] && strcmp(language, "English") != 0;
+    if ((facts && facts[0]) || other) {
+        size_t n = strlen(CLAUDE_SYSTEM) + (facts ? strlen(facts) : 0) + strlen(CLAUDE_LANGUAGE) + (other ? 3 * strlen(language) : 0) + 64;
         char *sys = malloc(n);
         if (sys) {
-            snprintf(sys, n, "%s What you already know about the person: %s", CLAUDE_SYSTEM, facts);
+            size_t at = (size_t)snprintf(sys, n, "%s", CLAUDE_SYSTEM);
+            if (facts && facts[0] && at < n) at += (size_t)snprintf(sys + at, n - at, " What you already know about the person: %s", facts);
+            if (other && at + 1 < n) {
+                sys[at++] = ' ';
+                snprintf(sys + at, n - at, CLAUDE_LANGUAGE, language, language, language);
+            }
             cJSON_AddStringToObject(o, "system", sys);
             free(sys);
         }
@@ -171,34 +178,76 @@ bool claude_find_homeowner_token(const char *raw_json, char *out, size_t n)
     return true;
 }
 
+/* A Latin-1 letter (U+00C0..U+00FF) without its accent, lower case: "e" for
+   É or è, "ss" for ß; "" for the two signs among them (multiply, divide). */
+static const char *unaccent(unsigned cp)
+{
+    static const char *const map[64] = {
+        "a", "a", "a", "a", "a", "a", "ae", "c", "e", "e", "e", "e", "i", "i", "i", "i",
+        "d", "n", "o", "o", "o", "o", "o", "", "o", "u", "u", "u", "u", "y", "th", "ss",
+        "a", "a", "a", "a", "a", "a", "ae", "c", "e", "e", "e", "e", "i", "i", "i", "i",
+        "d", "n", "o", "o", "o", "o", "o", "", "o", "u", "u", "u", "u", "y", "th", "y",
+    };
+    return cp >= 0xC0 && cp <= 0xFF ? map[cp - 0xC0] : "";
+}
+
 bool claude_is_signoff(const char *heard)
 {
-    /* Lower case, letters and spaces only, then whole-phrase checks: a short
-       utterance that is (or ends with) a sign-off, not one that merely
-       contains "stop" somewhere in a question. */
+    /* Lower case, accents off, letters and single spaces only, then
+       whole-phrase checks: a short utterance that is (or ends with) a
+       sign-off, not one that merely contains "stop" somewhere in a question.
+       Apostrophes (straight or curly) vanish: "c'est" is "cest". */
     char t[160];
     size_t o = 0;
-    for (const char *p = heard; *p && o + 1 < sizeof t; p++) {
-        char c = *p;
+    for (const unsigned char *p = (const unsigned char *)heard; *p && o + 3 < sizeof t; p++) {
+        char c = (char)*p;
+        const char *add = NULL;
+        if (*p == 0xC3 && (p[1] & 0xC0) == 0x80) {                 /* U+00C0..U+00FF: a letter of another language */
+            add = unaccent(0xC0u | (p[1] & 0x3Fu));
+            p++;
+        } else if (*p == 0xC5 && (p[1] == 0x92 || p[1] == 0x93)) {   /* Œ, œ */
+            add = "oe";
+            p++;
+        } else if (*p == 0xE2 && p[1] == 0x80 && (p[2] == 0x98 || p[2] == 0x99)) {   /* ‘ ’ */
+            p += 2;
+            continue;
+        }
+        if (add) {
+            for (; *add; add++) t[o++] = *add;
+            continue;
+        }
         if (c >= 'A' && c <= 'Z') c = (char)(c - 'A' + 'a');
-        if ((c >= 'a' && c <= 'z') || c == ' ') t[o++] = c;
+        if ((c >= 'a' && c <= 'z')) t[o++] = c;
         else if (c == '\'') continue;
-        else t[o++] = ' ';
+        else if (o > 0 && t[o - 1] != ' ') t[o++] = ' ';           /* one space between words, however they were split */
     }
+    while (o > 0 && t[o - 1] == ' ') o--;
     t[o] = 0;
     int words = 0;
     for (char *p = t; *p; p++) if (*p != ' ' && (p == t || p[-1] == ' ')) words++;
     if (words == 0 || words > 8) return false;
     static const char *const ends[] = { "thats all", "that is all", "thats it", "that is it", "goodbye", "bye",
                                         "im done", "i am done", "were done", "nothing else", "no thanks",
-                                        "no thank you", "stop", "see you", "talk later", "never mind" };
-    for (size_t i = 0; i < sizeof ends / sizeof ends[0]; i++) {
-        const char *hit = strstr(t, ends[i]);
-        if (!hit) continue;
-        const char *after = hit + strlen(ends[i]);
-        bool start_ok = hit == t || hit[-1] == ' ';
-        bool end_ok = *after == 0 || *after == ' ';
-        if (start_ok && end_ok) return true;
+                                        "no thank you", "stop", "see you", "talk later", "never mind",
+                                        /* Spanish, French, Portuguese, Italian, German, Tagalog */
+                                        "eso es todo", "gracias adios", "adios", "hasta luego",
+                                        "cest tout", "merci au revoir", "au revoir",
+                                        "obrigado tchau", "obrigada tchau", "tchau", "adeus",
+                                        "grazie arrivederci", "arrivederci",
+                                        "das ist alles", "danke tschuss", "danke tschus", "tschuss", "tschus", "auf wiedersehen",
+                                        "iyon lang", "salamat paalam", "paalam" };
+    /* Short ones that only close an utterance: "é tudo" is "that's all",
+       "e tudo bem?" is not. */
+    static const char *const tails[] = { "e tudo", "e tutto" };
+    for (size_t i = 0; i < sizeof ends / sizeof ends[0] + sizeof tails / sizeof tails[0]; i++) {
+        bool tail = i >= sizeof ends / sizeof ends[0];
+        const char *ph = tail ? tails[i - sizeof ends / sizeof ends[0]] : ends[i];
+        for (const char *hit = strstr(t, ph); hit; hit = strstr(hit + 1, ph)) {
+            const char *after = hit + strlen(ph);
+            bool start_ok = hit == t || hit[-1] == ' ';
+            bool end_ok = *after == 0 || (!tail && *after == ' ');
+            if (start_ok && end_ok) return true;
+        }
     }
     return false;
 }

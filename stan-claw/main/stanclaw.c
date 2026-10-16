@@ -19,7 +19,12 @@
  * a question that needs a yes gets a Yes/No card; captions follow the speech;
  * two knocks start a conversation. A care task fetches the homeowner's
  * reminders and family's messages from stan-mcp, speaks them 9 am-7 pm with a
- * chime and a card, and the board wakes from deep sleep for a reminder.
+ * chime and a card, and the board wakes from deep sleep for a reminder;
+ * once a family message has been shown and read aloud, stan-mcp is told.
+ *
+ * It speaks the homeowner's language (i18n.h, chosen on See and hear or with
+ * `lang`): the conversation's screens, Claude's answers, what Deepgram
+ * listens for, and what it says on its own.
  */
 #include <math.h>
 #include <stdio.h>
@@ -43,6 +48,7 @@
 
 #include "agent.h"
 #include "care_net.h"
+#include "i18n.h"
 #include "phrases.h"
 #include "portal.h"
 #include "qrcode.h"
@@ -188,6 +194,7 @@ static void deep_sleep_now(bool panel_up)
 
 static int s_volume = 70, s_speed = 1, s_model = 0;
 static int s_textsize;                 /* see and hear: 0 large, 1 extra large */
+static int s_lang;                     /* the homeowner's language (i18n.h) */
 static bool s_contrast, s_clarity = true;
 static char s_voice_name[32];
 static int s_cur = -1;                 /* VOICES index in use, -1 none */
@@ -221,6 +228,7 @@ static void settings_load(void)
     s_contrast = v[0] == '1';
     cfg_get(CFG_CLARITY, v, sizeof v);
     s_clarity = v[0] != '0';
+    s_lang = cfg_lang();
 }
 
 void settings_reload(void) { settings_load(); s_dirty = true; }
@@ -311,6 +319,7 @@ static void sync_view(void)
     s_view.textsize = s_textsize;
     s_view.contrast = s_contrast;
     s_view.clarity = s_clarity;
+    s_view.lang = s_lang;
     s_view.convo = s_convo;
     s_view.confirm = s_confirm;
     s_view.qr = s_setup.qr;
@@ -443,7 +452,7 @@ static void conversation(void)
     s_opening = NULL;
     s_answered = false;
     if (!net_up()) {
-        if (!opening) plain_words(UI_HOME, PH_OFFLINE, NULL, "no WiFi");
+        if (!opening) plain_words(UI_HOME, PH_OFFLINE, NULL, tr(s_lang, TR_NO_WIFI));
         return;
     }
     static char heard[600], last[1500], last_heard[600], last_note[96];
@@ -456,7 +465,7 @@ static void conversation(void)
         say(opening, 0);
     }
     for (int round = 0; !s_stop; round++) {
-        set_view(UI_LISTENING, NULL, NULL, round ? "Your turn" : opening ? "How are you today?" : NULL, NULL);
+        set_view(UI_LISTENING, NULL, NULL, round ? tr(s_lang, TR_YOUR_TURN) : opening ? tr(s_lang, TR_HOW_ARE_YOU) : NULL, NULL);
         vad_result_t why;
         int n = audio_record_wait(s_pcm, AUDIO_FS * REC_MAX_S, REC_MAX_S * 1000,
                                   round ? CONVO_WAIT_MS : opening ? 20000 : REC_MAX_S * 1000, &why);
@@ -481,19 +490,19 @@ static void conversation(void)
                 if (round == 0) {
                     s_confirm[0] = 0;
                     if (opening) { set_view(UI_HOME, NULL, NULL, NULL, NULL); return; }   /* the check-in tries later */
-                    plain_words(UI_HOME, PH_MISSED, NULL, "didn't catch that");
+                    plain_words(UI_HOME, PH_MISSED, NULL, tr(s_lang, TR_MISSED));
                     return;
                 }
                 /* No reply: check in once, kindly, before letting them go. */
                 if (!checked_in) {
                     checked_in = true;
-                    set_view(UI_SPEAKING, NULL, "Is there anything else I can help you with?", NULL, NULL);
-                    say("Is there anything else I can help you with?", 0);
+                    set_view(UI_SPEAKING, NULL, tr(s_lang, TR_ANYTHING_ELSE), NULL, NULL);
+                    say(tr(s_lang, TR_ANYTHING_ELSE), 0);
                     continue;
                 }
                 s_confirm[0] = 0;
-                set_view(UI_SPEAKING, NULL, "All right. Just tap the screen whenever you need me. Goodbye.", NULL, NULL);
-                say("All right. Just tap the screen whenever you need me. Goodbye.", 0);
+                set_view(UI_SPEAKING, NULL, tr(s_lang, TR_GOODBYE), NULL, NULL);
+                say(tr(s_lang, TR_GOODBYE), 0);
                 break;
             }
             set_view(UI_THINKING, "...", NULL, NULL, NULL);
@@ -524,8 +533,8 @@ static void conversation(void)
         if (s_stop) break;
         bool end = reply.end || claude_is_signoff(heard);
         char note[96] = "";
-        if (reply.mcp_error) snprintf(note, sizeof note, "I couldn't reach the HOA service just now");
-        else if (reply.tools[0]) snprintf(note, sizeof note, "I checked your HOA records");
+        if (reply.mcp_error) snprintf(note, sizeof note, "%s", tr(s_lang, TR_HOA_FAILED));
+        else if (reply.tools[0]) snprintf(note, sizeof note, "%s", tr(s_lang, TR_HOA_CHECKED));
         snprintf(last, sizeof last, "%s", reply.text);
         snprintf(last_heard, sizeof last_heard, "%s", heard);
         snprintf(last_note, sizeof last_note, "%s", note);
@@ -543,7 +552,7 @@ static void conversation(void)
     }
     s_confirm[0] = 0;
     s_answer_at = esp_timer_get_time();
-    set_view(UI_HOME, NULL, NULL, NULL, s_stop ? NULL : "conversation ended");
+    set_view(UI_HOME, NULL, NULL, NULL, s_stop ? NULL : tr(s_lang, TR_ENDED));
 }
 
 static void convo_task(void *arg)
@@ -709,8 +718,7 @@ static bool checkin_ask(bool test)
 {
     if (test) { s_ck_test = true; s_ck_state = 0; }
     int m = minute_now();
-    s_opening = m < 12 * 60 ? "Good morning! I'm just checking in. How are you today?"
-                            : "Hello! I'm just checking in. How are you today?";
+    s_opening = tr(s_lang, m < 12 * 60 ? TR_CHECKIN_MORNING : TR_CHECKIN_DAY);
     s_answered = false;
     xSemaphoreGive(s_go);
     int64_t t0 = esp_timer_get_time();
@@ -755,11 +763,16 @@ static void care_task(void *arg)
     const int64_t INBOX_US = 120LL * 1000000, REMIND_US = 3LL * 3600 * 1000000;
     int64_t inbox_at = -INBOX_US, remind_at = -REMIND_US, photos_at = -REMIND_US, phrase_at = -60LL * 1000000;
     int64_t weather_at = -3600LL * 1000000, geo_at = -48LL * 3600 * 1000000;
-    char spoken[CARE_TEXT + 48], title[48];
+    char spoken[CARE_TEXT + 96], title[64];
+    static char heard_id[48];                  /* a message just shown and read aloud: tell stan-mcp, once */
     for (;;) {
         vTaskDelay(pdMS_TO_TICKS(3000));
         int64_t now_us = esp_timer_get_time();
         if (net_up() && care_net_ready() && !s_in_use && !s_convo) {     /* never a TLS session beside a conversation's */
+            if (heard_id[0]) {                 /* fire and forget: a failure is not tried again */
+                care_net_heard(heard_id);
+                heard_id[0] = 0;
+            }
             if (s_care_kick || now_us - remind_at >= REMIND_US) {
                 /* A failure tries again in 10 minutes. */
                 remind_at = care_net_refresh_reminders() ? now_us : now_us - REMIND_US + 600LL * 1000000;
@@ -837,7 +850,7 @@ static void care_task(void *arg)
             if (!phrases_refresh_one()) phrase_at = now_us;            /* failed: wait a little */
         }
         bool idle = !s_in_use && !s_mic && !s_convo && !s_job && s_view.mode != UI_SETTINGS
-                    && s_view.mode != UI_VOICES && s_view.mode != UI_EASY;
+                    && s_view.mode != UI_VOICES && s_view.mode != UI_EASY && s_view.mode != UI_LANG;
         /* One card at a time: the next waits for a tap, or 90 s. */
         bool card_up = (s_view.mode == UI_MESSAGE || s_view.mode == UI_REMINDER)
                        && now_us - s_card_at < 90LL * 1000000;
@@ -846,10 +859,14 @@ static void care_task(void *arg)
             int kind = s_care_demo;
             s_care_demo = -1;
             if (kind == 2) { s_ck_test = true; s_ck_state = 0; s_ck_day = 0; continue; }
-            if (kind == 1) present(UI_MESSAGE, "Message from Reza", "Hi! I'll call you tonight at seven. Love you.",
-                                   "Message from Reza. Hi! I'll call you tonight at seven. Love you.");
-            else present(UI_REMINDER, "Reminder", "Tonight is trash night. The bins can go out to the curb now.",
-                         "Tonight is trash night. The bins can go out to the curb now.");
+            if (kind == 1) {
+                snprintf(title, sizeof title, tr(s_lang, TR_MSG_FROM), "Reza");
+                snprintf(spoken, sizeof spoken, "%s. Hi! I'll call you tonight at seven. Love you.", title);
+                present(UI_MESSAGE, title, "Hi! I'll call you tonight at seven. Love you.", spoken);
+            } else {
+                present(UI_REMINDER, tr(s_lang, TR_REMINDER), "Tonight is trash night. The bins can go out to the curb now.",
+                        "Tonight is trash night. The bins can go out to the curb now.");
+            }
             continue;
         }
         if (!net_time_ok()) continue;
@@ -858,20 +875,30 @@ static void care_task(void *arg)
         int mi = care_next_message();
         if (mi >= 0) {
             care_item_t *m = &care_messages()->item[mi];
+            /* The words around it in the homeowner's language; the message as it was written. */
+            char said[96];
             if (m->photo[0]) {
-                snprintf(title, sizeof title, "A photo from %s", m->from[0] ? m->from : "family");
-                snprintf(spoken, sizeof spoken, "%s sent you a photo. %s", m->from[0] ? m->from : "Your family", m->text);
+                if (m->from[0]) snprintf(title, sizeof title, tr(s_lang, TR_PHOTO_FROM), m->from);
+                else snprintf(title, sizeof title, "%s", tr(s_lang, TR_PHOTO_FAMILY));
+                if (m->from[0]) snprintf(said, sizeof said, tr(s_lang, TR_SENT_PHOTO), m->from);
+                else snprintf(said, sizeof said, "%s", tr(s_lang, TR_FAMILY_SENT_PHOTO));
+                snprintf(spoken, sizeof spoken, "%s %s", said, m->text);
             } else {
-                snprintf(title, sizeof title, "Message from %s", m->from[0] ? m->from : "family");
+                if (m->from[0]) snprintf(title, sizeof title, tr(s_lang, TR_MSG_FROM), m->from);
+                else snprintf(title, sizeof title, "%s", tr(s_lang, TR_MSG_FAMILY));
                 snprintf(spoken, sizeof spoken, "%s. %s", title, m->text);
             }
-            if (present_photo(UI_MESSAGE, title, m->text, spoken, m->photo)) { m->done = true; care_net_save(); }
+            if (present_photo(UI_MESSAGE, title, m->text, spoken, m->photo)) {
+                m->done = true;
+                care_net_save();
+                snprintf(heard_id, sizeof heard_id, "%s", m->id);   /* told on the next round, when nobody is talking */
+            }
             continue;
         }
         int ri = care_due(care_reminders(), (long)time(NULL), minute_now());
         if (ri >= 0) {
             care_item_t *r = &care_reminders()->item[ri];
-            if (present(UI_REMINDER, "Reminder", r->text, r->text)) { r->done = true; care_net_save(); }
+            if (present(UI_REMINDER, tr(s_lang, TR_REMINDER), r->text, r->text)) { r->done = true; care_net_save(); }
         }
         static int64_t hw_at;
         if (now_us - hw_at > 600LL * 1000000) {
@@ -1144,7 +1171,8 @@ void app_main(void)
                 set_view(UI_HOME, NULL, NULL, NULL, NULL);
             } else if (m == UI_SETUP) {
                 if (phit == UI_HIT_BACK || phit == UI_HIT_CLOSE) setup_end();
-            } else if (m != UI_SETTINGS && m != UI_EASY && m != UI_VOICES && m != UI_LISTENING && m != UI_THINKING && m != UI_SPEAKING) {
+            } else if (m != UI_SETTINGS && m != UI_EASY && m != UI_LANG && m != UI_VOICES && m != UI_LISTENING
+                       && m != UI_THINKING && m != UI_SPEAKING) {
                 set_view(UI_HOME, NULL, NULL, NULL, NULL);          /* a tap clears answers and agent screens */
             }
         } else if (now_down && down && !ignore) {                   /* a drag */
@@ -1202,6 +1230,18 @@ void app_main(void)
                     s_clarity = pval;
                     cfg_set(CFG_CLARITY, pval ? "1" : "0");
                     if (s_cur >= 0) job(s_cur);                     /* hear the difference */
+                } else if (phit == UI_HIT_LANG) {
+                    set_view(UI_LANG, NULL, NULL, NULL, NULL);
+                }
+                s_dirty = true;
+            } else if (m == UI_LANG) {
+                if (phit == UI_HIT_BACK) {
+                    set_view(UI_EASY, NULL, NULL, NULL, NULL);
+                } else if (phit == UI_HIT_LANG) {
+                    /* Lit at once; Claude, Deepgram and the screens take it from
+                       here, the recorded phrases while it idles. */
+                    s_lang = pval;
+                    cfg_set(CFG_LANG, pval == LANG_EN ? "" : lang_code(pval));
                 }
                 s_dirty = true;
             } else if (m == UI_VOICES) {
@@ -1275,16 +1315,16 @@ void app_main(void)
                 job(at);
             }
         }
-        if ((s_view.mode == UI_SETTINGS || s_view.mode == UI_VOICES || s_view.mode == UI_EASY)
+        if ((s_view.mode == UI_SETTINGS || s_view.mode == UI_VOICES || s_view.mode == UI_EASY || s_view.mode == UI_LANG)
             && esp_timer_get_time() - s_active_at > REST_BREATHE_S * 1000000LL)
             set_view(UI_HOME, NULL, NULL, NULL, NULL);
         if (s_view.mode == UI_ANSWER && esp_timer_get_time() - s_answer_at > ANSWER_US)
             set_view(UI_HOME, NULL, NULL, NULL, NULL);
         if (s_view.mode == UI_HOME) {
-            const char *want = !net_up() ? "no WiFi" : !cfg_has(CFG_CLAUDE_KEY) ? "Claude key missing"
+            const char *want = !net_up() ? tr(s_lang, TR_NO_WIFI) : !cfg_has(CFG_CLAUDE_KEY) ? "Claude key missing"
                              : !cfg_has(CFG_DEEPGRAM_KEY) ? "Deepgram key missing" : NULL;
             if (want && strcmp(s_note, want) != 0) set_view(UI_HOME, NULL, NULL, NULL, want);
-            if (!want && s_note[0] && (strcmp(s_note, "no WiFi") == 0 || strstr(s_note, "key missing")))
+            if (!want && s_note[0] && (strcmp(s_note, tr(s_lang, TR_NO_WIFI)) == 0 || strstr(s_note, "key missing")))
                 set_view(UI_HOME, NULL, NULL, NULL, NULL);
         }
         if (net_time_ok()) {
@@ -1383,7 +1423,7 @@ void app_main(void)
             s_view.nlevels = s_nlevels;
             s_view.listen_ms = (int)((now_us - s_listen_t0) / 1000);
             if (resting_screen) {
-                ui_view_t rv = { .mode = UI_RESTING, .now = s_view.now, .amber = amber, .mic_open = s_mic,
+                ui_view_t rv = { .mode = UI_RESTING, .lang = s_view.lang, .now = s_view.now, .amber = amber, .mic_open = s_mic,
                                  .wday = s_view.wday, .month = s_view.month, .mday = s_view.mday, .spoken = -1 };
                 rv.weather = &s_weather;
                 char at[8];

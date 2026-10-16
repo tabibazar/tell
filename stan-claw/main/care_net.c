@@ -114,6 +114,16 @@ int care_net_check_inbox(void)
     return fresh;
 }
 
+bool care_net_heard(const char *id)
+{
+    if (!s_text || !id || !id[0]) return false;
+    char extra[80];
+    snprintf(extra, sizeof extra, ",\"id\":\"%.47s\"", id);
+    bool ok = call("message_heard", extra, s_text, TEXT_MAX);
+    ESP_LOGI(TAG, "message %s heard: %s", id, ok ? "told" : "not told");
+    return ok;
+}
+
 bool care_checkin_on(void) { return s_checkin == 1; }
 
 bool care_net_checkin_missed(const char *asked)

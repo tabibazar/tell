@@ -14,7 +14,7 @@ int main(void)
 {
     static claude_history_t h;
     claude_history_clear(&h);
-    char *req = claude_request("claude-sonnet-5", "", "", &h, "", "What time is it?");
+    char *req = claude_request("claude-sonnet-5", "", "", &h, "", "What time is it?", NULL);
     cJSON *j = cJSON_Parse(req);
     CHECK(j != NULL);
     CHECK(strcmp(cJSON_GetObjectItem(j, "model")->valuestring, "claude-sonnet-5") == 0);
@@ -28,7 +28,7 @@ int main(void)
     free(req);
 
     claude_history_add(&h, "Hi", "Hello!");
-    req = claude_request("m", "https://mcp.example/mcp", "tok", &h, NULL, "And now?");
+    req = claude_request("m", "https://mcp.example/mcp", "tok", &h, NULL, "And now?", "");
     j = cJSON_Parse(req);
     cJSON *srv = cJSON_GetArrayItem(cJSON_GetObjectItem(j, "mcp_servers"), 0);
     CHECK(srv && strcmp(cJSON_GetObjectItem(srv, "type")->valuestring, "url") == 0);
@@ -44,7 +44,7 @@ int main(void)
     cJSON_Delete(j);
     free(req);
 
-    req = claude_request("m", "https://mcp.example/mcp", "", &h, NULL, "x");     /* no token: no field */
+    req = claude_request("m", "https://mcp.example/mcp", "", &h, NULL, "x", "English");     /* no token: no field */
     j = cJSON_Parse(req);
     CHECK(cJSON_GetObjectItem(cJSON_GetArrayItem(cJSON_GetObjectItem(j, "mcp_servers"), 0), "authorization_token") == NULL);
     cJSON_Delete(j);
@@ -96,6 +96,23 @@ int main(void)
     CHECK(!claude_is_signoff("Can you tell me about the bylaws?"));
     CHECK(!claude_is_signoff("byelaws for sheds"));
     CHECK(!claude_is_signoff(""));
+    /* In the other languages, with and without accents (and a curly apostrophe). */
+    static const char *const bye[] = {
+        "Eso es todo, gracias.", "eso es todo", "Gracias, adiós.", "gracias adios", "Adiós", "C'est tout.", "C\u2019est tout",
+        "Merci, au revoir !", "merci au revoir", "É tudo.", "e tudo", "Obrigado, tchau!", "obrigada tchau", "È tutto.",
+        "e tutto", "Grazie, arrivederci.", "grazie arrivederci", "Das ist alles.", "das ist alles", "Danke, tschüss!",
+        "danke tschuss", "Tschüs", "Iyon lang po.", "iyon lang", "Salamat, paalam.", "salamat paalam",
+    };
+    for (size_t i = 0; i < sizeof bye / sizeof bye[0]; i++) {
+        if (!claude_is_signoff(bye[i])) printf("  not a sign-off: %s\n", bye[i]);
+        CHECK(claude_is_signoff(bye[i]));
+    }
+    CHECK(claude_is_signoff("C\xE2\x80\x99" "est tout"));                       /* ’ as typed by a phone */
+    CHECK(!claude_is_signoff("E tudo bem com você?"));                        /* "and all well?": not "é tudo" */
+    CHECK(!claude_is_signoff("È tutto pronto per la riunione?"));
+    CHECK(!claude_is_signoff("¿Cuándo vence mi próxima cuota?"));
+    CHECK(!claude_is_signoff("Wann ist die nächste Versammlung?"));
+    CHECK(!claude_is_signoff("Merci pour l'information sur les frais"));
     CHECK(strstr(CLAUDE_SYSTEM, "[END]") != NULL);
 
     /* Notes: taken out of the reply, kept as facts, sent with the system prompt. */
@@ -111,9 +128,27 @@ int main(void)
     char line[400];
     claude_facts_line(&f, line, sizeof line);
     CHECK(strcmp(line, "lives in Sheppard Center; email info@avriz.io") == 0);
-    req = claude_request("m", "", "", &h, line, "hi");
+    req = claude_request("m", "", "", &h, line, "hi", NULL);
     j = cJSON_Parse(req);
     CHECK(strstr(cJSON_GetObjectItem(j, "system")->valuestring, "What you already know about the person: lives in Sheppard Center") != NULL);
+    CHECK(strstr(cJSON_GetObjectItem(j, "system")->valuestring, "Speak and write in") == NULL);
+    cJSON_Delete(j);
+    free(req);
+
+    /* Another language: the prompt says so, after what is known; the markers stay English. */
+    req = claude_request("m", "", "", &h, line, "hola", "Spanish");
+    j = cJSON_Parse(req);
+    const char *sys = cJSON_GetObjectItem(j, "system")->valuestring;
+    CHECK(strncmp(sys, CLAUDE_SYSTEM, strlen(CLAUDE_SYSTEM)) == 0);
+    CHECK(strstr(sys, "Speak and write in Spanish; HOA records come in English: translate them simply.") != NULL);
+    CHECK(strstr(sys, "lives in Sheppard Center") != NULL && strstr(sys, "lives in Sheppard Center") < strstr(sys, "Speak and"));
+    CHECK(strstr(sys, "inside [CONFIRM: ...] in Spanish") != NULL && strstr(sys, "%") == NULL);
+    cJSON_Delete(j);
+    free(req);
+    req = claude_request("m", "", "", &h, NULL, "bonjour", "French");      /* no facts: the language alone */
+    j = cJSON_Parse(req);
+    sys = cJSON_GetObjectItem(j, "system")->valuestring;
+    CHECK(strstr(sys, "Speak and write in French;") != NULL && strstr(sys, "What you already know") == NULL);
     cJSON_Delete(j);
     free(req);
     char txt[800];

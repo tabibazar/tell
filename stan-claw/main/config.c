@@ -6,6 +6,7 @@
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
+#include "i18n.h"
 #include "nvs.h"
 #include "stanclaw_secrets.h"
 
@@ -14,7 +15,7 @@ static const char *TAG = "config";
 
 static const char *const KEYS[CFG_N] = { "k_claude", "k_dg", "k_el", "voice", "model", "mcp_url", "mcp_tok", "srv_tok",
                                           "voice_nm", "volume", "speed", "voice_fx", "clarity", "textsize",
-                                          "contrast", "hw_tok", "wx_at", "tz" };
+                                          "contrast", "hw_tok", "wx_at", "tz", "lang" };
 static SemaphoreHandle_t s_lock;
 static cfg_net_t s_nets[CFG_NETS];
 static int s_n;
@@ -145,4 +146,11 @@ bool cfg_has(cfg_key_t k)
     bool has = s_val[k][0] != 0;
     xSemaphoreGive(s_lock);
     return has;
+}
+
+int cfg_lang(void)
+{
+    char v[CFG_VAL];
+    cfg_get(CFG_LANG, v, sizeof v);
+    return lang_from_code(v);
 }

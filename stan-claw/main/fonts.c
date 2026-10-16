@@ -1,9 +1,10 @@
-/* The faces panel1 made (Inter, see each header), shared rather than copied,
-   and stan-claw's own: the extra large answer face. */
+/* stan-claw's own faces: Inter at panel1's sizes and main's inter_sub size
+   (see each header), with the accented letters of the languages it speaks
+   (i18n.h) besides ASCII, and the extra large answer face. */
 #include "aafont.h"
 
-#include "../../panel1/main/font_rooms_head.h"
-#include "../../panel1/main/font_rooms_title.h"
-#include "../../panel1/main/font_rooms_small.h"
-
+#include "font_sc_head.h"
+#include "font_sc_title.h"
+#include "font_sc_small.h"
+#include "font_sc_sub.h"
 #include "font_sc_answer_xl.h"

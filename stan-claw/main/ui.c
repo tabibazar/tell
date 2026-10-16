@@ -6,10 +6,13 @@
 #include <string.h>
 
 #include "aafont.h"
+#include "i18n.h"
 
-extern const aafont_t aafont_rooms_head;    /* Inter SemiBold 30 */
-extern const aafont_t aafont_rooms_title;   /* Inter SemiBold 17 */
-extern const aafont_t aafont_rooms_small;   /* Inter Medium 15 */
+/* stan-claw's faces (fonts.c): ASCII and the accented letters of its languages. */
+extern const aafont_t aafont_sc_head;       /* Inter SemiBold 30 */
+extern const aafont_t aafont_sc_title;      /* Inter SemiBold 17 */
+extern const aafont_t aafont_sc_small;      /* Inter Medium 15 */
+extern const aafont_t aafont_sc_sub;        /* Inter Medium 23 */
 extern const aafont_t aafont_sc_answer_xl;  /* Inter SemiBold 40: answers, extra large */
 
 #define W 480
@@ -40,6 +43,25 @@ bool ui_hit_talk(int x, int y)
     return dx * dx + dy * dy <= (TALK_R + 20) * (TALK_R + 20);
 }
 
+/* Takes the last character off t: a whole UTF-8 sequence, so a trimmed
+   "Mensaje de José" never ends in half an é (which would draw as junk). */
+static void drop_last(char *t)
+{
+    size_t l = strlen(t);
+    while (l > 0 && ((unsigned char)t[l - 1] & 0xC0) == 0x80) l--;      /* continuation bytes */
+    if (l > 0) l--;                                                     /* and the lead (or ASCII) byte */
+    t[l] = 0;
+}
+
+/* How many bytes the character at s takes (a lead byte's sequence; 1 for anything else). */
+static int char_len(const char *s)
+{
+    unsigned char c = (unsigned char)s[0];
+    int n = c >= 0xF0 ? 4 : c >= 0xE0 ? 3 : c >= 0xC0 ? 2 : 1;
+    for (int i = 1; i < n; i++) if (((unsigned char)s[i] & 0xC0) != 0x80) return 1;
+    return n;
+}
+
 /* Greedy word wrap of `s` in face `f` into lines of `maxw`, drawn from
    (x, y) every `pitch` px, at most `max` lines (the last one "..."-cut).
    With captions (`hl` >= 0) the words starting before offset `hl` of `s`
@@ -66,13 +88,14 @@ static int para_hl(canvas_t *c, const aafont_t *f, const char *s, int x, int y, 
             if (!s[j]) break;
             i = j + 1;
         }
-        if (best == 0) {                       /* one word wider than the line */
-            best = 1;
-            while (s[best] && s[best] != ' ' && best < (int)sizeof line - 1) {
-                memcpy(line, s, best + 1);
-                line[best + 1] = 0;
+        if (best == 0) {                       /* one word wider than the line: cut it between characters */
+            best = char_len(s);
+            while (s[best] && s[best] != ' ' && best + char_len(s + best) < (int)sizeof line) {
+                int next = best + char_len(s + best);
+                memcpy(line, s, next);
+                line[next] = 0;
                 if (aafont_width(f, line) > maxw) break;
-                best++;
+                best = next;
             }
         }
         memcpy(line, s, best);
@@ -85,6 +108,7 @@ static int para_hl(canvas_t *c, const aafont_t *f, const char *s, int x, int y, 
                 snprintf(trunc, sizeof trunc, "%.*s...", (int)l, line);
                 if (aafont_width(f, trunc) <= maxw) { out = trunc; break; }
                 l--;
+                while (l > 0 && ((unsigned char)line[l] & 0xC0) == 0x80) l--;   /* never inside a character */
             }
         }
         if (hl < 0) {
@@ -119,7 +143,7 @@ static int para(canvas_t *c, const aafont_t *f, const char *s, int x, int y, int
 static const aafont_t *answer_face(const ui_view_t *v, int *pitch)
 {
     *pitch = v->textsize ? 54 : 42;
-    return v->textsize ? &aafont_sc_answer_xl : &aafont_rooms_head;
+    return v->textsize ? &aafont_sc_answer_xl : &aafont_sc_head;
 }
 
 static int lines_fit(const aafont_t *f, int pitch, int y, int bottom)
@@ -144,13 +168,13 @@ static void wifi_mark(canvas_t *c, int cx, int base, uint16_t col)
 
 static void header(canvas_t *c, const ui_view_t *v)
 {
-    aafont_draw(c, &aafont_rooms_small, 16, 18, "stan-claw", C_DIM, AAFONT_LEFT);
+    aafont_draw(c, &aafont_sc_small, 16, 18, "stan-claw", C_DIM, AAFONT_LEFT);
     /* The network, top centre: the mark and the name as one, centred. */
-    const aafont_t *f = &aafont_rooms_small;
+    const aafont_t *f = &aafont_sc_small;
     bool on = v->ssid && v->ssid[0];
     char name[34];
-    snprintf(name, sizeof name, "%s", on ? v->ssid : "no WiFi");
-    while (name[0] && aafont_width(f, name) > 220) name[strlen(name) - 1] = 0;
+    snprintf(name, sizeof name, "%s", on ? v->ssid : tr(v->lang, TR_NO_WIFI));
+    while (name[0] && aafont_width(f, name) > 220) drop_last(name);
     int w = 16 + 8 + aafont_width(f, name), x = (W - w) / 2;
     uint16_t col = on ? C_DIM : C_AMBER;
     wifi_mark(c, x + 8, 18 + f->cap, col);
@@ -158,20 +182,20 @@ static void header(canvas_t *c, const ui_view_t *v)
     if (v->now >= 0) {
         char t[24];
         snprintf(t, sizeof t, "%d:%02d", v->now / 60 % 24, v->now % 60);
-        aafont_draw(c, &aafont_rooms_small, W - 16, 18, t, C_DIM, AAFONT_RIGHT);
+        aafont_draw(c, &aafont_sc_small, W - 16, 18, t, C_DIM, AAFONT_RIGHT);
     }
 }
 
 static void note(canvas_t *c, const char *n)
 {
-    if (n && n[0]) aafont_draw(c, &aafont_rooms_small, W / 2, H - 34, n, C_AMBER, AAFONT_CENTRE);
+    if (n && n[0]) aafont_draw(c, &aafont_sc_small, W / 2, H - 34, n, C_AMBER, AAFONT_CENTRE);
 }
 
 static void talk_button(canvas_t *c, uint16_t col, const char *label, const char *hint)
 {
     canvas_disc(c, TALK_X, TALK_Y, TALK_R, col);
-    aafont_draw(c, &aafont_rooms_head, TALK_X, TALK_Y - aafont_rooms_head.cap / 2, label, C_TEXT, AAFONT_CENTRE);
-    if (hint) aafont_draw(c, &aafont_rooms_small, W / 2, TALK_Y + TALK_R + 24, hint, C_DIM, AAFONT_CENTRE);
+    aafont_draw(c, &aafont_sc_head, TALK_X, TALK_Y - aafont_sc_head.cap / 2, label, C_TEXT, AAFONT_CENTRE);
+    if (hint) aafont_draw(c, &aafont_sc_small, W / 2, TALK_Y + TALK_R + 24, hint, C_DIM, AAFONT_CENTRE);
 }
 
 /* Home's day and date over the talk button, large, for when the days run
@@ -182,10 +206,10 @@ static void talk_button(canvas_t *c, uint16_t col, const char *label, const char
 static void home_day(canvas_t *c, const ui_view_t *v)
 {
     if (v->now < 0) return;
-    char part[32], date[32];
-    ui_day_words(v->wday, v->month, v->mday, v->now, part, sizeof part, date, sizeof date);
-    aafont_draw(c, &aafont_rooms_head, W / 2, DAY_Y, part, C_TEXT, AAFONT_CENTRE);
-    aafont_draw(c, &aafont_inter_sub, W / 2, DATE_Y, date, C_DIM, AAFONT_CENTRE);
+    char part[48], date[48];
+    ui_day_words(v->lang, v->wday, v->month, v->mday, v->now, part, sizeof part, date, sizeof date);
+    aafont_draw(c, &aafont_sc_head, W / 2, DAY_Y, part, C_TEXT, AAFONT_CENTRE);
+    aafont_draw(c, &aafont_sc_sub, W / 2, DATE_Y, date, C_DIM, AAFONT_CENTRE);
 }
 
 static uint16_t mix(uint16_t a, uint16_t b, float t);
@@ -240,14 +264,15 @@ static void button_f(canvas_t *c, const aafont_t *f, int x, int y, int w, int h,
 
 static void button(canvas_t *c, int x, int y, int w, int h, const char *t, bool on)
 {
-    button_f(c, &aafont_rooms_title, x, y, w, h, t, on);
+    button_f(c, &aafont_sc_title, x, y, w, h, t, on);
 }
 
 /* A big button for a finger that is not so sure: a word in the large face
    and, under it, what it does in small. */
-static void big_button(canvas_t *c, int x, int y, int w, int h, const char *t, const char *sub, uint16_t bg)
+static void big_button_f(canvas_t *c, const aafont_t *f, int x, int y, int w, int h, const char *t, const char *sub,
+                         uint16_t bg)
 {
-    const aafont_t *f = &aafont_rooms_head, *sf = &aafont_rooms_small;
+    const aafont_t *sf = &aafont_sc_small;
     plate(c, x, y, w, h, 10, bg);
     int th = sub ? f->cap + 12 + sf->cap : f->cap;
     int ty = y + (h - th) / 2;
@@ -255,6 +280,18 @@ static void big_button(canvas_t *c, int x, int y, int w, int h, const char *t, c
     aafont_draw(c, f, x + w / 2, ty, t, plain ? C_TEXT : RGB(0xFF, 0xFF, 0xFF), AAFONT_CENTRE);
     if (sub) aafont_draw(c, sf, x + w / 2, ty + f->cap + 12, sub, plain ? C_DIM : mix(RGB(0xFF, 0xFF, 0xFF), bg, 0.25f),
                          AAFONT_CENTRE);
+}
+
+/* The large face, or the secondary one for a word too long for it (another
+   language's "Stop" or "OK" may be). */
+static const aafont_t *button_face(const char *t, int w)
+{
+    return aafont_width(&aafont_sc_head, t) > w - 16 ? &aafont_sc_sub : &aafont_sc_head;
+}
+
+static void big_button(canvas_t *c, int x, int y, int w, int h, const char *t, const char *sub, uint16_t bg)
+{
+    big_button_f(c, button_face(t, w), x, y, w, h, t, sub, bg);
 }
 
 /* A rectangle a hit falls in, with `m` px to spare all round. */
@@ -272,7 +309,7 @@ static void topbar(canvas_t *c, const char *title)
         canvas_fill_rect(c, 21 + i, 32 - i - 1, 3, 2, C_TEXT);
         canvas_fill_rect(c, 21 + i, 32 + i - 1, 3, 2, C_TEXT);
     }
-    aafont_draw(c, &aafont_rooms_head, 52, 32 - aafont_rooms_head.cap / 2, title, C_TEXT, AAFONT_LEFT);
+    aafont_draw(c, &aafont_sc_head, 52, 32 - aafont_sc_head.cap / 2, title, C_TEXT, AAFONT_LEFT);
     canvas_fill_rect(c, 0, TOP_H - 1, W, 1, C_LINE);
 }
 
@@ -289,7 +326,7 @@ static void topbar(canvas_t *c, const char *title)
 
 static void label(canvas_t *c, int y, const char *t)
 {
-    aafont_draw(c, &aafont_rooms_small, 40, y, t, C_DIM, AAFONT_LEFT);
+    aafont_draw(c, &aafont_sc_small, 40, y, t, C_DIM, AAFONT_LEFT);
 }
 
 /* A chevron pointing right, its tip at (x + 8, y). */
@@ -312,10 +349,10 @@ static void settings(canvas_t *c, const ui_view_t *v)
     topbar(c, "Settings");
     plate(c, WIFI_BX, WIFI_BY, WIFI_BW, WIFI_BH, 8, C_BTN);
     wifi_mark(c, WIFI_BX + 24, WIFI_BY + 27, C_TEXT);
-    aafont_draw(c, &aafont_rooms_title, WIFI_BX + 42, WIFI_BY + (WIFI_BH - aafont_rooms_title.cap) / 2, "WiFi", C_TEXT, AAFONT_LEFT);
+    aafont_draw(c, &aafont_sc_title, WIFI_BX + 42, WIFI_BY + (WIFI_BH - aafont_sc_title.cap) / 2, "WiFi", C_TEXT, AAFONT_LEFT);
     /* Voice: name, a hint, a chevron to the list. */
     label(c, ROW_VOICE_Y + 16, "VOICE");
-    aafont_draw(c, &aafont_inter_sub, 40, ROW_VOICE_Y + 40, v->voice_name && v->voice_name[0] ? v->voice_name : "not chosen",
+    aafont_draw(c, &aafont_sc_sub, 40, ROW_VOICE_Y + 40, v->voice_name && v->voice_name[0] ? v->voice_name : "not chosen",
                 C_TEXT, AAFONT_LEFT);
     chevron(c, 432, ROW_VOICE_Y + 44, C_DIM);
     canvas_fill_rect(c, 0, ROW_VOICE_Y + ROW_VOICE_H, W, 1, C_LINE);
@@ -324,7 +361,7 @@ static void settings(canvas_t *c, const ui_view_t *v)
     char t[16];
     label(c, SLIDER_Y - 40, "VOLUME");
     snprintf(t, sizeof t, "%d", v->volume);
-    aafont_draw(c, &aafont_rooms_small, SLIDER_X1, SLIDER_Y - 40, t, C_DIM, AAFONT_RIGHT);
+    aafont_draw(c, &aafont_sc_small, SLIDER_X1, SLIDER_Y - 40, t, C_DIM, AAFONT_RIGHT);
     int kx = SLIDER_X0 + v->volume * (SLIDER_X1 - SLIDER_X0) / 100;
     canvas_fill_rect(c, SLIDER_X0, SLIDER_Y - 2, SLIDER_X1 - SLIDER_X0, 4, C_BTN);
     canvas_fill_rect(c, SLIDER_X0, SLIDER_Y - 2, kx - SLIDER_X0, 4, C_BLUE);
@@ -340,17 +377,18 @@ static void settings(canvas_t *c, const ui_view_t *v)
 
     /* To the See and hear page. */
     canvas_fill_rect(c, 0, EASY_ROW_Y, W, 1, C_LINE);
-    int ry = EASY_ROW_Y + (H - EASY_ROW_Y - aafont_inter_sub.cap) / 2;
-    aafont_draw(c, &aafont_inter_sub, 40, ry, "Easier to see and hear", C_TEXT, AAFONT_LEFT);
-    chevron(c, 432, ry + aafont_inter_sub.cap / 2, C_DIM);
+    int ry = EASY_ROW_Y + (H - EASY_ROW_Y - aafont_sc_sub.cap) / 2;
+    aafont_draw(c, &aafont_sc_sub, 40, ry, "Easier to see and hear", C_TEXT, AAFONT_LEFT);
+    chevron(c, 432, ry + aafont_sc_sub.cap / 2, C_DIM);
 }
 
-/* ---- See and hear: text size, contrast, clarity ---- */
+/* ---- See and hear: text size, contrast, clarity, and the language ---- */
 
-#define EASY_Y0    104          /* the first pair of buttons; each group EASY_STEP below the last */
-#define EASY_STEP  100
-#define EASY_BH    64
-#define EASY_PREVIEW_Y 388
+#define EASY_Y0    96           /* the first pair of buttons; each group EASY_STEP below the last */
+#define EASY_STEP  86
+#define EASY_BH    56
+#define EASY_PREVIEW_Y 344      /* a line of an answer, in its face */
+#define LANG_ROW_Y 404          /* "Language   Español  >", to the bottom: the picker */
 
 static void easy(canvas_t *c, const ui_view_t *v)
 {
@@ -361,12 +399,42 @@ static void easy(canvas_t *c, const ui_view_t *v)
     for (int g = 0; g < 3; g++) {
         int y = EASY_Y0 + g * EASY_STEP;
         label(c, y - 22, names[g]);
-        for (int i = 0; i < 2; i++) button_f(c, &aafont_rooms_head, 40 + i * 204, y, 196, EASY_BH, opts[g][i], lit[g] == i);
+        for (int i = 0; i < 2; i++) button_f(c, &aafont_sc_head, 40 + i * 204, y, 196, EASY_BH, opts[g][i], lit[g] == i);
     }
-    /* What an answer will look like, in its own face and size. */
+    /* What an answer will look like, in its own face and size, and language. */
     int pitch;
     const aafont_t *f = answer_face(v, &pitch);
-    para(c, f, "This is how answers look.", 40, EASY_PREVIEW_Y, W - 80, pitch, 2, C_TEXT);
+    para(c, f, tr(v->lang, TR_ANSWER_PREVIEW), 40, EASY_PREVIEW_Y, W - 80, pitch, 1, C_TEXT);
+    /* The language, in its own name; the row opens the picker. */
+    canvas_fill_rect(c, 0, LANG_ROW_Y, W, 1, C_LINE);
+    int ry = LANG_ROW_Y + (H - LANG_ROW_Y - aafont_sc_sub.cap) / 2;
+    aafont_draw(c, &aafont_sc_sub, 40, ry, "Language", C_TEXT, AAFONT_LEFT);
+    aafont_draw(c, &aafont_sc_sub, 414, ry, lang_name(v->lang), C_DIM, AAFONT_RIGHT);
+    chevron(c, 432, ry + aafont_sc_sub.cap / 2, C_DIM);
+}
+
+/* ---- the language picker: each language in its own name ---- */
+
+#define LANG_Y0   84
+#define LANG_BW   196
+#define LANG_BH   80
+#define LANG_STEP 96            /* row to row */
+
+/* Language i's button: two to a row, an odd last one alone in the middle. */
+static void lang_box(int i, int *x, int *y)
+{
+    *y = LANG_Y0 + i / 2 * LANG_STEP;
+    *x = i == LANG_N - 1 && LANG_N % 2 ? (W - LANG_BW) / 2 : 40 + i % 2 * (LANG_BW + 8);
+}
+
+static void lang_page(canvas_t *c, const ui_view_t *v)
+{
+    topbar(c, "Language");
+    for (int i = 0; i < LANG_N; i++) {
+        int x, y;
+        lang_box(i, &x, &y);
+        button_f(c, &aafont_sc_head, x, y, LANG_BW, LANG_BH, lang_name(i), v->lang == i);
+    }
 }
 
 static void check(canvas_t *c, int x, int y, uint16_t col)
@@ -406,7 +474,7 @@ static void emblem(canvas_t *c, int i, int cx, int cy, int r, float fade)
     } else {
         canvas_disc(c, cx, cy, r, col);
         char ini[2] = { VOICES[i].name[0], 0 };
-        aafont_draw(c, &aafont_rooms_head, cx, cy - aafont_rooms_head.cap / 2, ini, mix(C_TEXT, C_BTN, fade), AAFONT_CENTRE);
+        aafont_draw(c, &aafont_sc_head, cx, cy - aafont_sc_head.cap / 2, ini, mix(C_TEXT, C_BTN, fade), AAFONT_CENTRE);
     }
 }
 
@@ -431,15 +499,15 @@ static void card(canvas_t *c, int i, int cx, float d, bool in_use)
         canvas_fill_rect(c, x + 8, y + h - 2, w - 16, 2, e);
     }
     emblem(c, i, cx, y + (int)(58 * scale), (int)(34 * scale), fade);
-    const aafont_t *nf = ad < 0.5f ? &aafont_rooms_head : &aafont_rooms_title;
+    const aafont_t *nf = ad < 0.5f ? &aafont_sc_head : &aafont_sc_title;
     aafont_draw(c, nf, cx, y + (int)(112 * scale), VOICES[i].name, mix(C_TEXT, C_BG, fade), AAFONT_CENTRE);
     if (ad < 0.8f) {
         char t[64];
         snprintf(t, sizeof t, "%s", VOICES[i].desc);
-        while (t[0] && aafont_width(&aafont_rooms_small, t) > w - 24) t[strlen(t) - 1] = 0;
-        aafont_draw(c, &aafont_rooms_small, cx, y + (int)(156 * scale), t, mix(C_DIM, C_BG, fade), AAFONT_CENTRE);
+        while (t[0] && aafont_width(&aafont_sc_small, t) > w - 24) drop_last(t);
+        aafont_draw(c, &aafont_sc_small, cx, y + (int)(156 * scale), t, mix(C_DIM, C_BG, fade), AAFONT_CENTRE);
         snprintf(t, sizeof t, "%s", VOICES[i].tags);
-        aafont_draw(c, &aafont_rooms_small, cx, y + (int)(182 * scale), t, mix(card_colour(i), C_BG, fade + 0.2f), AAFONT_CENTRE);
+        aafont_draw(c, &aafont_sc_small, cx, y + (int)(182 * scale), t, mix(card_colour(i), C_BG, fade + 0.2f), AAFONT_CENTRE);
     }
     if (in_use) check(c, x + w - 34, y + 16, card_colour(i));
 }
@@ -474,7 +542,7 @@ static void voices_page(canvas_t *c, const ui_view_t *v)
         snprintf(t, sizeof t, "Use %s", VOICES[mid].name);
         button(c, 70, USE_Y, W - 140, 50, t, true);
     } else if (mid == v->cur) {
-        aafont_draw(c, &aafont_rooms_small, W / 2, USE_Y + 18, "in use  -  swipe for others", C_DIM, AAFONT_CENTRE);
+        aafont_draw(c, &aafont_sc_small, W / 2, USE_Y + 18, "in use  -  swipe for others", C_DIM, AAFONT_CENTRE);
     }
 }
 
@@ -538,9 +606,21 @@ ui_hit_t ui_hit(const ui_view_t *v, int x, int y, int *value)
         return in_rect(x, y, STOP_X, STOP_Y, STOP_W, STOP_H, 12) ? UI_HIT_DONE : UI_HIT_NONE;
     if (v->mode == UI_MESSAGE || v->mode == UI_REMINDER)
         return in_rect(x, y, OK_X, OK_Y, OK_W, OK_H, 12) ? UI_HIT_CLOSE : UI_HIT_NONE;
-    if (v->mode != UI_SETTINGS && v->mode != UI_VOICES && v->mode != UI_EASY) return UI_HIT_NONE;
+    if (v->mode != UI_SETTINGS && v->mode != UI_VOICES && v->mode != UI_EASY && v->mode != UI_LANG) return UI_HIT_NONE;
     if (y < TOP_H && x < 160) return UI_HIT_BACK;
+    if (v->mode == UI_LANG) {
+        for (int i = 0; i < LANG_N; i++) {
+            int bx, by;
+            lang_box(i, &bx, &by);
+            if (in_rect(x, y, bx, by, LANG_BW, LANG_BH, 4)) {
+                *value = i;
+                return UI_HIT_LANG;
+            }
+        }
+        return UI_HIT_NONE;
+    }
     if (v->mode == UI_EASY) {
+        if (y >= LANG_ROW_Y) return UI_HIT_LANG;
         static const ui_hit_t h[3] = { UI_HIT_TEXTSIZE, UI_HIT_CONTRAST, UI_HIT_CLARITY };
         for (int g = 0; g < 3; g++) {
             int by = EASY_Y0 + g * EASY_STEP;
@@ -581,10 +661,10 @@ ui_hit_t ui_hit(const ui_view_t *v, int x, int y, int *value)
 
 /* The microphones are open: a red bar across the top, the dot and the word
    centred together as one. */
-static void banner(canvas_t *c)
+static void banner(canvas_t *c, int lang)
 {
-    const aafont_t *f = &aafont_rooms_title;
-    const char *t = "LISTENING";
+    const aafont_t *f = &aafont_sc_title;
+    const char *t = tr(lang, TR_BANNER);
     const int r = 5, gap = 10;
     int w = 2 * r + gap + aafont_width(f, t);
     int x = (W - w) / 2;
@@ -613,7 +693,7 @@ static void listening(canvas_t *c, const ui_view_t *v)
 {
     /* In a conversation the page moves up to make room for the buttons. */
     int ty = v->convo ? 74 : 96, wy = v->convo ? 194 : WAVE_Y, wh = v->convo ? 66 : WAVE_H;
-    aafont_draw(c, &aafont_rooms_head, W / 2, ty, v->title && v->title[0] ? v->title : "Go ahead, I'm listening",
+    aafont_draw(c, &aafont_sc_head, W / 2, ty, v->title && v->title[0] ? v->title : tr(v->lang, TR_LISTENING),
                 C_TEXT, AAFONT_CENTRE);
     int span = UI_WAVE_BARS * (BAR_W + BAR_GAP) - BAR_GAP;
     int x0 = (W - span) / 2;
@@ -634,30 +714,33 @@ static void listening(canvas_t *c, const ui_view_t *v)
     char t[24];
     int s10 = v->listen_ms / 100;
     snprintf(t, sizeof t, "%d.%d s", s10 / 10, s10 % 10);
-    aafont_draw(c, &aafont_inter_sub, W / 2, wy + wh + 30, t, C_DIM, AAFONT_CENTRE | AAFONT_ADVANCE);
+    aafont_draw(c, &aafont_sc_sub, W / 2, wy + wh + 30, t, C_DIM, AAFONT_CENTRE | AAFONT_ADVANCE);
     if (!v->convo) {
-        aafont_draw(c, &aafont_rooms_small, W / 2, H - 52, "pause when you're done  -  tap to end", C_DIM, AAFONT_CENTRE);
+        aafont_draw(c, &aafont_sc_small, W / 2, H - 52, tr(v->lang, TR_PAUSE_HINT), C_DIM, AAFONT_CENTRE);
         return;
     }
-    aafont_draw(c, &aafont_inter_sub, W / 2, CONVO_Y - 40, "or just keep talking", C_DIM, AAFONT_CENTRE);
-    static const char *const word[3] = { "Again", "Slower", "Done" };
-    static const char *const what[3] = { "say it again", "repeat slowly", "I'm finished" };
+    aafont_draw(c, &aafont_sc_sub, W / 2, CONVO_Y - 40, tr(v->lang, TR_KEEP_TALKING), C_DIM, AAFONT_CENTRE);
+    const int word[3] = { TR_AGAIN, TR_SLOWER, TR_DONE }, what[3] = { TR_AGAIN_SUB, TR_SLOWER_SUB, TR_DONE_SUB };
+    const aafont_t *f = &aafont_sc_head;                    /* the three in one face: the smaller if one needs it */
     for (int i = 0; i < 3; i++)
-        big_button(c, CONVO_X0 + i * (CONVO_W + 12), CONVO_Y, CONVO_W, CONVO_H, word[i], what[i], C_BTN);
+        if (button_face(tr(v->lang, word[i]), CONVO_W) != &aafont_sc_head) f = &aafont_sc_sub;
+    for (int i = 0; i < 3; i++)
+        big_button_f(c, f, CONVO_X0 + i * (CONVO_W + 12), CONVO_Y, CONVO_W, CONVO_H, tr(v->lang, word[i]),
+                     tr(v->lang, what[i]), C_BTN);
 }
 
 /* A question that wants a yes: what Claude means to do, large, and two big
    buttons. The mics stay open, so saying it works as well. */
 static void confirm_card(canvas_t *c, const ui_view_t *v)
 {
-    aafont_draw(c, &aafont_rooms_head, W / 2, 70, "Shall I go ahead?", C_TEXT, AAFONT_CENTRE);
+    aafont_draw(c, &aafont_sc_head, W / 2, 70, tr(v->lang, TR_SHALL_I), C_TEXT, AAFONT_CENTRE);
     int pitch;
     const aafont_t *f = answer_face(v, &pitch);
     int max = lines_fit(f, pitch, 120, YN_Y - 8);
     para(c, f, v->confirm, 40, 120, W - 80, pitch, max < 4 ? max : 4, C_TEXT);
-    big_button(c, YES_X, YN_Y, YN_W, YN_H, "Yes", NULL, C_GREEN);
-    big_button(c, NO_X, YN_Y, YN_W, YN_H, "No", NULL, C_NO);
-    aafont_draw(c, &aafont_inter_sub, W / 2, YN_Y + YN_H + 16, "or just say yes or no", C_DIM, AAFONT_CENTRE);
+    big_button(c, YES_X, YN_Y, YN_W, YN_H, tr(v->lang, TR_YES), NULL, C_GREEN);
+    big_button(c, NO_X, YN_Y, YN_W, YN_H, tr(v->lang, TR_NO), NULL, C_NO);
+    aafont_draw(c, &aafont_sc_sub, W / 2, YN_Y + YN_H + 16, tr(v->lang, TR_SAY_YES_NO), C_DIM, AAFONT_CENTRE);
 }
 
 /* An answer in the chosen face, from y down to bottom; captions when
@@ -674,7 +757,7 @@ static int answer_text(canvas_t *c, const ui_view_t *v, const char *t, int y, in
 
 static void speaking(canvas_t *c, const ui_view_t *v)
 {
-    int y = para(c, &aafont_rooms_title, v->heard, 24, 70, W - 48, 22, 2, C_DIM);
+    int y = para(c, &aafont_sc_title, v->heard, 24, 70, W - 48, 22, 2, C_DIM);
     bool has_note = v->note && v->note[0];
     int bottom = v->convo ? (has_note ? STOP_Y - 44 : STOP_Y - 16) : (has_note ? H - 44 : H - 10);
     /* large: easy to read at arm's length */
@@ -683,8 +766,8 @@ static void speaking(canvas_t *c, const ui_view_t *v)
         note(c, v->note);
         return;
     }
-    if (has_note) aafont_draw(c, &aafont_rooms_small, W / 2, STOP_Y - 30, v->note, C_AMBER, AAFONT_CENTRE);
-    big_button(c, STOP_X, STOP_Y, STOP_W, STOP_H, "Stop", NULL, C_BTN);
+    if (has_note) aafont_draw(c, &aafont_sc_small, W / 2, STOP_Y - 30, v->note, C_AMBER, AAFONT_CENTRE);
+    big_button(c, STOP_X, STOP_Y, STOP_W, STOP_H, tr(v->lang, TR_STOP), NULL, C_BTN);
 }
 
 /* ---- family photos ---- */
@@ -730,29 +813,38 @@ static void resting_photo(canvas_t *c, const ui_view_t *v)
     photo_fit(c, v, 0, 0, W, H);
     int y = H - PHOTO_BAND;
     shade(c, y, H);
+    /* The weather, at the right of the day's row: in words if both fit
+       (another language's day and sky can be long), else the temperature. */
+    char wt[64] = "";
+    int ww = 0;
+    if (v->weather && v->weather->ok) {
+        char part[48];
+        ui_day_words(v->lang, v->wday, v->month, v->mday, v->now, part, sizeof part, NULL, 0);
+        snprintf(wt, sizeof wt, "%ld^ %s", lroundf(v->weather->temp), tr_weather(v->lang, v->weather->code));
+        ww = deg_text(c, &aafont_sc_sub, 0, 0, wt, C_TEXT, false);
+        if (v->now >= 0 && 24 + aafont_width(&aafont_sc_sub, part) + 20 + ww > W - 24) {
+            snprintf(wt, sizeof wt, "%ld^", lroundf(v->weather->temp));
+            ww = deg_text(c, &aafont_sc_sub, 0, 0, wt, C_TEXT, false);
+        }
+    }
     if (v->now >= 0) {
         char t[24];
         snprintf(t, sizeof t, "%d:%02d", v->now / 60 % 24, v->now % 60);
-        aafont_draw(c, &aafont_rooms_head, 24, y + 18, t, C_TEXT, AAFONT_LEFT);
-        char part[32], date[32], day[72];
-        ui_day_words(v->wday, v->month, v->mday, v->now, part, sizeof part, date, sizeof date);
+        aafont_draw(c, &aafont_sc_head, 24, y + 18, t, C_TEXT, AAFONT_LEFT);
+        char part[48], date[48], day[100];
+        ui_day_words(v->lang, v->wday, v->month, v->mday, v->now, part, sizeof part, date, sizeof date);
         snprintf(day, sizeof day, "%s, %s", part, date);
         bool wx = v->weather && v->weather->ok;          /* the weather shares this row: the day alone then */
-        if (!date[0] || wx || aafont_width(&aafont_inter_sub, day) > W - 48) snprintf(day, sizeof day, "%s", part);
-        aafont_draw(c, &aafont_inter_sub, 24, y + 56, day, C_DIM, AAFONT_LEFT);
+        if (!date[0] || wx || aafont_width(&aafont_sc_sub, day) > W - 48) snprintf(day, sizeof day, "%s", part);
+        aafont_draw(c, &aafont_sc_sub, 24, y + 56, day, C_DIM, AAFONT_LEFT);
     }
     if (v->photo_from && v->photo_from[0]) {
         char t[48];
-        snprintf(t, sizeof t, "from %s", v->photo_from);
-        while (t[0] && aafont_width(&aafont_rooms_small, t) > 180) t[strlen(t) - 1] = 0;
-        aafont_draw(c, &aafont_rooms_small, W - 24, y + 24, t, C_DIM, AAFONT_RIGHT);
+        snprintf(t, sizeof t, tr(v->lang, TR_FROM), v->photo_from);
+        while (t[0] && aafont_width(&aafont_sc_small, t) > 180) drop_last(t);
+        aafont_draw(c, &aafont_sc_small, W - 24, y + 24, t, C_DIM, AAFONT_RIGHT);
     }
-    if (v->weather && v->weather->ok) {                  /* and the weather, small, at the right */
-        char t[48];
-        snprintf(t, sizeof t, "%ld^ %s", lroundf(v->weather->temp), weather_words(v->weather->code));
-        int tw = deg_text(c, &aafont_inter_sub, 0, 0, t, C_TEXT, false);
-        deg_text(c, &aafont_inter_sub, W - 24 - tw, y + 56, t, C_TEXT, true);
-    }
+    if (wt[0]) deg_text(c, &aafont_sc_sub, W - 24 - ww, y + 56, wt, C_TEXT, true);   /* and the weather, small, at the right */
 }
 
 /* A photo has come: as large as fits above the caption and the OK, the
@@ -763,19 +855,19 @@ static void resting_photo(canvas_t *c, const ui_view_t *v)
 static void photo_card(canvas_t *c, const ui_view_t *v)
 {
     canvas_fill_rect(c, 0, 0, W, H, RGB(0, 0, 0));
-    const aafont_t *sf = &aafont_inter_sub, *hf = &aafont_rooms_head;
+    const aafont_t *sf = &aafont_sc_sub, *hf = &aafont_sc_head;
     int lines = !v->text || !v->text[0] ? 0 : aafont_width(sf, v->text) <= W - 48 ? 1 : 2;
     int bottom = OK_Y - 14;
     if (lines) bottom -= (lines - 1) * CAPTION_PITCH + sf->cap + sf->descent + 12;
     photo_fit(c, v, 0, 0, W, bottom);
     shade(c, 0, PHOTO_TOP);
     char t[64];
-    snprintf(t, sizeof t, "%s", v->title && v->title[0] ? v->title : "A photo");
-    while (t[0] && aafont_width(hf, t) > W - 48) t[strlen(t) - 1] = 0;
+    snprintf(t, sizeof t, "%s", v->title && v->title[0] ? v->title : tr(v->lang, TR_A_PHOTO));
+    while (t[0] && aafont_width(hf, t) > W - 48) drop_last(t);
     aafont_draw(c, hf, W / 2, (PHOTO_TOP - hf->cap) / 2, t, C_TEXT, AAFONT_CENTRE);
     if (lines == 1) aafont_draw(c, sf, W / 2, bottom + 12, v->text, C_TEXT, AAFONT_CENTRE);
     else if (lines == 2) para(c, sf, v->text, 24, bottom + 12, W - 48, CAPTION_PITCH, 2, C_TEXT);
-    big_button(c, OK_X, OK_Y, OK_W, OK_H, "OK", NULL, C_BLUE);
+    big_button(c, OK_X, OK_Y, OK_W, OK_H, tr(v->lang, TR_OK), NULL, C_BLUE);
 }
 
 /* ---- cards: a message from family, a reminder ---- */
@@ -801,12 +893,12 @@ static void bell(canvas_t *c, int x, int y, uint16_t col)
 static void card_page(canvas_t *c, const ui_view_t *v)
 {
     bool msg = v->mode == UI_MESSAGE;
-    const char *title = v->title && v->title[0] ? v->title : msg ? "Message" : "Reminder";
+    const char *title = v->title && v->title[0] ? v->title : tr(v->lang, msg ? TR_MESSAGE : TR_REMINDER);
     /* The icon and the title centred together as one. */
-    const aafont_t *hf = &aafont_rooms_head;
+    const aafont_t *hf = &aafont_sc_head;
     char t[64];
     snprintf(t, sizeof t, "%s", title);
-    while (t[0] && aafont_width(hf, t) > W - 48 - 48) t[strlen(t) - 1] = 0;
+    while (t[0] && aafont_width(hf, t) > W - 48 - 48) drop_last(t);
     int w = 34 + 14 + aafont_width(hf, t), x = (W - w) / 2, ty = 70;
     if (msg) envelope(c, x, ty - 1, C_TEXT, C_BG);
     else bell(c, x, ty - 3, C_AMBER);
@@ -814,8 +906,8 @@ static void card_page(canvas_t *c, const ui_view_t *v)
     canvas_fill_rect(c, 24, ty + hf->cap + 22, W - 48, 1, C_LINE);
     bool has_note = v->note && v->note[0];
     answer_text(c, v, v->text, ty + hf->cap + 46, has_note ? OK_Y - 44 : OK_Y - 16, -1);
-    if (has_note) aafont_draw(c, &aafont_rooms_small, W / 2, OK_Y - 30, v->note, C_AMBER, AAFONT_CENTRE);
-    big_button(c, OK_X, OK_Y, OK_W, OK_H, "OK", NULL, C_BLUE);
+    if (has_note) aafont_draw(c, &aafont_sc_small, W / 2, OK_Y - 30, v->note, C_AMBER, AAFONT_CENTRE);
+    big_button(c, OK_X, OK_Y, OK_W, OK_H, tr(v->lang, TR_OK), NULL, C_BLUE);
 }
 
 /* The resting orb: a core and a glow that fades into the black, drawn as
@@ -833,25 +925,9 @@ static void orb(canvas_t *c, int cx, int cy, bool amber)
     canvas_disc(c, cx - 9, cy - 9, 9, RGB((R + 255) / 2, (G + 255) / 2, (B + 255) / 2));   /* a highlight */
 }
 
-void ui_day_words(int wday, int month, int mday, int minute, char *part, size_t np, char *date, size_t nd)
+void ui_day_words(int lang, int wday, int month, int mday, int minute, char *part, size_t np, char *date, size_t nd)
 {
-    static const char *const days[7] = { "Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday" };
-    static const char *const months[12] = { "January", "February", "March", "April", "May", "June", "July",
-                                            "August", "September", "October", "November", "December" };
-    if (np) part[0] = 0;
-    if (nd) date[0] = 0;
-    if (month < 1 || month > 12) return;
-    int m = ((minute % 1440) + 1440) % 1440;
-    const char *when = m >= 5 * 60 && m < 12 * 60 ? "morning" : m >= 12 * 60 && m < 17 * 60 ? "afternoon"
-                     : m >= 17 * 60 && m < 21 * 60 ? "evening" : "night";
-    if (np) {
-        if (wday >= 0 && wday < 7) snprintf(part, np, "%s %s", days[wday], when);
-        else snprintf(part, np, "%s", when);
-    }
-    if (nd) {
-        if (mday > 0) snprintf(date, nd, "%s %d", months[month - 1], mday);
-        else snprintf(date, nd, "%s", months[month - 1]);
-    }
+    tr_day_words(lang, wday, month, mday, minute, part, np, date, nd);
 }
 
 
@@ -862,14 +938,14 @@ static int step(canvas_t *c, int n, int x, int y, int w, const char *words)
 {
     char d[2] = { (char)('0' + n), 0 };
     canvas_disc(c, x + 14, y + 10, 14, C_BLUE);
-    aafont_draw(c, &aafont_rooms_title, x + 14, y + 10 - aafont_rooms_title.cap / 2, d, C_TEXT, AAFONT_CENTRE);
-    return para(c, &aafont_rooms_title, words, x + 38, y, w - 38, 23, 4, C_TEXT) + 10;
+    aafont_draw(c, &aafont_sc_title, x + 14, y + 10 - aafont_sc_title.cap / 2, d, C_TEXT, AAFONT_CENTRE);
+    return para(c, &aafont_sc_title, words, x + 38, y, w - 38, 23, 4, C_TEXT) + 10;
 }
 
 static void setup_screen(canvas_t *c, const ui_view_t *v)
 {
-    topbar(c, "Set up WiFi");
-    const char *net = v->text && v->text[0] ? v->text : "your WiFi";
+    topbar(c, tr(v->lang, TR_SETUP_TITLE));
+    const char *net = v->text && v->text[0] ? v->text : tr(v->lang, TR_YOUR_WIFI);
     char t[96];
     if (v->setup_state == 1 || v->setup_state == 2) {      /* joining, or joined */
         bool ok = v->setup_state == 2;
@@ -877,11 +953,10 @@ static void setup_screen(canvas_t *c, const ui_view_t *v)
         canvas_disc(c, cx, cy, 52, ok ? C_GREEN : C_BLUE);
         if (ok) check(c, cx - 12, cy - 4, C_TEXT);
         else wifi_mark(c, cx, cy + 14, C_TEXT);
-        snprintf(t, sizeof t, ok ? "Connected to %s" : "Connecting to %s...", net);
-        para(c, &aafont_rooms_head, t, 24, 252, W - 48, 38, 2, C_TEXT);
-        aafont_draw(c, &aafont_inter_sub, W / 2, 340, ok ? "You can put the phone away." : "This takes about half a minute.",
-                    C_DIM, AAFONT_CENTRE);
-        if (ok) big_button(c, OK_X, OK_Y, OK_W, OK_H, "Done", NULL, C_BLUE);
+        snprintf(t, sizeof t, tr(v->lang, ok ? TR_CONNECTED : TR_CONNECTING), net);
+        para(c, &aafont_sc_head, t, 24, 252, W - 48, 38, 2, C_TEXT);
+        aafont_draw(c, &aafont_sc_sub, W / 2, 340, tr(v->lang, ok ? TR_PHONE_AWAY : TR_HALF_MINUTE), C_DIM, AAFONT_CENTRE);
+        if (ok) big_button(c, OK_X, OK_Y, OK_W, OK_H, tr(v->lang, TR_SETUP_DONE), NULL, C_BLUE);
         return;
     }
     /* The QR code, white with its quiet margin, at the left. */
@@ -895,24 +970,24 @@ static void setup_screen(canvas_t *c, const ui_view_t *v)
     }
     /* The steps, at the right. */
     int y = 90;
-    y = step(c, 1, 252, y, 204, "Point your phone's camera at the code");
-    snprintf(t, sizeof t, "Tap to join %s", v->setup_net ? v->setup_net : "the setup network");
+    y = step(c, 1, 252, y, 204, tr(v->lang, TR_STEP1));
+    snprintf(t, sizeof t, tr(v->lang, TR_STEP2), v->setup_net ? v->setup_net : tr(v->lang, TR_SETUP_NET));
     y = step(c, 2, 252, y, 204, t);
-    step(c, 3, 252, y, 204, "On the page that opens, pick your WiFi and type its password");
+    step(c, 3, 252, y, 204, tr(v->lang, TR_STEP3));
     /* Without a camera, the same in words; or why the last try failed. */
     canvas_fill_rect(c, 24, 318, W - 48, 1, C_LINE);
     if (v->setup_state == 3) {
-        snprintf(t, sizeof t, "Couldn't join %s.", net);
-        aafont_draw(c, &aafont_rooms_head, W / 2, 338, t, C_RED, AAFONT_CENTRE);
-        aafont_draw(c, &aafont_inter_sub, W / 2, 384, "Check the password, and send it again", C_TEXT, AAFONT_CENTRE);
-        aafont_draw(c, &aafont_inter_sub, W / 2, 416, "from the page on the phone.", C_TEXT, AAFONT_CENTRE);
+        snprintf(t, sizeof t, tr(v->lang, TR_COULDNT_JOIN), net);
+        aafont_draw(c, &aafont_sc_head, W / 2, 338, t, C_RED, AAFONT_CENTRE);
+        aafont_draw(c, &aafont_sc_sub, W / 2, 384, tr(v->lang, TR_CHECK_PASS1), C_TEXT, AAFONT_CENTRE);
+        aafont_draw(c, &aafont_sc_sub, W / 2, 416, tr(v->lang, TR_CHECK_PASS2), C_TEXT, AAFONT_CENTRE);
         return;
     }
-    aafont_draw(c, &aafont_rooms_small, W / 2, 334, "No camera? In the phone's WiFi settings join", C_DIM, AAFONT_CENTRE);
-    aafont_draw(c, &aafont_rooms_head, W / 2, 360, v->setup_net ? v->setup_net : "", C_TEXT, AAFONT_CENTRE);
-    snprintf(t, sizeof t, "password %s", v->setup_pass ? v->setup_pass : "");
-    aafont_draw(c, &aafont_rooms_head, W / 2, 402, t, C_TEXT, AAFONT_CENTRE);
-    aafont_draw(c, &aafont_rooms_small, W / 2, 446, "then open 192.168.4.1", C_DIM, AAFONT_CENTRE);
+    aafont_draw(c, &aafont_sc_small, W / 2, 334, tr(v->lang, TR_NO_CAMERA), C_DIM, AAFONT_CENTRE);
+    aafont_draw(c, &aafont_sc_head, W / 2, 360, v->setup_net ? v->setup_net : "", C_TEXT, AAFONT_CENTRE);
+    snprintf(t, sizeof t, tr(v->lang, TR_PASSWORD), v->setup_pass ? v->setup_pass : "");
+    aafont_draw(c, &aafont_sc_head, W / 2, 402, t, C_TEXT, AAFONT_CENTRE);
+    aafont_draw(c, &aafont_sc_small, W / 2, 446, tr(v->lang, TR_THEN_OPEN), C_DIM, AAFONT_CENTRE);
 }
 
 /* ---- the weather, at rest ---- */
@@ -1064,19 +1139,19 @@ static void day_card(canvas_t *c, int x, int y, int w, int h, uint16_t card, con
                      float hi, float lo, int rain)
 {
     rrect(c, x, y, w, h, 14, card);
-    aafont_draw(c, &aafont_rooms_small, x + 16, y + 14, name, RGB(0xE6, 0xEA, 0xF2), AAFONT_LEFT);
+    aafont_draw(c, &aafont_sc_small, x + 16, y + 14, name, RGB(0xE6, 0xEA, 0xF2), AAFONT_LEFT);
     s_icon_bg = card;
     wx_icon(c, weather_icon(code), day, x + 44, y + 68, 26);
     char t[24];
     snprintf(t, sizeof t, "%ld^", lroundf(hi));
-    deg_text(c, &aafont_rooms_head, x + 92, y + 46, t, temp_colour(hi), true);
+    deg_text(c, &aafont_sc_head, x + 92, y + 46, t, temp_colour(hi), true);
     snprintf(t, sizeof t, "%ld^", lroundf(lo));
-    deg_text(c, &aafont_inter_sub, x + 92 + deg_text(c, &aafont_rooms_head, 0, 0, "88^", 0, false) + 6, y + 52, t,
+    deg_text(c, &aafont_sc_sub, x + 92 + deg_text(c, &aafont_sc_head, 0, 0, "88^", 0, false) + 6, y + 52, t,
              temp_colour(lo), true);
     if (rain >= 10) {
         drop(c, x + 98, y + 88, RGB(0x7C, 0xC4, 0xFF));
         snprintf(t, sizeof t, "%d%%", rain);
-        aafont_draw(c, &aafont_rooms_small, x + 112, y + 82, t, RGB(0xC8, 0xE4, 0xFF), AAFONT_LEFT);
+        aafont_draw(c, &aafont_sc_small, x + 112, y + 82, t, RGB(0xC8, 0xE4, 0xFF), AAFONT_LEFT);
     }
 }
 
@@ -1100,20 +1175,20 @@ static void resting_weather(canvas_t *c, const ui_view_t *v)
     if (v->place && v->place[0]) {
         char p[40];
         snprintf(p, sizeof p, "%s", v->place);
-        while (p[0] && aafont_width(&aafont_rooms_title, p) > W - 120) p[strlen(p) - 1] = 0;
-        int pw = 16 + 8 + aafont_width(&aafont_rooms_title, p), px = (W - pw) / 2;
+        while (p[0] && aafont_width(&aafont_sc_title, p) > W - 120) drop_last(p);
+        int pw = 16 + 8 + aafont_width(&aafont_sc_title, p), px = (W - pw) / 2;
         pin(c, px + 7, 12, RGB(0xFF, 0x6B, 0x6B), mix(top, bottom, 0.04f));
-        aafont_draw(c, &aafont_rooms_title, px + 24, 14, p, white, AAFONT_LEFT);
+        aafont_draw(c, &aafont_sc_title, px + 24, 14, p, white, AAFONT_LEFT);
     }
     if (v->now >= 0) {
         char t[24];
         snprintf(t, sizeof t, "%d:%02d", v->now / 60 % 24, v->now % 60);
         aafont_draw(c, &aafont_inter_number, W / 2, 44, t, white, AAFONT_CENTRE | AAFONT_ADVANCE);
-        char part[32], date[32], day[72];
-        ui_day_words(v->wday, v->month, v->mday, v->now, part, sizeof part, date, sizeof date);
+        char part[48], date[48], day[100];
+        ui_day_words(v->lang, v->wday, v->month, v->mday, v->now, part, sizeof part, date, sizeof date);
         snprintf(day, sizeof day, "%s, %s", part, date);
-        if (!date[0] || aafont_width(&aafont_inter_sub, day) > W - 48) snprintf(day, sizeof day, "%s", part);
-        aafont_draw(c, &aafont_inter_sub, W / 2, 120, day, soft, AAFONT_CENTRE);
+        if (!date[0] || aafont_width(&aafont_sc_sub, day) > W - 48) snprintf(day, sizeof day, "%s", part);
+        aafont_draw(c, &aafont_sc_sub, W / 2, 120, day, soft, AAFONT_CENTRE);
     }
     /* Now. */
     uint16_t card = mix(mix(top, bottom, 0.5f), RGB(0, 0, 0), 0.38f);
@@ -1123,13 +1198,16 @@ static void resting_weather(canvas_t *c, const ui_view_t *v)
     char t[64];
     snprintf(t, sizeof t, "%ld^", lroundf(w->temp));
     deg_text(c, &aafont_inter_number, 206, 182, t, temp_colour(w->temp), true);
-    aafont_draw(c, &aafont_rooms_head, 208, 258, weather_words(w->code), white, AAFONT_LEFT);
-    snprintf(t, sizeof t, "Feels like %ld^", lroundf(w->feels));
-    deg_text(c, &aafont_inter_sub, 208, 296, t, soft, true);
+    /* The weather in words, in the face that fits the card. */
+    const char *words = tr_weather(v->lang, w->code);
+    const aafont_t *wf = aafont_width(&aafont_sc_head, words) <= W - 24 - 16 - 208 ? &aafont_sc_head : &aafont_sc_sub;
+    aafont_draw(c, wf, 208, wf == &aafont_sc_head ? 258 : 262, words, white, AAFONT_LEFT);
+    snprintf(t, sizeof t, "%s %ld^", tr(v->lang, TR_FEELS_LIKE), lroundf(w->feels));
+    deg_text(c, &aafont_sc_sub, 208, 296, t, soft, true);
     /* Today and tomorrow. */
     uint16_t small = mix(bottom, RGB(0, 0, 0), 0.38f);
-    day_card(c, 24, 342, 210, 114, small, "TODAY", w->code, true, w->hi, w->lo, w->rain);
-    day_card(c, 246, 342, 210, 114, small, "TOMORROW", w->t_code, true, w->t_hi, w->t_lo, w->t_rain);
+    day_card(c, 24, 342, 210, 114, small, tr(v->lang, TR_TODAY), w->code, true, w->hi, w->lo, w->rain);
+    day_card(c, 246, 342, 210, 114, small, tr(v->lang, TR_TOMORROW), w->t_code, true, w->t_hi, w->t_lo, w->t_rain);
 }
 
 static void resting(canvas_t *c, const ui_view_t *v)
@@ -1147,12 +1225,12 @@ static void resting(canvas_t *c, const ui_view_t *v)
     if (v->now >= 0) {
         char t[24];
         snprintf(t, sizeof t, "%d:%02d", v->now / 60 % 24, v->now % 60);
-        aafont_draw(c, &aafont_rooms_head, W / 2, 322, t, C_CLOCK, AAFONT_CENTRE | AAFONT_ADVANCE);
+        aafont_draw(c, &aafont_sc_head, W / 2, 322, t, C_CLOCK, AAFONT_CENTRE | AAFONT_ADVANCE);
         /* And the day in words, for when the date has slipped away. */
-        char part[32], date[32];
-        ui_day_words(v->wday, v->month, v->mday, v->now, part, sizeof part, date, sizeof date);
-        aafont_draw(c, &aafont_inter_sub, W / 2, 370, part, C_CLOCK, AAFONT_CENTRE);
-        aafont_draw(c, &aafont_inter_sub, W / 2, 402, date, C_CLOCK, AAFONT_CENTRE);
+        char part[48], date[48];
+        ui_day_words(v->lang, v->wday, v->month, v->mday, v->now, part, sizeof part, date, sizeof date);
+        aafont_draw(c, &aafont_sc_sub, W / 2, 370, part, C_CLOCK, AAFONT_CENTRE);
+        aafont_draw(c, &aafont_sc_sub, W / 2, 402, date, C_CLOCK, AAFONT_CENTRE);
     }
 }
 
@@ -1164,16 +1242,16 @@ void ui_draw(canvas_t *c, const ui_view_t *v)
     C_DIM  = contrast ? RGB(0xFF, 0xFF, 0xFF) : RGB(0x8A, 0x92, 0x9E);
     if (v->mode == UI_RESTING) {
         resting(c, v);
-        if (v->mic_open) banner(c);
+        if (v->mic_open) banner(c, v->lang);
         return;
     }
     canvas_fill_rect(c, 0, 0, W, H, C_BG);
     header(c, v);
-    const aafont_t *sub = &aafont_inter_sub;
+    const aafont_t *sub = &aafont_sc_sub;
     switch (v->mode) {
     case UI_HOME:
         home_day(c, v);
-        talk_button(c, C_BLUE, "Talk", "tap, or press BOOT");
+        talk_button(c, C_BLUE, tr(v->lang, TR_TALK), tr(v->lang, TR_TALK_HINT));
         note(c, v->note);
         gear(c, GEAR_X, GEAR_Y);
         break;
@@ -1186,6 +1264,9 @@ void ui_draw(canvas_t *c, const ui_view_t *v)
     case UI_EASY:
         easy(c, v);
         break;
+    case UI_LANG:
+        lang_page(c, v);
+        break;
     case UI_SETUP:
         setup_screen(c, v);
         break;
@@ -1194,8 +1275,8 @@ void ui_draw(canvas_t *c, const ui_view_t *v)
         else listening(c, v);
         break;
     case UI_THINKING:
-        para(c, &aafont_rooms_title, v->heard, 24, 70, W - 48, 22, 3, C_DIM);
-        aafont_draw(c, &aafont_rooms_head, W / 2, H / 2, "Thinking...", C_TEXT, AAFONT_CENTRE);
+        para(c, &aafont_sc_title, v->heard, 24, 70, W - 48, 22, 3, C_DIM);
+        aafont_draw(c, &aafont_sc_head, W / 2, H / 2, tr(v->lang, TR_THINKING), C_TEXT, AAFONT_CENTRE);
         note(c, v->note);
         break;
     case UI_SPEAKING:
@@ -1210,12 +1291,12 @@ void ui_draw(canvas_t *c, const ui_view_t *v)
         card_page(c, v);
         break;
     case UI_ERROR:
-        aafont_draw(c, &aafont_rooms_head, W / 2, 150, v->title ? v->title : "Something went wrong", C_RED, AAFONT_CENTRE);
+        aafont_draw(c, &aafont_sc_head, W / 2, 150, v->title ? v->title : "Something went wrong", C_RED, AAFONT_CENTRE);
         para(c, sub, v->text, 24, 210, W - 48, 32, 6, C_TEXT);
         break;
     case UI_AGENT_TEXT: {
         int y = 70;
-        if (v->title && v->title[0]) y = para(c, &aafont_rooms_head, v->title, 24, 70, W - 48, 38, 2, C_TEXT) + 10;
+        if (v->title && v->title[0]) y = para(c, &aafont_sc_head, v->title, 24, 70, W - 48, 38, 2, C_TEXT) + 10;
         para(c, sub, v->text, 24, y, W - 48, 32, 11, C_TEXT);
         break;
     }
@@ -1226,5 +1307,5 @@ void ui_draw(canvas_t *c, const ui_view_t *v)
             canvas_blit(c, v->image, v->img_w, v->img_h, (W - v->img_w) / 2, (H - v->img_h) / 2);
         break;
     }
-    if (v->mic_open) banner(c);         /* last, over everything: the microphones are open */
+    if (v->mic_open) banner(c, v->lang);         /* last, over everything: the microphones are open */
 }

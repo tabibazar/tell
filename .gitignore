@@ -114,4 +114,5 @@ host_tests/test_sc_spin
 host_tests/test_sc_care
 host_tests/test_sc_weather
 host_tests/test_sc_setup
+host_tests/test_sc_i18n
 stan-mcp/__pycache__/

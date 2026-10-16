@@ -12,6 +12,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "https.h"
+#include "i18n.h"
 #include "memory.h"
 
 static claude_history_t *s_hist;       /* PSRAM: 12.6 KB internal RAM would rather keep for TLS */
@@ -24,7 +25,7 @@ static int post(const char *key, const char *model, const char *url, const char 
 {
     static char facts[FACTS_MAX * FACT_LEN];
     claude_facts_line(s_facts, facts, sizeof facts);
-    char *body = claude_request(model, url, tok, s_hist, facts, question);
+    char *body = claude_request(model, url, tok, s_hist, facts, question, lang_english(cfg_lang()));
     if (!body) return -1;
     https_hdr_t h[] = {
         { "x-api-key", key },

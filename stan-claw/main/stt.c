@@ -7,6 +7,7 @@
 #include "config.h"
 #include "esp_heap_caps.h"
 #include "https.h"
+#include "i18n.h"
 #include "speechfmt.h"
 
 int stt_transcribe(const int16_t *pcm, int samples, char *out, size_t n)
@@ -22,9 +23,13 @@ int stt_transcribe(const int16_t *pcm, int samples, char *out, size_t n)
     wav_header(wav, 16000, samples);
     memcpy(wav + 44, pcm, (size_t)samples * 2);
     https_hdr_t h[] = { { "Authorization", auth } };
+    /* The language it will hear: English as it always was, any other named. */
+    int lang = cfg_lang();
+    char url[120];
+    snprintf(url, sizeof url, "https://api.deepgram.com/v1/listen?model=nova-3&smart_format=true%s%s",
+             lang == LANG_EN ? "" : "&language=", lang == LANG_EN ? "" : lang_code(lang));
     char *resp = NULL;
-    int code = https_post("https://api.deepgram.com/v1/listen?model=nova-3&smart_format=true",
-                          h, 1, "audio/wav", wav, len, 15000, &resp, 16384, NULL, NULL);
+    int code = https_post(url, h, 1, "audio/wav", wav, len, 15000, &resp, 16384, NULL, NULL);
     free(wav);
     if (code == 200 && !(resp && deepgram_transcript(resp, out, n))) code = -1;
     free(resp);

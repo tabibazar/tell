@@ -2,6 +2,8 @@
    screen) to look at; checks that the LISTENING banner is there whenever
    the mics are open. */
 #include "ui.h"
+#include "i18n.h"
+#include "aafont.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -124,13 +126,14 @@ static void care(canvas_t *c, const uint8_t *lv)
     v = (ui_view_t){ .mode = UI_EASY, .now = 10 * 60, .clarity = true };
     ui_draw(c, &v); bmp("easy");
     CHECK(ui_hit(&v, 30, 30, &val) == UI_HIT_BACK);
-    CHECK(ui_hit(&v, 138, 136, &val) == UI_HIT_TEXTSIZE && val == 0);
-    CHECK(ui_hit(&v, 342, 136, &val) == UI_HIT_TEXTSIZE && val == 1);
-    CHECK(ui_hit(&v, 138, 236, &val) == UI_HIT_CONTRAST && val == 0);
-    CHECK(ui_hit(&v, 342, 236, &val) == UI_HIT_CONTRAST && val == 1);
-    CHECK(ui_hit(&v, 138, 336, &val) == UI_HIT_CLARITY && val == 0);
-    CHECK(ui_hit(&v, 342, 336, &val) == UI_HIT_CLARITY && val == 1);
-    CHECK(ui_hit(&v, 240, 430, &val) == UI_HIT_NONE);                     /* the preview */
+    CHECK(ui_hit(&v, 138, 124, &val) == UI_HIT_TEXTSIZE && val == 0);
+    CHECK(ui_hit(&v, 342, 124, &val) == UI_HIT_TEXTSIZE && val == 1);
+    CHECK(ui_hit(&v, 138, 210, &val) == UI_HIT_CONTRAST && val == 0);
+    CHECK(ui_hit(&v, 342, 210, &val) == UI_HIT_CONTRAST && val == 1);
+    CHECK(ui_hit(&v, 138, 296, &val) == UI_HIT_CLARITY && val == 0);
+    CHECK(ui_hit(&v, 342, 296, &val) == UI_HIT_CLARITY && val == 1);
+    CHECK(ui_hit(&v, 240, 360, &val) == UI_HIT_NONE);                     /* the preview */
+    CHECK(ui_hit(&v, 240, 440, &val) == UI_HIT_LANG);                     /* the language row: to the picker */
     v.textsize = 1;
     ui_draw(c, &v); bmp("easy-xl");
     v.contrast = true;
@@ -160,19 +163,19 @@ static void care(canvas_t *c, const uint8_t *lv)
     CHECK(fb[210 * 480 + 240] != 0 && count(RGB(0x5A, 0x60, 0x6A), 360, 430) > 50);
 
     char part[32], date[32];
-    ui_day_words(6, 10, 10, 15 * 60, part, sizeof part, date, sizeof date);
+    ui_day_words(LANG_EN, 6, 10, 10, 15 * 60, part, sizeof part, date, sizeof date);
     CHECK(strcmp(part, "Saturday afternoon") == 0 && strcmp(date, "October 10") == 0);
-    ui_day_words(6, 10, 10, 8 * 60, part, sizeof part, date, sizeof date);
+    ui_day_words(LANG_EN, 6, 10, 10, 8 * 60, part, sizeof part, date, sizeof date);
     CHECK(strcmp(part, "Saturday morning") == 0);
-    ui_day_words(6, 10, 10, 18 * 60, part, sizeof part, date, sizeof date);
+    ui_day_words(LANG_EN, 6, 10, 10, 18 * 60, part, sizeof part, date, sizeof date);
     CHECK(strcmp(part, "Saturday evening") == 0);
-    ui_day_words(6, 10, 10, 23 * 60, part, sizeof part, date, sizeof date);
+    ui_day_words(LANG_EN, 6, 10, 10, 23 * 60, part, sizeof part, date, sizeof date);
     CHECK(strcmp(part, "Saturday night") == 0);
-    ui_day_words(6, 10, 10, 3 * 60, part, sizeof part, date, sizeof date);
+    ui_day_words(LANG_EN, 6, 10, 10, 3 * 60, part, sizeof part, date, sizeof date);
     CHECK(strcmp(part, "Saturday night") == 0);
-    ui_day_words(0, 1, 1, 12 * 60, part, sizeof part, date, sizeof date);
+    ui_day_words(LANG_EN, 0, 1, 1, 12 * 60, part, sizeof part, date, sizeof date);
     CHECK(strcmp(part, "Sunday afternoon") == 0 && strcmp(date, "January 1") == 0);
-    ui_day_words(6, 0, 10, 15 * 60, part, sizeof part, date, sizeof date);
+    ui_day_words(LANG_EN, 6, 0, 10, 15 * 60, part, sizeof part, date, sizeof date);
     CHECK(part[0] == 0 && date[0] == 0);
 
     /* WiFi set up from a phone: the QR page, joining, joined, a wrong password. */
@@ -299,6 +302,124 @@ static void care(canvas_t *c, const uint8_t *lv)
     CHECK(count(yellow, 0, 60) > 50);
 }
 
+extern const aafont_t aafont_sc_head, aafont_sc_title, aafont_sc_small, aafont_sc_sub;
+
+/* Every language: the words fit where they go, and the conversation's
+   screens, the cards, the resting screens and WiFi set up drawn in each
+   (name-es.bmp ...) to look at; and the language picker. */
+static void languages(canvas_t *c, const uint8_t *lv)
+{
+    int val;
+    struct { int key; const aafont_t *f; int w; } fit[] = {
+        { TR_BANNER, &aafont_sc_title, 440 }, { TR_TALK, &aafont_sc_head, 170 }, { TR_TALK_HINT, &aafont_sc_small, 440 }, { TR_LISTENING, &aafont_sc_head, 440 },
+        { TR_YOUR_TURN, &aafont_sc_head, 440 }, { TR_HOW_ARE_YOU, &aafont_sc_head, 440 },
+        { TR_PAUSE_HINT, &aafont_sc_small, 450 }, { TR_KEEP_TALKING, &aafont_sc_sub, 450 },
+        { TR_AGAIN, &aafont_sc_sub, 124 }, { TR_SLOWER, &aafont_sc_sub, 124 }, { TR_DONE, &aafont_sc_sub, 124 },
+        { TR_AGAIN_SUB, &aafont_sc_small, 132 }, { TR_SLOWER_SUB, &aafont_sc_small, 132 }, { TR_DONE_SUB, &aafont_sc_small, 132 },
+        { TR_STOP, &aafont_sc_head, 224 }, { TR_SHALL_I, &aafont_sc_head, 440 }, { TR_YES, &aafont_sc_head, 184 },
+        { TR_NO, &aafont_sc_head, 184 }, { TR_SAY_YES_NO, &aafont_sc_sub, 450 }, { TR_THINKING, &aafont_sc_head, 440 },
+        { TR_OK, &aafont_sc_head, 144 }, { TR_SETUP_DONE, &aafont_sc_head, 144 }, { TR_TODAY, &aafont_sc_small, 180 },
+        { TR_TOMORROW, &aafont_sc_small, 180 }, { TR_PHONE_AWAY, &aafont_sc_sub, 450 }, { TR_HALF_MINUTE, &aafont_sc_sub, 450 },
+        { TR_CHECK_PASS1, &aafont_sc_sub, 450 }, { TR_CHECK_PASS2, &aafont_sc_sub, 450 }, { TR_NO_CAMERA, &aafont_sc_small, 450 },
+        { TR_THEN_OPEN, &aafont_sc_small, 450 }, { TR_ENDED, &aafont_sc_small, 450 }, { TR_MISSED, &aafont_sc_small, 450 },
+        { TR_HOA_CHECKED, &aafont_sc_small, 450 }, { TR_HOA_FAILED, &aafont_sc_small, 450 }, { TR_NO_WIFI, &aafont_sc_small, 200 },
+        { TR_SETUP_TITLE, &aafont_sc_head, 400 }, { TR_MSG_FAMILY, &aafont_sc_head, 384 }, { TR_PHOTO_FAMILY, &aafont_sc_head, 432 },
+    };
+    for (int l = 0; l < LANG_N; l++) {
+        for (size_t i = 0; i < sizeof fit / sizeof fit[0]; i++) {
+            int w = aafont_width(fit[i].f, tr(l, fit[i].key));
+            if (w > fit[i].w) printf("  too wide: %s key %d \"%s\" %d > %d\n", lang_code(l), fit[i].key, tr(l, fit[i].key), w, fit[i].w);
+            CHECK(w <= fit[i].w);
+        }
+        char t[64], part[48], date[48];
+        snprintf(t, sizeof t, "%s 88^", tr(l, TR_FEELS_LIKE));
+        CHECK(aafont_width(&aafont_sc_sub, t) <= 230);
+        for (int d = 0; d < 7; d++)
+            for (int m = 1; m <= 12; m++)
+                for (int k = 0; k < 4; k++) {
+                    ui_day_words(l, d, m, 30, 8 * 60 + k * 300, part, sizeof part, date, sizeof date);
+                    CHECK(aafont_width(&aafont_sc_head, part) <= 440 && aafont_width(&aafont_sc_sub, date) <= 440);
+                }
+    }
+
+    static uint16_t photo[400 * 300];
+    for (int y = 0; y < 300; y++)
+        for (int x = 0; x < 400; x++) photo[y * 400 + x] = (uint16_t)((x * 31 / 399) << 11 | (y * 63 / 299) << 5 | 12);
+    static uint8_t qr[29 * 29];
+    for (int i = 0; i < 29 * 29; i++) qr[i] = (uint8_t)((i * 7 + i / 29 * 3) % 5 < 2);
+    for (int l = 1; l < LANG_N; l++) {
+        char name[64], title[64];
+        const char *code = lang_code(l);
+#define SHOT(n) do { snprintf(name, sizeof name, "%s-%s", n, code); bmp(name); } while (0)
+        ui_view_t v = { .mode = UI_HOME, .lang = l, .now = 15 * 60 + 12, .wday = 3, .month = 8, .mday = 14 };
+        ui_draw(c, &v); SHOT("home-day");
+        v.ssid = NULL; v.note = tr(l, TR_ENDED);
+        ui_draw(c, &v); SHOT("home-nowifi");
+        v = (ui_view_t){ .mode = UI_LISTENING, .lang = l, .mic_open = true, .now = 9 * 60, .levels = lv, .nlevels = 40,
+                         .listen_ms = 2400 };
+        ui_draw(c, &v); SHOT("listening");
+        v.convo = true; v.title = tr(l, TR_YOUR_TURN);
+        ui_draw(c, &v); SHOT("listening-convo");
+        CHECK(ui_hit(&v, 88, 420, &val) == UI_HIT_AGAIN && ui_hit(&v, 392, 420, &val) == UI_HIT_DONE);
+        v = (ui_view_t){ .mode = UI_LISTENING, .lang = l, .mic_open = true, .now = 9 * 60, .convo = true,
+                         .confirm = "Pagar 45 dólares a Green Lawn Care por el corte de octubre" };
+        ui_draw(c, &v); SHOT("confirm");
+        v = (ui_view_t){ .mode = UI_THINKING, .lang = l, .heard = "¿Cuándo vence mi próxima cuota?", .now = 9 * 60 };
+        ui_draw(c, &v); SHOT("thinking");
+        v = (ui_view_t){ .mode = UI_SPEAKING, .lang = l, .heard = "¿Cuándo vence mi próxima cuota?", .now = 9 * 60,
+                         .text = "Su próxima cuota de doscientos diez dólares vence el primero de noviembre. Ya pagó la "
+                                 "última a tiempo: ¡muy bien!", .spoken = 30, .convo = true, .note = tr(l, TR_HOA_CHECKED) };
+        ui_draw(c, &v); SHOT("speaking");
+        snprintf(title, sizeof title, tr(l, TR_MSG_FROM), "José");
+        v = (ui_view_t){ .mode = UI_MESSAGE, .lang = l, .now = 15 * 60, .title = title,
+                         .text = "Hola mamá, paso el domingo a las dos. ¡Te quiero!" };
+        ui_draw(c, &v); SHOT("message");
+        v = (ui_view_t){ .mode = UI_REMINDER, .lang = l, .now = 18 * 60, .text = "Trash bins go out tonight." };
+        ui_draw(c, &v); SHOT("reminder");
+        snprintf(title, sizeof title, tr(l, TR_PHOTO_FROM), "Zoë");
+        v = (ui_view_t){ .mode = UI_MESSAGE, .lang = l, .now = 15 * 60, .title = title, .image = photo, .img_w = 400,
+                         .img_h = 300, .text = "Les enfants au lac, dimanche" };
+        ui_draw(c, &v); SHOT("photo-card");
+        weather_t w = { .ok = true, .temp = 12.3f, .feels = 9.4f, .code = 2, .day = true, .hi = 18.4f, .lo = 11.6f,
+                        .rain = 40, .t_code = 66, .t_hi = 11.4f, .t_lo = 7.6f, .t_rain = 80 };
+        v = (ui_view_t){ .mode = UI_RESTING, .lang = l, .now = 21 * 60 + 7, .wday = 3, .month = 8, .mday = 14, .weather = &w,
+                         .place = "Willowdale" };
+        ui_draw(c, &v); SHOT("resting-weather");
+        w.code = 66;
+        ui_draw(c, &v); SHOT("resting-weather-freezing");
+        v.image = photo; v.img_w = 400; v.img_h = 300; v.photo_from = "Zoë";
+        ui_draw(c, &v); SHOT("resting-photo");
+        v = (ui_view_t){ .mode = UI_RESTING, .lang = l, .now = 15 * 60 + 12, .wday = 1, .month = 3, .mday = 2 };
+        ui_draw(c, &v); SHOT("resting-day");
+        v = (ui_view_t){ .mode = UI_SETUP, .lang = l, .now = 21 * 60, .qr = qr, .qr_n = 29, .setup_net = "stan-claw-setup",
+                         .setup_pass = "48213907" };
+        ui_draw(c, &v); SHOT("setup-qr");
+        v.setup_state = 1; v.text = "Tabriz";
+        ui_draw(c, &v); SHOT("setup-joining");
+        v.setup_state = 2;
+        ui_draw(c, &v); SHOT("setup-joined");
+        v.setup_state = 3;
+        ui_draw(c, &v); SHOT("setup-failed");
+        v = (ui_view_t){ .mode = UI_EASY, .lang = l, .now = 10 * 60, .clarity = true, .textsize = 1 };
+        ui_draw(c, &v); SHOT("easy");
+        v = (ui_view_t){ .mode = UI_LANG, .lang = l, .now = 10 * 60 };
+        ui_draw(c, &v); SHOT("lang");
+#undef SHOT
+    }
+
+    /* The picker: every language's button, Back, and nothing between. */
+    ui_view_t v = { .mode = UI_LANG, .lang = LANG_ES, .now = 10 * 60 };
+    ui_draw(c, &v); bmp("lang");
+    CHECK(count(RGB(0x3B, 0x6F, 0xD0), 84, 164) > 5000);                   /* Español, lit */
+    static const int at[LANG_N][2] = { { 138, 124 }, { 342, 124 }, { 138, 220 }, { 342, 220 }, { 138, 316 }, { 342, 316 },
+                                       { 240, 412 } };
+    for (int l = 0; l < LANG_N; l++) CHECK(ui_hit(&v, at[l][0], at[l][1], &val) == UI_HIT_LANG && val == l);
+    CHECK(ui_hit(&v, 240, 172, &val) == UI_HIT_NONE && ui_hit(&v, 60, 412, &val) == UI_HIT_NONE);
+    CHECK(ui_hit(&v, 30, 30, &val) == UI_HIT_BACK);
+    v = (ui_view_t){ .mode = UI_EASY, .lang = LANG_FR, .now = 10 * 60 };
+    ui_draw(c, &v); bmp("easy-lang");
+}
+
 int main(void)
 {
     system("mkdir -p host_tests/renders/stanclaw");
@@ -381,6 +502,7 @@ int main(void)
     CHECK(ui_hit(&v, 438, 438, &val) == UI_HIT_GEAR && ui_hit(&v, 240, 250, &val) == UI_HIT_TALK);
 
     care(&c, lv);
+    languages(&c, lv);
 
     CHECK(ui_hit_talk(240, 250) && ui_hit_talk(240, 272));
     CHECK(!ui_hit_talk(20, 460));

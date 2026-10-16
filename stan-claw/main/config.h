@@ -29,6 +29,7 @@ typedef enum {
     CFG_HW_TOKEN,                               /* the homeowner's stan-mcp token, for reminders and family messages */
     CFG_WEATHER_AT,                             /* "lat,lon" for the resting screen's weather ("" = from the internet) */
     CFG_TZ,                                     /* the POSIX TZ rule, from the home's time zone ("" = Eastern) */
+    CFG_LANG,                                   /* the homeowner's language, "es" (i18n.h; "" = English) */
     CFG_N
 } cfg_key_t;
 
@@ -39,5 +40,6 @@ bool cfg_net_forget(const char *ssid);
 void cfg_get(cfg_key_t k, char *buf, size_t n);
 void cfg_set(cfg_key_t k, const char *v);
 bool cfg_has(cfg_key_t k);
+int cfg_lang(void);                             /* CFG_LANG as a lang_t (i18n.h) */
 
 #endif /* CONFIG_H */

@@ -17,6 +17,7 @@
 #include "memory.h"
 #include "agent.h"
 #include "care_net.h"
+#include "i18n.h"
 #include "phrases.h"
 #include <time.h>
 #include "voices.h"
@@ -134,6 +135,17 @@ static void run(const char *line)
         printf("text: %s\n", v[0] == '1' ? "extra large" : "large");
         cfg_get(CFG_CONTRAST, v, sizeof v);
         printf("contrast: %s\n", v[0] == '1' ? "high" : "normal");
+        printf("language: %s (%s)\n", lang_name(cfg_lang()), lang_code(cfg_lang()));
+        return;
+    }
+    if (strcmp(w[0], "lang") == 0 && n >= 2) {
+        /* The homeowner's language: the screen's words, Claude's answers, what
+           Deepgram listens for; the recorded phrases follow while it idles. */
+        int l = lang_find(w[1]);
+        if (l < 0) { printf("no: lang en|es|fr|pt|it|de|tl\n"); return; }
+        cfg_set(CFG_LANG, l == LANG_EN ? "" : lang_code(l));
+        settings_reload();
+        printf("ok: language %s (%s)\n", lang_name(l), lang_code(l));
         return;
     }
     if (strcmp(w[0], "clarity") == 0 && n >= 2) {
@@ -269,6 +281,7 @@ static void run(const char *line)
     if (strcmp(w[0], "log") == 0) { memory_print_log(n >= 2 ? atoi(w[1]) : 10); return; }
     if (strcmp(w[0], "forget") == 0) { memory_forget(); printf("ok: conversation and facts forgotten (restart to clear the one in RAM)\n"); return; }
     printf("commands: wifi add|forget|list, key claude|deepgram|elevenlabs K, voice NAME|ID, model ID, speed slower|normal|faster, volume N, memory, log [N], forget, ask TEXT,\n"
+           "          lang en|es|fr|pt|it|de|tl,\n"
            "          mcp url URL, mcp token T, serve token T, beep, rec, status,\n"
            "          slots [beep], regs (developer tools)\n");
 }

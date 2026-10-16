@@ -10,11 +10,14 @@
  * the middle (the backlight makes it breathe), the time under it and the
  * day in words. In a conversation the listening and speaking pages carry big
  * buttons (Again, Slower, Done; Stop), and a question needing a yes gets a
- * Yes/No card. UI_EASY is the See and hear settings page; UI_MESSAGE and
+ * Yes/No card. UI_EASY is the See and hear settings page, its last row the
+ * language, chosen on UI_LANG; UI_MESSAGE and
  * UI_REMINDER are cards for a family message and a spoken reminder. Home
  * carries the day and date, large, over the talk button. With an image set,
  * UI_RESTING shows that family photo (time and day on a dark band) in place
  * of the orb -- unless the orb is amber -- and UI_MESSAGE becomes a photo card.
+ * The conversation's words, the day and the weather are in the homeowner's
+ * language (v->lang, i18n.h); the settings pages stay English.
  * Pure: host_tests/test_sc_ui.c renders every screen.
  */
 #include <stdbool.h>
@@ -26,12 +29,13 @@
 #include "weather.h"
 
 typedef enum { UI_HOME, UI_LISTENING, UI_THINKING, UI_SPEAKING, UI_ANSWER, UI_ERROR, UI_AGENT_TEXT, UI_AGENT_IMAGE,
-               UI_RESTING, UI_SETTINGS, UI_VOICES, UI_EASY, UI_MESSAGE, UI_REMINDER, UI_SETUP } ui_mode_t;
+               UI_RESTING, UI_SETTINGS, UI_VOICES, UI_EASY, UI_MESSAGE, UI_REMINDER, UI_SETUP, UI_LANG } ui_mode_t;
 
 typedef struct {
     ui_mode_t mode;
     bool mic_open;
     int now;                 /* minute of the day for the clock; -1 none */
+    int lang;                /* the homeowner's language (i18n.h), LANG_EN = 0; UI_LANG: the one chosen */
     const char *ssid;        /* the WiFi joined, shown top centre; NULL or "" when none */
     const char *heard;       /* what the person said */
     const char *text;        /* the answer, an error's detail, an agent's text */
@@ -73,21 +77,22 @@ typedef struct {
 /* What a touch at (x, y) lands on, on the page v shows; *value carries the
    volume (0-100), the speed or model button, or the voice card's index
    (the middle one, or a neighbour tapped at the side), or a See and hear
-   switch's choice (0 or 1). */
+   switch's choice (0 or 1). UI_HIT_LANG is See and hear's language row (to
+   the picker) or, on UI_LANG, a language, *value its lang_t. */
 typedef enum { UI_HIT_NONE, UI_HIT_TALK, UI_HIT_GEAR, UI_HIT_BACK, UI_HIT_VOICE, UI_HIT_VOLUME,
                UI_HIT_SPEED, UI_HIT_MODEL, UI_HIT_CARD, UI_HIT_USE,
                UI_HIT_AGAIN, UI_HIT_SLOWER, UI_HIT_DONE, UI_HIT_YES, UI_HIT_NO, UI_HIT_EASY, UI_HIT_TEXTSIZE,
-               UI_HIT_CONTRAST, UI_HIT_CLARITY, UI_HIT_CLOSE, UI_HIT_WIFI } ui_hit_t;
+               UI_HIT_CONTRAST, UI_HIT_CLARITY, UI_HIT_CLOSE, UI_HIT_WIFI, UI_HIT_LANG } ui_hit_t;
 ui_hit_t ui_hit(const ui_view_t *v, int x, int y, int *value);
 
 
 /* The volume a finger at x on the slider means, 0-100, wherever it has wandered vertically. */
 int ui_slider_value(int x);
 
-/* The friendly day for the resting screen: "Saturday afternoon" and "October 10".
+/* The friendly day for the resting screen, in the language: "Saturday afternoon" and "October 10".
    Part of day by minute: morning 05:00-11:59, afternoon 12:00-16:59, evening 17:00-20:59, night otherwise.
    month 0 (unknown) -> both empty. */
-void ui_day_words(int wday, int month, int mday, int minute, char *part, size_t np, char *date, size_t nd);
+void ui_day_words(int lang, int wday, int month, int mday, int minute, char *part, size_t np, char *date, size_t nd);
 
 #define UI_WAVE_BARS 48
 
