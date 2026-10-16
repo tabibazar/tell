@@ -170,7 +170,8 @@ def ticket(prefix, *parts):
 # Activity, for the weekly summary
 # --------------------------------------------------------------------------
 QUIET = {"family_inbox", "reminders", "send_family_summary", "family_summary_consent", "family_contacts",
-         "pending_approvals", "family_photos", "family_media", "checkin_missed", "daily_checkin_consent"}
+         "pending_approvals", "family_photos", "family_media", "checkin_missed", "daily_checkin_consent",
+         "message_heard", "open_ballots", "explain_violation", "meeting_companion", "plan_architectural"}
 
 
 def describe(tool, a, result):
@@ -192,11 +193,16 @@ def describe(tool, a, result):
         "resale_certificate": "ordered a resale certificate",
         "notify_family": "sent family a message",
         "add_family_contact": f"added {a.get('name', 'someone')} as a family contact",
+        "cast_vote": "voted on a community ballot",                    # never how they voted
+        "request_extension": f"asked for more time on notice {str(a.get('violation_id', '')).upper()}",
+        "register_to_speak": f"signed up to speak at the board meeting about {str(a.get('topic', ''))[:60]}",
+        "submit_forum_question": "sent a question to the board's open forum",
     }.get(tool, f"used {tool}")
 
 
 DOES = {"make_payment", "payment_plan", "appeal_violation", "file_request", "reserve_amenity", "guest_pass",
-        "update_household", "resale_certificate"}
+        "update_household", "resale_certificate", "cast_vote", "request_extension", "register_to_speak",
+        "submit_forum_question"}
 
 
 def log(c, e, tool, a, result):

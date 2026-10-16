@@ -44,7 +44,7 @@ aws lambda update-function-configuration --function-name $FN --region $R --timeo
 aws lambda wait function-updated --function-name $FN --region $R
 echo "function: environment set, 20 s, 256 MB"
 
-(cd stan-mcp && rm -f /tmp/stanmcp.zip && zip -qr /tmp/stanmcp.zip lambda_function.py hoa_data.py family.py state.py mail.py library.py library)
+(cd stan-mcp && rm -f /tmp/stanmcp.zip && zip -qr /tmp/stanmcp.zip lambda_function.py hoa_data.py family.py state.py mail.py library.py office.py civic.py library)
 aws lambda update-function-code --function-name $FN --region $R --zip-file fileb:///tmp/stanmcp.zip >/dev/null
 aws lambda wait function-updated --function-name $FN --region $R
 echo "function: code deployed"

@@ -34,7 +34,7 @@ r = post({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protoco
 check(r["statusCode"] == 200 and "Mcp-Session-Id" in r["headers"], "initialize")
 check(post({"jsonrpc": "2.0", "method": "notifications/initialized"})["statusCode"] == 202, "notification 202")
 tools = json.loads(post({"jsonrpc": "2.0", "id": 2, "method": "tools/list"})["body"])["result"]["tools"]
-check(len(tools) == 32 and all(t["inputSchema"]["type"] == "object" for t in tools), f"tools/list ({len(tools)})")
+check(len(tools) == 40 and all(t["inputSchema"]["type"] == "object" for t in tools), f"tools/list ({len(tools)})")
 check(call("fly", {}).get("error", {}).get("code") == -32602, "unknown tool")
 
 # Public tools, across all four communities and as speech might name them
@@ -235,6 +235,40 @@ check("No section 12.1" in call("read_document", {"community": "sheppard", "docu
 check("From the documents" in call("lookup_rule", {"community": "sheppard", "topic": "fence"}), "lookup_rule cites the documents")
 check('"library"' in call("documents", {"community": "sheppard"}), "documents lists the library")
 library._LIB = None
+
+# The HOA office console, through the handler as a function URL calls it
+import office, re as _re
+def web(path, method="GET", form=None, cookies=None):
+    u = urllib.parse.urlparse(path)
+    ev = {"rawPath": u.path, "rawQueryString": u.query, "requestContext": {"http": {"method": method}},
+          "body": urllib.parse.urlencode(form or {}), "headers": {}, "cookies": cookies or []}
+    return f.handler(ev, None)
+r = web("/office/login", "POST", {"community": "sheppard center", "password": office.office_password("sheppard center")})
+check(r["statusCode"] in (302, 303) and r.get("cookies"), "office login sets a cookie")
+jar = [r["cookies"][0].split(";")[0]]
+check(web("/office/home")["statusCode"] in (302, 303), "the console wants a login")
+home = web("/office/home", cookies=jar)
+check(home["statusCode"] == 200 and "calls" in home["body"].lower(), "dashboard with calls saved")
+call("search_documents", {"community": "sheppard", "query": "fence height"})
+check("fence" in web("/office/home", cookies=jar)["body"].lower(), "a question's topic reaches the dashboard")
+ref = call("file_request", {"homeowner_token": tok, "kind": "maintenance", "details": "pothole on Willow Lane"}).split()[3]
+check(ref in call("my_requests", {"homeowner_token": tok}), "a new filing shows in my_requests")
+rpage = web("/office/requests", cookies=jar)["body"]
+csrf = _re.search(r"name='csrf' value='([0-9a-f]+)'", rpage).group(1)
+web("/office/requests", "POST", {"csrf": csrf, "ref": ref, "status": "Crew booked for Tuesday", "notify": "on"}, cookies=jar)
+check("Crew booked for Tuesday" in call("my_requests", {"homeowner_token": tok}), "the office's update reaches the homeowner")
+inbox = json.loads(call("family_inbox", {"homeowner_token": tok}))["messages"]
+m = next((x for x in inbox if "Crew booked" in x["text"]), None)
+check(m and m["from"] == "HOA Office", "the update is spoken on the panel")
+check(call("message_heard", {"homeowner_token": tok, "id": m["id"]}) == "ok", "the panel says it was heard")
+
+# Civic tools through the server, and the old /mcp-prefixed page links
+check("Shall I record" in call("cast_vote", {"homeowner_token": tok, "ballot_id": "SC-ROOF", "choice": "yes"}), "vote read back first")
+check("VOTE-2026-" in call("cast_vote", {"homeowner_token": tok, "ballot_id": "SC-ROOF", "choice": "yes", "confirm": True}), "vote recorded")
+check("ballot" in web("/office/home", cookies=jar)["body"].lower() and "1 of" in web("/office/home", cookies=jar)["body"], "ballot on the dashboard")
+check(call("meeting_companion", {"community": "sheppard"}).startswith("{"), "meeting companion")
+r = page(fam_link.replace("https://example.test/family", "https://example.test/mcp/family"))
+check(r["statusCode"] == 200, "a /mcp/family link (the server URL's own path) still opens")
 
 print("stan-mcp local: all passed" if not fails else f"{fails} FAILED")
 sys.exit(1 if fails else 0)

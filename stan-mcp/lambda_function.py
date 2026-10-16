@@ -24,7 +24,9 @@ import os
 import re
 
 import family
+import civic
 import library
+import office
 from family import ticket
 from hoa_data import ALIASES, COMMUNITIES
 
@@ -310,7 +312,8 @@ def t_appeal_violation(d, p, e, a):
 
 
 def t_my_requests(d, p, e, a):
-    return j({"requests": p["requests"] or "None open.", "reservations": p["reservations"] or "None."})
+    reqs = office.home_requests(key_of(d), e) or p["requests"]       # with the office's updates and new filings
+    return j({"requests": reqs or "None open.", "reservations": p["reservations"] or "None."})
 
 
 def t_file_request(d, p, e, a):
@@ -321,7 +324,9 @@ def t_file_request(d, p, e, a):
            "maintenance": "Management looks at it within 3 business days (the same day for anything unsafe).",
            "complaint": "Management sends a courtesy notice; your name stays confidential.",
            "renovation": "Needs the renovation application, the contractor's insurance and the deposit before work starts."}[kind]
-    return f"Filed {kind} request {ticket(prefix, e, details)} (simulated): \"{details[:200]}\". {nxt}"
+    ref = ticket(prefix, e, details)
+    office.note_request(key_of(d), e, ref, kind, details)
+    return f"Filed {kind} request {ref} (simulated): \"{details[:200]}\". {nxt}"
 
 
 def t_reserve_amenity(d, p, e, a):
@@ -456,14 +461,28 @@ TOOLS = [
      "and if nobody answers it emails the family. Only with the homeowner's agreement.",
      schema({**TOK, "on": {"type": "boolean"}}, ["homeowner_token", "on"]), private(fam(family.t_daily_checkin_consent))),
 ]
+TOOLS += [(n, desc, schema({**TOK, **props}, ["homeowner_token", *req]), private(fam(fn))) if kind == "private"
+          else (n, desc, schema({**COM, **TOK, **props}, list(req)), public(lambda d, a, fn=fn: fn(key_of(d), a)))
+          for n, desc, props, req, kind, fn in civic.CIVIC_TOOLS]
+
+
+def t_board_reminders(c, e, a):
+    """The board's spoken reminders: the HOA records' (family) and today's notices (civic)."""
+    out = json.loads(family.t_reminders(c, e, a))
+    seen = {r["id"] for r in out["reminders"]}
+    out["reminders"] += [r for r in civic.notice_reminders(c, e, family.now()) if r["id"] not in seen]
+    out["reminders"].sort(key=lambda r: r["at"])
+    return json.dumps(out)
+
+
 # Called by the stan-claw board itself, not offered to Claude.
 HIDDEN = [
-    ("reminders", private(fam(family.t_reminders))),
+    ("reminders", private(fam(t_board_reminders))),
     ("family_inbox", private(fam(family.t_family_inbox))),
     ("family_photos", private(fam(family.t_family_photos))),
     ("family_media", private(fam(family.t_family_media))),
     ("checkin_missed", private(fam(family.t_checkin_missed))),
-]
+] + [(n, private(fam(f))) for n, f in office.HIDDEN_TOOLS]
 for _n, _f in [(n, f) for n, _, _, f in TOOLS] + HIDDEN:
     if hasattr(_f, "tool"):
         _f.tool = _n
@@ -474,7 +493,16 @@ TOOL_FN.update(dict(HIDDEN))
 
 def call_tool(name, args):
     fn = TOOL_FN.get(name)
-    return fn(args) if fn else None
+    if not fn:
+        return None
+    out = fn(args)
+    try:                                             # anonymised stats for the HOA office's dashboard
+        w = who(args.get("homeowner_token", ""))
+        c_key = w[0] if w else community_arg(args)[0]
+        office.record(c_key, w[1] if w else None, name, args, out if isinstance(out, str) else "")
+    except Exception as x:                           # noqa: BLE001 -- stats never cost an answer
+        print("stats failed:", x)
+    return out
 
 
 # --------------------------------------------------------------------------
@@ -535,6 +563,11 @@ def handler(event, context):
     headers = {k.lower(): v for k, v in (event.get("headers") or {}).items()}
     method = event.get("requestContext", {}).get("http", {}).get("method", "POST")
     path = event.get("rawPath") or "/"
+    if path.startswith("/mcp/"):                    # pages linked from the server's own address (.../mcp)
+        path = path[4:]
+    if path.startswith("/office"):                  # the HOA office console: its own login and cookie
+        headers["cookie"] = "; ".join(event.get("cookies") or []) or headers.get("cookie", "")
+        return office.handle_office(path, method, form(event), headers)
     if path in ("/family", "/approve") and method in ("GET", "POST"):   # family's pages: the link is signed
         return family.handle_page(path, method, form(event))
     token = os.environ.get("MCP_TOKEN", "")
