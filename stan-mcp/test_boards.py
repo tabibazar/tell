@@ -29,7 +29,7 @@ def call(path, method="GET", body=None, token="t0k"):
 
 state.reset()
 check(call("/boards", token=None)["statusCode"] == 200, "the page needs no token")
-check("<title>Boards</title>" in call("/mcp/boards", token=None)["body"], "the page from the /mcp address")
+check("<title>Gadgets</title>" in call("/mcp/boards", token=None)["body"], "the page from the /mcp address")
 check(call("/boards/data", token=None)["statusCode"] == 401, "data wants the token")
 check(call("/boards/data", token="nope")["statusCode"] == 401, "data wants the right token")
 check(call("/boards/report", "POST", {"board": "x"}, token="nope")["statusCode"] == 401, "reports want the token")
