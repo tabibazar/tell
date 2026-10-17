@@ -22,6 +22,7 @@
 #include "freertos/task.h"
 #include "led_strip.h"
 #include "airlog.h"
+#include "boardstats.h"
 #include "airui.h"
 #include "lightlink.h"
 #include <math.h>
@@ -376,6 +377,44 @@ static void display_task(void *arg)
     }
 }
 
+/* ---- the boards' dashboard ------------------------------------------------- */
+
+/* Every five minutes, over WiFi (components/boardstats): joining a network
+   moves the radio off LIGHT_CHANNEL, so ESP-NOW is let go for the few seconds
+   it takes and set up again after; a change from watch in that gap is missed. */
+#define REPORT_S 300
+static volatile uint8_t s_lamp = LIGHT_ON_AIR;
+
+static void report_fill(void)
+{
+    air_now_t n = air_now();
+    boardstats_num("temp_c", n.temp);
+    boardstats_num("humidity_pct", n.rh);
+    if (n.validity == 0) {
+        boardstats_num("tvoc_ppb", n.tvoc);
+        boardstats_num("eco2_ppm", n.eco2);
+        if (n.aqi) boardstats_num("aqi", n.aqi);
+    }
+    boardstats_str("air", n.validity == 0 ? (n.aqi >= 4 ? "poor" : n.aqi == 3 ? "fair" : "good")
+                          : n.validity == 3 ? "sensor error" : "warming up");
+    boardstats_str("lamp", s_lamp == LIGHT_ON_AIR ? "shows the air" : s_lamp ? "on" : "off");
+}
+
+static void report_task(void *arg)
+{
+    vTaskDelay(pdMS_TO_TICKS(20000));
+    for (;;) {
+        esp_now_deinit();
+        boardstats_report("blinky1", REPORT_S, report_fill, false, 15000);
+        esp_wifi_start();
+        esp_wifi_set_channel(LIGHT_CHANNEL, WIFI_SECOND_CHAN_NONE);
+        esp_wifi_set_ps(WIFI_PS_NONE);
+        if (esp_now_init() == ESP_OK) esp_now_register_recv_cb(on_recv);
+        else ESP_LOGE(TAG, "ESP-NOW did not come back after the report");
+        vTaskDelay(pdMS_TO_TICKS(REPORT_S * 1000));
+    }
+}
+
 void app_main(void)
 {
     esp_err_t e = nvs_flash_init();
@@ -403,6 +442,8 @@ void app_main(void)
 
     s_q = xQueueCreate(8, sizeof(light_msg_t));
     radio_start();
+    s_lamp = st.on;
+    xTaskCreate(report_task, "report", 6144, NULL, 2, NULL);
 
     float cur[3] = { 0, 0, 0 }, from[3], to[3];
     target_of(&st, to);
@@ -416,6 +457,7 @@ void app_main(void)
                           .level = m.level < 1 ? 1 : m.level > 100 ? 100 : m.level };
             if (memcmp(&n, &st, sizeof n) != 0) {
                 st = n;
+                s_lamp = st.on;
                 memcpy(from, cur, sizeof from);
                 target_of(&st, to);
                 fade_t0 = esp_timer_get_time();

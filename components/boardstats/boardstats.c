@@ -8,7 +8,11 @@
 #include "boardstats_secrets.h"
 #include "driver/temperature_sensor.h"
 #include "esp_app_desc.h"
+#include "esp_chip_info.h"
 #include "esp_crt_bundle.h"
+#include "esp_flash.h"
+#include "esp_idf_version.h"
+#include "esp_private/esp_clk.h"
 #include "esp_event.h"
 #include "esp_heap_caps.h"
 #include "esp_http_client.h"
@@ -35,10 +39,12 @@ static EventGroupHandle_t s_ev;
 static int s_net;                         /* the network that worked last */
 static temperature_sensor_handle_t s_tsens;
 static bool s_tsens_tried;
+static int s_join_ms = -1, s_post_ms = -1;     /* this report's join, the last one's POST */
+static unsigned s_sent, s_failed;
 
 /* ---- the report, as JSON --------------------------------------------------- */
 
-static char s_buf[2048];
+static char s_buf[3072];
 static size_t s_len;
 static bool s_first;                      /* nothing in this section yet */
 
@@ -118,11 +124,39 @@ static void sys_section(void)
     }
     float t;
     if (s_tsens && temperature_sensor_get_celsius(s_tsens, &t) == ESP_OK) boardstats_num("chip_c", t);
+    boardstats_num("heap_big_kb", heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL) / 1024.0);
+    boardstats_num("cpu_mhz", esp_clk_cpu_freq() / 1000000.0);
+    boardstats_num("tasks", uxTaskGetNumberOfTasks());
     wifi_ap_record_t ap;
     if (esp_wifi_sta_get_ap_info(&ap) == ESP_OK) {
         boardstats_num("rssi_dbm", ap.rssi);
         boardstats_str("network", (const char *)ap.ssid);
+        boardstats_num("wifi_ch", ap.primary);
+        boardstats_num("wifi_mhz", ap.primary == 14 ? 2484 : 2407 + 5 * ap.primary);
+        boardstats_str("wifi", ap.phy_11ax ? "802.11ax" : ap.phy_11n ? "802.11n" : ap.phy_11g ? "802.11g" : "802.11b");
     }
+    int8_t tx;
+    if (esp_wifi_get_max_tx_power(&tx) == ESP_OK) boardstats_num("tx_dbm", tx * 0.25);
+    esp_netif_ip_info_t ip;
+    esp_netif_t *sta = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
+    if (sta && esp_netif_get_ip_info(sta, &ip) == ESP_OK && ip.ip.addr) {
+        char a[16];
+        snprintf(a, sizeof a, IPSTR, IP2STR(&ip.ip));
+        boardstats_str("ip", a);
+    }
+    if (s_join_ms >= 0) boardstats_num("join_ms", s_join_ms);
+    if (s_post_ms >= 0) boardstats_num("post_ms", s_post_ms);
+    boardstats_num("sent", s_sent);
+    boardstats_num("failed", s_failed);
+    esp_chip_info_t ci;
+    esp_chip_info(&ci);
+    uint32_t flash = 0;
+    esp_flash_get_size(NULL, &flash);
+    char chip[64];
+    snprintf(chip, sizeof chip, "ESP32-S3 v%d.%d, %d cores, %lu MB flash, %u MB PSRAM",
+             ci.revision / 100, ci.revision % 100, ci.cores, (unsigned long)(flash >> 20), (unsigned)(ps >> 20));
+    boardstats_str("chip", chip);
+    boardstats_str("idf", esp_get_idf_version());
     boardstats_str("last_reset", reset_reason());
 }
 
@@ -169,9 +203,17 @@ static bool setup(void)
     esp_netif_init();
     esp_err_t e = esp_event_loop_create_default();
     if (e != ESP_OK && e != ESP_ERR_INVALID_STATE) return false;
-    if (!esp_netif_get_handle_from_ifkey("WIFI_STA_DEF")) esp_netif_create_default_wifi_sta();
     wifi_mode_t mode;
-    if (esp_wifi_get_mode(&mode) == ESP_ERR_WIFI_NOT_INIT) {
+    bool inited = esp_wifi_get_mode(&mode) != ESP_ERR_WIFI_NOT_INIT;
+    if (!esp_netif_get_handle_from_ifkey("WIFI_STA_DEF")) {
+        /* A board that runs ESP-NOW started WiFi with no network interface.
+           One attached to a running radio never hears STA_START and its DHCP
+           client fails at the first join (blinky1 crashed on it): stop the
+           radio first, and join() starts it again. */
+        if (inited) esp_wifi_stop();
+        esp_netif_create_default_wifi_sta();
+    }
+    if (!inited) {
         wifi_init_config_t c = WIFI_INIT_CONFIG_DEFAULT();
         if (esp_wifi_init(&c) != ESP_OK) return false;
         esp_wifi_set_storage(WIFI_STORAGE_RAM);
@@ -222,12 +264,16 @@ bool boardstats_report(const char *board, int every_s, boardstats_fill_t fill, b
     if (!BS_URL[0] || NNETS == 0) return false;
     if (!setup()) return false;
     int64_t t0 = esp_timer_get_time();
+    bool was_up = xEventGroupGetBits(s_ev) & GOT_IP;
     if (!join(timeout_ms)) {
         ESP_LOGW(TAG, "no network");
+        s_failed++;
         if (!keep) let_go();
         return false;
     }
+    if (!was_up) s_join_ms = (int)((esp_timer_get_time() - t0) / 1000);
     build(board, every_s, fill);
+    int64_t t1 = esp_timer_get_time();
     esp_http_client_config_t hc = {
         .url = BS_URL,
         .method = HTTP_METHOD_POST,
@@ -243,6 +289,9 @@ bool boardstats_report(const char *board, int every_s, boardstats_fill_t fill, b
         if (esp_http_client_perform(h) == ESP_OK) status = esp_http_client_get_status_code(h);
         esp_http_client_cleanup(h);
     }
+    s_post_ms = (int)((esp_timer_get_time() - t1) / 1000);
+    if (status == 200) s_sent++;
+    else s_failed++;
     if (!keep) let_go();
     if (status == 200) ESP_LOGI(TAG, "reported (%u bytes, %lld ms)", (unsigned)s_len, (esp_timer_get_time() - t0) / 1000);
     else ESP_LOGW(TAG, "report not taken: %d", status);

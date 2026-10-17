@@ -1,6 +1,6 @@
 idf_component_register(SRCS "boardstats.c" INCLUDE_DIRS "."
     PRIV_INCLUDE_DIRS "${CMAKE_CURRENT_BINARY_DIR}"
-    PRIV_REQUIRES esp_wifi esp_netif esp_event esp_http_client esp-tls esp_timer esp_driver_tsens nvs_flash esp_app_format mbedtls)
+    PRIV_REQUIRES esp_wifi esp_netif esp_event esp_http_client esp-tls esp_timer esp_driver_tsens nvs_flash esp_app_format mbedtls spi_flash esp_hw_support)
 
 # The WiFi networks and the dashboard's address and token, from the gitignored
 # secrets/ into a header in the BUILD directory (this repo is public).

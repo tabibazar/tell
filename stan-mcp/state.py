@@ -79,6 +79,24 @@ def query(pk, prefix):
     return [(i["sk"], json.loads(i["d"])) for i in sorted(out, key=lambda i: i["sk"])]
 
 
+def query_range(pk, lo, hi):
+    """[(sk, data)] for pk's items with lo <= sk <= hi, in order."""
+    if TABLE:
+        from boto3.dynamodb.conditions import Key
+        out, kw = [], {"KeyConditionExpression": Key("pk").eq(pk) & Key("sk").between(lo, hi),
+                       "ProjectionExpression": "#p, #s, #d",
+                       "ExpressionAttributeNames": {"#p": "pk", "#s": "sk", "#d": "d"}}
+        while True:
+            r = _t().query(**kw)
+            out += r["Items"]
+            if "LastEvaluatedKey" not in r:
+                break
+            kw["ExclusiveStartKey"] = r["LastEvaluatedKey"]
+    else:
+        out = [v for (p, s), v in _mem.items() if p == pk and lo <= s <= hi]
+    return [(i["sk"], json.loads(i["d"])) for i in sorted(out, key=lambda i: i["sk"])]
+
+
 def delete(pk, sk):
     if TABLE:
         _t().delete_item(Key={"pk": pk, "sk": sk})

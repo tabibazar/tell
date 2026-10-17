@@ -575,7 +575,7 @@ def handler(event, context):
             import base64
             body = base64.b64decode(body).decode()
         ip = event.get("requestContext", {}).get("http", {}).get("sourceIp", "")
-        return boards.handle(path, method, headers, body, ip)
+        return boards.handle(path, method, headers, body, ip, event.get("rawQueryString") or "")
     if path in ("/family", "/approve") and method in ("GET", "POST"):   # family's pages: the link is signed
         return family.handle_page(path, method, form(event))
     token = os.environ.get("MCP_TOKEN", "")

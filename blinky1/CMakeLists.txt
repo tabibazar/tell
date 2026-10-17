@@ -2,5 +2,6 @@
 # LED that watch switches over ESP-NOW (main/lightlink.h, shared with watch).
 #   cd blinky1 && idf.py build        then   tools/flash-blinky1.sh
 cmake_minimum_required(VERSION 3.16)
+set(EXTRA_COMPONENT_DIRS "${CMAKE_CURRENT_LIST_DIR}/../components/boardstats")
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
 project(blinky1)
