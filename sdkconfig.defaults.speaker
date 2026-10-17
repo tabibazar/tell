@@ -31,3 +31,9 @@ CONFIG_CODEC_I2C_BACKWARD_COMPATIBLE=n
 # NimBLE's init, float-formatting log lines -- and then returns, which frees
 # this stack. So a roomier one costs nothing once the board is up.
 CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192
+
+# WiFi for the boards' dashboard (components/boardstats), beside NimBLE: the
+# WiFi/lwIP buffers and TLS's working memory in PSRAM, where there is room;
+# internal RAM is what the audio and BLE are short of.
+CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y
+CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC=y

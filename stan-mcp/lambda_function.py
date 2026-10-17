@@ -23,6 +23,7 @@ import json
 import os
 import re
 
+import boards
 import family
 import civic
 import library
@@ -568,6 +569,13 @@ def handler(event, context):
     if path.startswith("/office"):                  # the HOA office console: its own login and cookie
         headers["cookie"] = "; ".join(event.get("cookies") or []) or headers.get("cookie", "")
         return office.handle_office(path, method, form(event), headers)
+    if path == "/boards" or path.startswith("/boards/"):   # the boards' dashboard: its own token
+        body = event.get("body") or ""
+        if event.get("isBase64Encoded"):
+            import base64
+            body = base64.b64decode(body).decode()
+        ip = event.get("requestContext", {}).get("http", {}).get("sourceIp", "")
+        return boards.handle(path, method, headers, body, ip)
     if path in ("/family", "/approve") and method in ("GET", "POST"):   # family's pages: the link is signed
         return family.handle_page(path, method, form(event))
     token = os.environ.get("MCP_TOKEN", "")

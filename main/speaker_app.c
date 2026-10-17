@@ -10,6 +10,7 @@
 #include "envstate.h"
 
 #include "ble_uart.h"
+#include "boardstats.h"
 #include "ds3231.h"
 #include "i2cbus.h"
 #include "ring.h"
@@ -2381,6 +2382,45 @@ static void status_log(void)
     slots_line();
 }
 
+/* ---- the boards' dashboard ------------------------------------------------- */
+
+/* A minute apart, over WiFi (components/boardstats): the room's sound and air,
+   the way status_log says them. */
+static void report_fill(void)
+{
+    soundlevel_now_t n;
+    soundlevel_report_t today;
+    sl_lock();
+    soundlevel_now(&s_sl, &n);
+    bool have_today = soundlevel_today(&s_sl, &today);
+    sl_unlock();
+    boardstats_num("noise_dba", n.laf);
+    boardstats_num("noise_1s_dba", n.laeq1s);
+    if (have_today) {
+        boardstats_num("today_laeq_dba", today.laeq);
+        boardstats_num("today_max_dba", today.lmax);
+        boardstats_num("today_l90_dba", today.l90);
+        boardstats_num("today_loud_min", today.red_s / 60.0f);
+    }
+    boardstats_str("noise_scale", n.calibrated ? "calibrated" : "estimated");
+    airui_t a;
+    portENTER_CRITICAL(&s_air_mux);
+    a = s_air;
+    portEXIT_CRITICAL(&s_air_mux);
+    if (a.have_temp) boardstats_num("temp_c", a.temp_c);
+    if (a.have_rh) boardstats_num("humidity_pct", a.rh);
+    if (a.have_voc) boardstats_num("tvoc_ppb", a.voc_ppb);
+    if (a.have_eco2) boardstats_num("eco2_ppm", a.eco2_ppm);
+    if (a.have_sensor)
+        boardstats_str("air", a.gas_error ? "sensor error" : a.warming ? "warming up"
+                       : (a.voc_state == ENVS_POOR || a.eco2_state == ENVS_POOR) ? "poor"
+                       : (a.voc_state == ENVS_FAIR || a.eco2_state == ENVS_FAIR) ? "fair" : "good");
+    boardstats_str("ring", s_set.ring ? "on" : "off");
+    boardstats_str("chime", s_set.chime ? "on" : "off");
+    boardstats_str("card", sd_state());
+    boardstats_str("rtc", s_rtc ? "present" : "absent");
+}
+
 /* ---- commands ------------------------------------------------------------- */
 
 static bool word_is(const char *s, const char *w)
@@ -3439,5 +3479,6 @@ void speaker_app_main(void)
     if (ble_uart_start(on_message, on_time) != ESP_OK)
         ESP_LOGE(TAG, "ble: start failed; no clock pushes, no commands");
     usb_start();
+    boardstats_start("speaker", 60, report_fill);
     ESP_LOGI(TAG, "speaker: up");
 }

@@ -18,6 +18,7 @@
 #include <math.h>
 #include <string.h>
 
+#include "boardstats.h"
 #include "camlink.h"
 #include "driver/gpio.h"
 #include "driver/i2c_master.h"
@@ -272,8 +273,8 @@ static int64_t next_frame_us(int64_t now)
 #include "driver/temperature_sensor.h"
 static temperature_sensor_handle_t s_tsens;
 static i2c_master_dev_handle_t s_bmp, s_imu;
-static uint16_t s_t1;
-static int16_t s_t2, s_t3;
+static uint16_t s_t1, s_p1;
+static int16_t s_t2, s_t3, s_p[9];              /* dig_P2..dig_P9 in s_p[1..8] */
 
 static void warmth_init(void)
 {
@@ -293,11 +294,13 @@ static void warmth_init(void)
             if (i2c_master_transmit(s_imu, init[i], 2, 100) != ESP_OK) { s_imu = NULL; break; }
     }
     if (i2c_master_bus_add_device(bus, &dc, &s_bmp) != ESP_OK) { s_bmp = NULL; return; }
-    uint8_t reg = 0x88, cal[6];
-    if (i2c_master_transmit_receive(s_bmp, &reg, 1, cal, 6, 100) != ESP_OK) { s_bmp = NULL; return; }
+    uint8_t reg = 0x88, cal[24];
+    if (i2c_master_transmit_receive(s_bmp, &reg, 1, cal, 24, 100) != ESP_OK) { s_bmp = NULL; return; }
     s_t1 = (uint16_t)(cal[0] | cal[1] << 8);
     s_t2 = (int16_t)(cal[2] | cal[3] << 8);
     s_t3 = (int16_t)(cal[4] | cal[5] << 8);
+    s_p1 = (uint16_t)(cal[6] | cal[7] << 8);
+    for (int i = 1; i <= 8; i++) s_p[i] = (int16_t)(cal[6 + 2 * i] | cal[7 + 2 * i] << 8);
 }
 
 /* The BMP280's temperature, one forced conversion (datasheet 3.11.3). */
@@ -313,6 +316,48 @@ static float bmp_temp(void)
     int32_t v1 = ((((adc >> 3) - ((int32_t)s_t1 << 1))) * s_t2) >> 11;
     int32_t v2 = (((((adc >> 4) - (int32_t)s_t1) * ((adc >> 4) - (int32_t)s_t1)) >> 12) * s_t3) >> 14;
     return (float)(((v1 + v2) * 5 + 128) >> 8) / 100.0f;
+}
+
+/* Temperature and pressure together, one forced conversion each x1
+   (datasheet 3.11.3, the 64-bit pressure formula). */
+static bool bmp_read(float *t_c, float *p_hpa)
+{
+    if (!s_bmp) return false;
+    uint8_t ctrl[2] = { 0xF4, 0x25 };           /* temperature x1, pressure x1, forced */
+    i2c_master_transmit(s_bmp, ctrl, 2, 100);
+    vTaskDelay(pdMS_TO_TICKS(15));
+    uint8_t reg = 0xF7, d[6];
+    if (i2c_master_transmit_receive(s_bmp, &reg, 1, d, 6, 100) != ESP_OK) return false;
+    int32_t ap = (int32_t)d[0] << 12 | (int32_t)d[1] << 4 | d[2] >> 4;
+    int32_t at = (int32_t)d[3] << 12 | (int32_t)d[4] << 4 | d[5] >> 4;
+    int32_t v1 = ((((at >> 3) - ((int32_t)s_t1 << 1))) * s_t2) >> 11;
+    int32_t v2 = (((((at >> 4) - (int32_t)s_t1) * ((at >> 4) - (int32_t)s_t1)) >> 12) * s_t3) >> 14;
+    int32_t fine = v1 + v2;
+    *t_c = (float)((fine * 5 + 128) >> 8) / 100.0f;
+    int64_t a = (int64_t)fine - 128000, b = a * a * s_p[5];
+    b += (a * s_p[4]) << 17;
+    b += (int64_t)s_p[3] << 35;
+    a = ((a * a * s_p[2]) >> 8) + ((a * s_p[1]) << 12);
+    a = ((((int64_t)1) << 47) + a) * s_p1 >> 33;
+    if (a == 0) return false;
+    int64_t p = 1048576 - ap;
+    p = (((p << 31) - b) * 3125) / a;
+    a = ((int64_t)s_p[8] * (p >> 13) * (p >> 13)) >> 25;
+    b = ((int64_t)s_p[7] * p) >> 19;
+    p = ((p + a + b) >> 8) + ((int64_t)s_p[6] << 4);
+    *p_hpa = (float)p / 256.0f / 100.0f;
+    return true;
+}
+
+/* How far from flat, from the accelerometer (0 = lying on its back). */
+static float tilt_deg(void)
+{
+    if (!s_imu) return NAN;
+    uint8_t reg = 0x35, d[6];
+    if (i2c_master_transmit_receive(s_imu, &reg, 1, d, 6, 50) != ESP_OK) return NAN;
+    float x = (int16_t)(d[0] | d[1] << 8), y = (int16_t)(d[2] | d[3] << 8), z = (int16_t)(d[4] | d[5] << 8);
+    float g = sqrtf(x * x + y * y + z * z);
+    return g > 0 ? acosf(fabsf(z) / g) * 57.29578f : NAN;
 }
 
 /* A shake: the acceleration jumping by more than ~1.2 g between samples
@@ -402,6 +447,31 @@ static void neopixel_off(void)
     gpio_set_level(34, 0);
 }
 
+/* ---- the boards' dashboard ------------------------------------------------- */
+
+/* Every five minutes, over WiFi, between spy's frames: the radio is ESP-NOW's
+   on camlink's channel the rest of the time (components/boardstats). */
+#define REPORT_S 300
+static unsigned s_photos;
+static int64_t s_photo_us;
+
+static void report_fill(void)
+{
+    float t, p;
+    if (bmp_read(&t, &p)) {
+        boardstats_num("temp_c", t);
+        boardstats_num("pressure_hpa", p);
+    }
+    boardstats_num("tilt_deg", tilt_deg());
+    float die;
+    if (s_tsens && temperature_sensor_get_celsius(s_tsens, &die) == ESP_OK) boardstats_num("chip_c", die);
+    boardstats_num("photos", s_photos);
+    if (s_photo_us) boardstats_num("last_photo_s", (double)((esp_timer_get_time() - s_photo_us) / 1000000));
+    boardstats_str("spy", !s_photo_us ? "not seen" : esp_timer_get_time() - s_photo_us < 15LL * 60 * 1000000 ? "in range" : "gone quiet");
+    int64_t on = s_radio_on_us + (s_radio_on ? esp_timer_get_time() - s_radio_since : 0);
+    boardstats_num("radio_on_pct", on * 100.0 / (double)esp_timer_get_time());
+}
+
 void app_main(void)
 {
     esp_pm_config_t pm = { .max_freq_mhz = 240, .min_freq_mhz = 80, .light_sleep_enable = false };
@@ -440,6 +510,8 @@ void app_main(void)
                 stale_shown = false;
                 asked_us = 0;
                 clock_set(&h, last_us);
+                s_photos++;
+                s_photo_us = last_us;
                 ESP_LOGI(TAG, "photo %u, %u bytes, taken %s", h.frame, (unsigned)h.total, last);
             }
         }
@@ -480,6 +552,21 @@ void app_main(void)
                          s_clock ? "" : " (no clock yet)");
                 on_before = on;
                 logged = now;
+            }
+        }
+        /* The dashboard: twenty seconds after boot and then every five
+           minutes, when the next frame is at least 25 s off (any time while
+           there is no clock: then the radio is waiting on spy anyway). */
+        {
+            static int64_t reported_us = -(REPORT_S - 20) * 1000000LL;
+            int64_t now = esp_timer_get_time();
+            if (now - reported_us > REPORT_S * 1000000LL && !asked_us &&
+                (!s_clock || next_frame_us(now) - now > 25000000)) {
+                bool was = s_radio_on;
+                radio(false);
+                boardstats_report("tiny1", REPORT_S, report_fill, false, 15000);
+                reported_us = esp_timer_get_time();
+                if (was) radio(true);
             }
         }
         /* spy heard the ask but no photo came: the one small ask got through
