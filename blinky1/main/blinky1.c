@@ -379,10 +379,10 @@ static void display_task(void *arg)
 
 /* ---- the boards' dashboard ------------------------------------------------- */
 
-/* Every five minutes, over WiFi (components/boardstats): joining a network
+/* Every minute, over WiFi (components/boardstats): joining a network
    moves the radio off LIGHT_CHANNEL, so ESP-NOW is let go for the few seconds
    it takes and set up again after; a change from watch in that gap is missed. */
-#define REPORT_S 300
+#define REPORT_S 60
 static volatile uint8_t s_lamp = LIGHT_ON_AIR;
 
 static void report_fill(void)
